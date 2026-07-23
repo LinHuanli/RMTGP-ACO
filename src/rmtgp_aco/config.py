@@ -1,0 +1,293 @@
+"""实验配置及其一致性检查。"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from enum import StrEnum
+from hashlib import sha256
+import json
+from typing import Any
+
+import torch
+
+
+class ACOVariant(StrEnum):
+    """本研究支持的 ACO 变体。"""
+
+    AS = "as"
+    ACS = "acs"
+    MMAS = "mmas"
+
+
+class TransitionIntegration(StrEnum):
+    """GP transition tree 与 ACO desirability 的结合方式。"""
+
+    RESIDUAL = "residual"
+    REPLACEMENT = "replacement"
+
+
+class PheromoneIntegration(StrEnum):
+    """GP pheromone tree 的强化边集成方式。"""
+
+    BUDGET_RESIDUAL = "budget_residual"
+    UNNORMALIZED_MULTIPLICATIVE = "unnormalized_multiplicative"
+    ADDITIVE = "additive"
+    REPLACEMENT = "replacement"
+
+
+@dataclass(frozen=True, slots=True)
+class ACOConfig:
+    """ACO 运行配置。
+
+    `ants=None` 表示蚂蚁数随实例规模取 `n`，对应 ACOTSP 中的 `-1`。
+    `rho` 始终表示蒸发比例，即全局蒸发后的保留比例为 `1-rho`。
+    """
+
+    variant: ACOVariant
+    ants: int | None
+    alpha: float
+    beta: float
+    rho: float
+    candidate_size: int = 20
+    iterations: int = 100
+    q0: float = 0.0
+    xi: float = 0.1
+    gamma_transition: float = 1.0 / 3.0
+    gamma_pheromone: float = 1.0 / 3.0
+    transition_integration: TransitionIntegration = TransitionIntegration.RESIDUAL
+    pheromone_integration: PheromoneIntegration = (
+        PheromoneIntegration.BUDGET_RESIDUAL
+    )
+    acs_synchronous: bool = True
+    dtype: torch.dtype = torch.float64
+    device: str = "cpu"
+    epsilon_distance: float = 1e-12
+    epsilon_numeric: float = 1e-12
+    mmas_update_period: int = 25
+    mmas_p_best: float = 0.05
+
+    @classmethod
+    def acotsp_default(
+        cls,
+        variant: ACOVariant | str,
+        *,
+        iterations: int = 100,
+        device: str = "cpu",
+        dtype: torch.dtype = torch.float64,
+        acs_synchronous: bool = True,
+    ) -> "ACOConfig":
+        """建立主实验使用的 ACOTSP 无局部搜索默认配置。"""
+
+        selected = ACOVariant(variant)
+        common: dict[str, Any] = {
+            "variant": selected,
+            "candidate_size": 20,
+            "iterations": iterations,
+            "device": device,
+            "dtype": dtype,
+            "acs_synchronous": acs_synchronous,
+        }
+        if selected is ACOVariant.AS:
+            return cls(ants=None, alpha=1.0, beta=2.0, rho=0.5, **common)
+        if selected is ACOVariant.ACS:
+            return cls(
+                ants=10,
+                alpha=1.0,
+                beta=2.0,
+                rho=0.1,
+                q0=0.9,
+                xi=0.1,
+                **common,
+            )
+        return cls(ants=None, alpha=1.0, beta=2.0, rho=0.02, **common)
+
+    def __post_init__(self) -> None:
+        """尽早拒绝会破坏概率或残差边界的配置。"""
+
+        object.__setattr__(self, "variant", ACOVariant(self.variant))
+        object.__setattr__(
+            self,
+            "transition_integration",
+            TransitionIntegration(self.transition_integration),
+        )
+        object.__setattr__(
+            self,
+            "pheromone_integration",
+            PheromoneIntegration(self.pheromone_integration),
+        )
+        if self.ants is not None and self.ants < 1:
+            raise ValueError("ants 必须为正整数或 None")
+        if self.candidate_size < 1:
+            raise ValueError("candidate_size 必须为正整数")
+        if self.iterations < 1:
+            raise ValueError("iterations 必须为正整数")
+        if self.alpha < 0 or self.beta < 0:
+            raise ValueError("alpha 和 beta 不得为负")
+        if not 0.0 < self.rho <= 1.0:
+            raise ValueError("rho 必须位于 (0, 1]")
+        if not 0.0 <= self.q0 <= 1.0:
+            raise ValueError("q0 必须位于 [0, 1]")
+        if not 0.0 < self.xi <= 1.0:
+            raise ValueError("xi 必须位于 (0, 1]")
+        if not 0.0 <= self.gamma_transition < 1.0:
+            raise ValueError("gamma_transition 必须位于 [0, 1)")
+        if not 0.0 <= self.gamma_pheromone < 1.0:
+            raise ValueError("gamma_pheromone 必须位于 [0, 1)")
+
+    def resolve_ants(self, n: int) -> int:
+        """把 ACOTSP 的 `ants=n` 约定解析为实际蚂蚁数。"""
+
+        if n < 2:
+            raise ValueError("TSP 至少需要两个城市")
+        return n if self.ants is None else self.ants
+
+    def resolve_candidate_size(self, n: int) -> int:
+        """候选列表不能包含当前城市，因此至多为 `n-1`。"""
+
+        return min(self.candidate_size, n - 1)
+
+    def stable_dict(self) -> dict[str, Any]:
+        """返回可序列化、可哈希的配置。"""
+
+        values = asdict(self)
+        values["variant"] = self.variant.value
+        values["transition_integration"] = self.transition_integration.value
+        values["pheromone_integration"] = self.pheromone_integration.value
+        values["dtype"] = str(self.dtype).removeprefix("torch.")
+        return values
+
+    @property
+    def config_hash(self) -> str:
+        """用于 cache 和 artifact 的稳定短哈希。"""
+
+        payload = json.dumps(self.stable_dict(), sort_keys=True, separators=(",", ":"))
+        return sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(frozen=True, slots=True)
+class GPConfig:
+    """Strongly Typed Multi-Tree GP 的默认参数。"""
+
+    population_size: int = 100
+    generations: int = 50
+    crossover_probability: float = 0.80
+    mutation_probability: float = 0.15
+    reproduction_probability: float = 0.05
+    elite_size: int = 10
+    tournament_size: int = 4
+    initial_min_depth: int = 2
+    initial_max_depth: int = 4
+    max_depth: int = 5
+    max_nodes_per_tree: int = 31
+    checkpoint_interval: int = 5
+    checkpoint_top_k: int = 5
+    degradation_penalty: float = 1.0
+    train_transition: bool = True
+    train_pheromone: bool = True
+    transition_profile: str = "main"
+    function_profile: str = "f1"
+    transition_terminals: tuple[str, ...] | None = None
+    pheromone_terminals: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        total = (
+            self.crossover_probability
+            + self.mutation_probability
+            + self.reproduction_probability
+        )
+        if abs(total - 1.0) > 1e-12:
+            raise ValueError("crossover、mutation 和 reproduction 概率之和必须为 1")
+        if not 0 < self.elite_size < self.population_size:
+            raise ValueError("elite_size 必须位于 (0, population_size)")
+        if self.initial_max_depth > self.max_depth:
+            raise ValueError("初始最大深度不能超过 max_depth")
+        if not self.train_transition and not self.train_pheromone:
+            raise ValueError("至少必须训练 transition 或 pheromone 中的一棵树")
+        if self.population_size < 2:
+            raise ValueError("population_size 至少为 2")
+        if self.generations < 1:
+            raise ValueError("generations 必须为正整数")
+        if self.checkpoint_interval < 1 or self.checkpoint_top_k < 1:
+            raise ValueError("checkpoint_interval 和 checkpoint_top_k 必须为正整数")
+        if self.transition_profile not in {"main", "legacy"}:
+            raise ValueError("transition_profile 仅支持 main 或 legacy")
+        if self.function_profile not in {"f0", "f1"}:
+            raise ValueError("function_profile 仅支持 f0 或 f1")
+        if self.transition_profile == "legacy" and self.train_pheromone:
+            raise ValueError("Legacy-GP 是单 transition tree，必须关闭 pheromone 训练")
+        if self.transition_terminals is not None:
+            object.__setattr__(
+                self,
+                "transition_terminals",
+                tuple(self.transition_terminals),
+            )
+            if not self.transition_terminals:
+                raise ValueError("transition_terminals 不得为空")
+        if self.pheromone_terminals is not None:
+            object.__setattr__(
+                self,
+                "pheromone_terminals",
+                tuple(self.pheromone_terminals),
+            )
+            if not self.pheromone_terminals:
+                raise ValueError("pheromone_terminals 不得为空")
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfig:
+    """计算资源与确定性设置。
+
+    CPU 上可在 GP 个体层使用多个进程，并让每个进程内部使用受控数量的
+    PyTorch 线程。CUDA 主实验通常令 ``processes=1``，依靠 batch tensor
+    并行，避免多个进程争用同一设备。
+    """
+
+    processes: int = 1
+    torch_threads: int = 1
+    torch_interop_threads: int = 1
+    multiprocessing_start_method: str = "spawn"
+    deterministic_algorithms: bool = True
+
+    def __post_init__(self) -> None:
+        if self.processes < 1:
+            raise ValueError("processes 必须为正整数")
+        if self.torch_threads < 1 or self.torch_interop_threads < 1:
+            raise ValueError("PyTorch thread 数必须为正整数")
+        if self.multiprocessing_start_method not in {"spawn", "forkserver", "fork"}:
+            raise ValueError("multiprocessing_start_method 必须为 spawn/forkserver/fork")
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentConfig:
+    """一次训练或测试实验的可复现配置。"""
+
+    experiment_id: str
+    root_seed: int
+    aco: ACOConfig
+    gp: GPConfig = field(default_factory=GPConfig)
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    train_scales: tuple[int, ...] = (50, 100)
+    validation_scales: tuple[int, ...] = (50, 100)
+    test_scales: tuple[int, ...] = (500,)
+    validation_seeds: int = 5
+    noninferiority_tolerance: float = 0.1
+
+    def stable_dict(self) -> dict[str, Any]:
+        """递归转换为 YAML/JSON 友好的字典。"""
+
+        gp_values = asdict(self.gp)
+        for name in ("transition_terminals", "pheromone_terminals"):
+            if gp_values[name] is not None:
+                gp_values[name] = list(gp_values[name])
+        return {
+            "experiment_id": self.experiment_id,
+            "root_seed": self.root_seed,
+            "aco": self.aco.stable_dict(),
+            "gp": gp_values,
+            "runtime": asdict(self.runtime),
+            "train_scales": list(self.train_scales),
+            "validation_scales": list(self.validation_scales),
+            "test_scales": list(self.test_scales),
+            "validation_seeds": self.validation_seeds,
+            "noninferiority_tolerance": self.noninferiority_tolerance,
+        }

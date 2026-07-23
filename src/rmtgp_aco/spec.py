@@ -1,0 +1,244 @@
+"""YAML 运行规范：把科研配置与数据路径解析为强类型对象。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, fields
+from pathlib import Path
+from typing import Any, Mapping
+
+import torch
+import yaml
+
+from .config import (
+    ACOConfig,
+    ACOVariant,
+    ExperimentConfig,
+    GPConfig,
+    RuntimeConfig,
+    TransitionIntegration,
+)
+
+
+ALLOWED_SCALES = frozenset({50, 100, 500})
+
+
+@dataclass(frozen=True, slots=True)
+class TestPartitionSpec:
+    """一个不可用于模型选择的最终测试 partition。"""
+
+    scale: int
+    distribution: str
+    files: tuple[str, ...]
+    min_scale: int | None = None
+    max_scale: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetSpec:
+    """数据 root、split patterns 与采样规模。"""
+
+    root: Path
+    train: dict[int, tuple[str, ...]]
+    validation: dict[int, tuple[str, ...]]
+    test: dict[str, TestPartitionSpec]
+    train_instances_per_scale: int = 1
+    validation_instances_per_scale: int = 128
+    evaluation_batch_size: int = 32
+
+    def __post_init__(self) -> None:
+        for label, mapping in (("train", self.train), ("validation", self.validation)):
+            invalid = set(mapping) - ALLOWED_SCALES
+            if invalid:
+                raise ValueError(f"{label} 含禁止规模 {sorted(invalid)}；仅允许 50/100/500")
+        for name, partition in self.test.items():
+            if partition.scale not in ALLOWED_SCALES and not name.startswith("tsplib"):
+                raise ValueError(
+                    f"test partition {name!r} 含禁止规模 {partition.scale}"
+                )
+            if (
+                partition.min_scale is not None
+                and partition.max_scale is not None
+                and partition.min_scale > partition.max_scale
+            ):
+                raise ValueError(f"test partition {name!r} 的规模区间为空")
+        if self.train_instances_per_scale < 1:
+            raise ValueError("train_instances_per_scale 必须为正整数")
+        if self.validation_instances_per_scale < 1:
+            raise ValueError("validation_instances_per_scale 必须为正整数")
+        if self.evaluation_batch_size < 1:
+            raise ValueError("evaluation_batch_size 必须为正整数")
+
+    def resolve_patterns(self, patterns: tuple[str, ...]) -> tuple[Path, ...]:
+        """相对 root 展开 glob，并显式排除已知重复 copy。"""
+
+        resolved: list[Path] = []
+        for pattern in patterns:
+            candidates = (
+                [Path(pattern)]
+                if Path(pattern).is_absolute()
+                else sorted(self.root.glob(pattern))
+            )
+            for path in candidates:
+                if path.name == "tsp100_concorde_7.756 copy.txt":
+                    continue
+                if path.is_file():
+                    resolved.append(path.resolve())
+        unique = tuple(dict.fromkeys(resolved))
+        if not unique:
+            raise FileNotFoundError(
+                f"数据 pattern 未匹配任何文件: {patterns!r} (root={self.root})"
+            )
+        return unique
+
+    def training_paths(self) -> dict[int, tuple[Path, ...]]:
+        return {
+            scale: self.resolve_patterns(patterns)
+            for scale, patterns in self.train.items()
+        }
+
+    def validation_paths(self) -> dict[int, tuple[Path, ...]]:
+        return {
+            scale: self.resolve_patterns(patterns)
+            for scale, patterns in self.validation.items()
+        }
+
+    def test_paths(self, partition: str) -> tuple[Path, ...]:
+        try:
+            selected = self.test[partition]
+        except KeyError as exc:
+            raise KeyError(f"未知 test partition: {partition}") from exc
+        return self.resolve_patterns(selected.files)
+
+
+@dataclass(frozen=True, slots=True)
+class RunSpec:
+    """训练/评测命令所需的完整规范。"""
+
+    experiment: ExperimentConfig
+    data: DatasetSpec
+    source_path: Path
+
+
+def _strict_kwargs(cls: type, payload: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = {item.name for item in fields(cls)}
+    unknown = set(payload) - allowed
+    if unknown:
+        raise ValueError(f"{cls.__name__} 含未知字段: {sorted(unknown)}")
+    return dict(payload)
+
+
+def _torch_dtype(name: str) -> torch.dtype:
+    normalized = name.removeprefix("torch.").lower()
+    mapping = {"float32": torch.float32, "float64": torch.float64}
+    try:
+        return mapping[normalized]
+    except KeyError as exc:
+        raise ValueError("dtype 仅支持 float32 或 float64") from exc
+
+
+def _parse_aco(payload: Mapping[str, Any]) -> ACOConfig:
+    values = dict(payload)
+    try:
+        variant = ACOVariant(values.pop("variant"))
+    except KeyError as exc:
+        raise ValueError("aco.variant 是必填字段") from exc
+    iterations = int(values.pop("iterations", 100))
+    device = str(values.pop("device", "cpu"))
+    dtype = _torch_dtype(str(values.pop("dtype", "float64")))
+    synchronous = bool(values.pop("acs_synchronous", True))
+    baseline = ACOConfig.acotsp_default(
+        variant,
+        iterations=iterations,
+        device=device,
+        dtype=dtype,
+        acs_synchronous=synchronous,
+    )
+    merged = baseline.stable_dict()
+    merged.update(values)
+    merged["variant"] = variant
+    merged["iterations"] = iterations
+    merged["device"] = device
+    merged["dtype"] = dtype
+    merged["acs_synchronous"] = synchronous
+    return ACOConfig(**_strict_kwargs(ACOConfig, merged))
+
+
+def _parse_scale_patterns(payload: Mapping[str, Any]) -> dict[int, tuple[str, ...]]:
+    result: dict[int, tuple[str, ...]] = {}
+    for scale, patterns in payload.items():
+        values = [patterns] if isinstance(patterns, str) else list(patterns)
+        result[int(scale)] = tuple(str(item) for item in values)
+    return result
+
+
+def _parse_test_partitions(
+    payload: Mapping[str, Any],
+) -> dict[str, TestPartitionSpec]:
+    result: dict[str, TestPartitionSpec] = {}
+    for name, raw in payload.items():
+        values = dict(raw)
+        files = values.get("files")
+        if isinstance(files, str):
+            values["files"] = (files,)
+        else:
+            values["files"] = tuple(str(item) for item in files)
+        result[str(name)] = TestPartitionSpec(
+            **_strict_kwargs(TestPartitionSpec, values)
+        )
+    return result
+
+
+def load_run_spec(path: str | Path) -> RunSpec:
+    """读取 YAML，并拒绝拼写错误造成的静默默认。"""
+
+    source = Path(path).resolve()
+    payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("配置根节点必须是 mapping")
+    unknown_sections = set(payload) - {"experiment", "aco", "gp", "runtime", "data"}
+    if unknown_sections:
+        raise ValueError(f"配置含未知顶层字段: {sorted(unknown_sections)}")
+
+    experiment_raw = dict(payload.get("experiment", {}))
+    aco = _parse_aco(dict(payload.get("aco", {})))
+    gp = GPConfig(**_strict_kwargs(GPConfig, dict(payload.get("gp", {}))))
+    runtime = RuntimeConfig(
+        **_strict_kwargs(RuntimeConfig, dict(payload.get("runtime", {})))
+    )
+    experiment = ExperimentConfig(
+        aco=aco,
+        gp=gp,
+        runtime=runtime,
+        **_strict_kwargs(ExperimentConfig, experiment_raw),
+    )
+    if (
+        gp.transition_profile == "legacy"
+        and aco.transition_integration is not TransitionIntegration.REPLACEMENT
+    ):
+        raise ValueError(
+            "Legacy-GP 必须使用 aco.transition_integration=replacement"
+        )
+
+    data_raw = dict(payload.get("data", {}))
+    root_value = data_raw.pop("root", "Datasets/TSP")
+    root = Path(root_value)
+    if not root.is_absolute():
+        # 数据路径按项目工作目录解析，而不是按 configs/ 子目录解析。
+        root = Path.cwd() / root
+    train = _parse_scale_patterns(data_raw.pop("train", {}))
+    validation = _parse_scale_patterns(data_raw.pop("validation", {}))
+    test = _parse_test_partitions(data_raw.pop("test", {}))
+    data = DatasetSpec(
+        root=root.resolve(),
+        train=train,
+        validation=validation,
+        test=test,
+        **_strict_kwargs(DatasetSpec, data_raw),
+    )
+    if set(experiment.train_scales) != set(data.train):
+        raise ValueError("experiment.train_scales 必须与 data.train 的 keys 完全一致")
+    if set(experiment.validation_scales) != set(data.validation):
+        raise ValueError(
+            "experiment.validation_scales 必须与 data.validation 的 keys 完全一致"
+        )
+    return RunSpec(experiment=experiment, data=data, source_path=source)

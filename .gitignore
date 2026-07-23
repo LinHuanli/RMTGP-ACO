@@ -1,0 +1,48 @@
+# 大型原始数据：仅在仓库中保存数据说明和校验清单
+Datasets/**
+!Datasets/README.md
+!Datasets/manifest.json
+
+# Python 缓存、构建产物和虚拟环境
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# Numba、PyTorch 和通用计算缓存
+*.nbc
+*.nbi
+*.pt
+*.pth
+*.ckpt
+.cache/
+
+# 实验产物
+runs/
+results/
+checkpoints/
+logs/
+wandb/
+
+# ACOTSP 编译及运行产物
+references/ACOTSP-1.03/*.o
+references/ACOTSP-1.03/acotsp
+references/ACOTSP-1.03/best.*
+references/ACOTSP-1.03/cmp.*
+references/ACOTSP-1.03/stat.*
+
+# 编辑器和系统文件
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

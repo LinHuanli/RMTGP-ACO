@@ -1,0 +1,59 @@
+# 开发性 pilot：用于快速验证学习信号，不作为正式论文结果。
+experiment:
+  experiment_id: development-acs-tsp50
+  root_seed: 20260723
+  train_scales: [50]
+  validation_scales: [50]
+  test_scales: [50]
+  validation_seeds: 2
+  noninferiority_tolerance: 0.1
+
+aco:
+  variant: acs
+  iterations: 20
+  dtype: float64
+  device: cpu
+  candidate_size: 20
+  acs_synchronous: true
+  gamma_transition: 0.3333333333333333
+  gamma_pheromone: 0.3333333333333333
+
+gp:
+  population_size: 32
+  generations: 12
+  crossover_probability: 0.80
+  mutation_probability: 0.15
+  reproduction_probability: 0.05
+  elite_size: 4
+  tournament_size: 4
+  initial_min_depth: 1
+  initial_max_depth: 3
+  max_depth: 4
+  max_nodes_per_tree: 31
+  checkpoint_interval: 4
+  checkpoint_top_k: 3
+  degradation_penalty: 1.0
+  train_transition: true
+  train_pheromone: true
+
+runtime:
+  processes: 6
+  torch_threads: 1
+  torch_interop_threads: 1
+  multiprocessing_start_method: spawn
+  deterministic_algorithms: true
+
+data:
+  root: Datasets/TSP
+  train:
+    50: [train_dataset/tsp/tsp_50/tsp50_uniform_128k_1.txt]
+  validation:
+    50: [val_dataset/tsp/tsp50_uniform_val.txt]
+  test:
+    tsp50_uniform:
+      scale: 50
+      distribution: uniform
+      files: [test_dataset/tsp/tsp50_concorde_5.688.txt]
+  train_instances_per_scale: 2
+  validation_instances_per_scale: 8
+  evaluation_batch_size: 4

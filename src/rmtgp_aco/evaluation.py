@@ -1,0 +1,250 @@
+"""锁定 champion 后的 paired ACO 评测与长表导出。"""
+
+from __future__ import annotations
+
+import csv
+from dataclasses import asdict, dataclass
+from pathlib import Path
+import pickle
+from typing import Iterable, Iterator, Sequence
+
+import numpy as np
+
+from .aco import solve
+from .config import ACOConfig
+from .genetic import RMTGPIndividual, compile_individual
+from .model import ProblemBatch, RunResult
+from .program import TensorProgram
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationRecord:
+    """一条 instance × seed × champion 的可配对结果。"""
+
+    method: str
+    variant: str
+    champion_id: str
+    partition: str
+    distribution: str
+    scale: int
+    instance_id: str
+    seed: int
+    best_length: float
+    reference_length: float
+    gap_percent: float
+    baseline_length: float
+    baseline_gap_percent: float
+    delta_pp: float
+    outcome: str
+    best_iteration: int
+    anytime_gap_auc: float
+    wall_time_sec: float
+    baseline_wall_time_sec: float
+    inference_overhead_percent: float
+    constructed_tours: int
+    tours_per_second: float
+    candidate_fallback_count: int
+    uniform_fallback_count: int
+    bound_clip_count: int
+
+
+def load_champion(path: str | Path) -> RMTGPIndividual:
+    """读取本仓库产生的本地 pickle artifact。
+
+    Pickle 不具备不可信输入安全性；调用方只能加载自己生成或已审计的文件。
+    """
+
+    with Path(path).open("rb") as handle:
+        champion = pickle.load(handle)
+    if not isinstance(champion, RMTGPIndividual):
+        raise TypeError("champion artifact 不是 RMTGPIndividual")
+    return champion
+
+
+def compile_champion(
+    champion: RMTGPIndividual | None,
+) -> tuple[TensorProgram | None, TensorProgram | None]:
+    """将 champion 的两棵树编译一次，供全部测试 batch 复用。"""
+
+    if champion is None:
+        return None, None
+    return compile_individual(champion)
+
+
+def _batch_seed(root_seed: int, batch_number: int, replicate: int) -> int:
+    rng = np.random.default_rng(
+        np.random.SeedSequence(
+            [root_seed, batch_number, replicate, 0x54455354]
+        )
+    )
+    return int(rng.integers(0, 2**63 - 1))
+
+
+def _record_batch(
+    *,
+    method: str,
+    champion_id: str,
+    partition: str,
+    distribution: str,
+    batch: ProblemBatch,
+    seed: int,
+    candidate: RunResult,
+    baseline: RunResult,
+    config: ACOConfig,
+    tie_tolerance: float,
+) -> Iterator[EvaluationRecord]:
+    reference = batch.reference_length
+    candidate_gap = 100.0 * (candidate.best_length - reference) / reference
+    baseline_gap = 100.0 * (baseline.best_length - reference) / reference
+    delta = candidate_gap - baseline_gap
+    anytime_gap = 100.0 * (
+        candidate.anytime_best - reference[:, None]
+    ) / reference[:, None]
+    anytime_auc = anytime_gap.mean(dim=1)
+    throughput = candidate.constructed_tours / max(candidate.wall_time_sec, 1e-12)
+    inference_overhead = 100.0 * (
+        candidate.wall_time_sec - baseline.wall_time_sec
+    ) / max(baseline.wall_time_sec, 1e-12)
+
+    for index, instance_id in enumerate(batch.instance_ids):
+        difference = float(delta[index].item())
+        outcome = (
+            "win"
+            if difference < -tie_tolerance
+            else "loss"
+            if difference > tie_tolerance
+            else "tie"
+        )
+        yield EvaluationRecord(
+            method=method,
+            variant=config.variant.value,
+            champion_id=champion_id,
+            partition=partition,
+            distribution=distribution,
+            scale=batch.n,
+            instance_id=instance_id,
+            seed=seed,
+            best_length=float(candidate.best_length[index].item()),
+            reference_length=float(reference[index].item()),
+            gap_percent=float(candidate_gap[index].item()),
+            baseline_length=float(baseline.best_length[index].item()),
+            baseline_gap_percent=float(baseline_gap[index].item()),
+            delta_pp=difference,
+            outcome=outcome,
+            best_iteration=int(candidate.best_iteration[index].item()),
+            anytime_gap_auc=float(anytime_auc[index].item()),
+            wall_time_sec=float(candidate.wall_time_sec),
+            baseline_wall_time_sec=float(baseline.wall_time_sec),
+            inference_overhead_percent=float(inference_overhead),
+            constructed_tours=candidate.constructed_tours,
+            tours_per_second=float(throughput),
+            candidate_fallback_count=candidate.diagnostics.candidate_fallback_count,
+            uniform_fallback_count=candidate.diagnostics.uniform_fallback_count,
+            bound_clip_count=candidate.diagnostics.bound_clip_count,
+        )
+
+
+def evaluate_batches(
+    batches: Iterable[ProblemBatch],
+    config: ACOConfig,
+    *,
+    method: str,
+    champion_id: str,
+    partition: str,
+    distribution: str,
+    root_seed: int,
+    seeds_per_batch: int,
+    transition_program: TensorProgram | None = None,
+    pheromone_program: TensorProgram | None = None,
+    tie_tolerance: float = 1e-12,
+) -> list[EvaluationRecord]:
+    """以完全相同 seed 成对运行 candidate 与原始 ACO。"""
+
+    if seeds_per_batch < 1:
+        raise ValueError("seeds_per_batch 必须为正整数")
+    records: list[EvaluationRecord] = []
+    is_baseline = transition_program is None and pheromone_program is None
+    for batch_number, batch in enumerate(batches):
+        for replicate in range(seeds_per_batch):
+            seed = _batch_seed(root_seed, batch_number, replicate)
+            baseline = solve(batch, config, seed=seed)
+            candidate = (
+                baseline
+                if is_baseline
+                else solve(
+                    batch,
+                    config,
+                    transition_program=transition_program,
+                    pheromone_program=pheromone_program,
+                    seed=seed,
+                )
+            )
+            records.extend(
+                _record_batch(
+                    method=method,
+                    champion_id=champion_id,
+                    partition=partition,
+                    distribution=distribution,
+                    batch=batch,
+                    seed=seed,
+                    candidate=candidate,
+                    baseline=baseline,
+                    config=config,
+                    tie_tolerance=tie_tolerance,
+                )
+            )
+    return records
+
+
+def write_records(
+    records: Sequence[EvaluationRecord],
+    path: str | Path,
+) -> Path:
+    """把评测结果写为标准库即可读取的 UTF-8 CSV 长表。"""
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [field.name for field in EvaluationRecord.__dataclass_fields__.values()]
+    with target.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(asdict(record) for record in records)
+    return target
+
+
+def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
+    """读取一个或多个长表，并恢复数值类型。"""
+
+    integer_fields = {
+        "scale",
+        "seed",
+        "best_iteration",
+        "constructed_tours",
+        "candidate_fallback_count",
+        "uniform_fallback_count",
+        "bound_clip_count",
+    }
+    float_fields = {
+        "best_length",
+        "reference_length",
+        "gap_percent",
+        "baseline_length",
+        "baseline_gap_percent",
+        "delta_pp",
+        "anytime_gap_auc",
+        "wall_time_sec",
+        "baseline_wall_time_sec",
+        "inference_overhead_percent",
+        "tours_per_second",
+    }
+    records: list[EvaluationRecord] = []
+    for path in paths:
+        with Path(path).open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                values: dict[str, object] = dict(row)
+                for name in integer_fields:
+                    values[name] = int(values[name])
+                for name in float_fields:
+                    values[name] = float(values[name])
+                records.append(EvaluationRecord(**values))
+    return records

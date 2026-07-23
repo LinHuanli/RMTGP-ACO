@@ -1,0 +1,87 @@
+experiment:
+  experiment_id: protocol-a-mmas-rmtgp
+  root_seed: 3001
+  train_scales: [50, 100]
+  validation_scales: [50, 100]
+  test_scales: [500]
+  validation_seeds: 5
+  noninferiority_tolerance: 0.1
+
+aco:
+  variant: mmas
+  iterations: 100
+  dtype: float64
+  device: cpu
+  candidate_size: 20
+  gamma_transition: 0.3333333333333333
+  gamma_pheromone: 0.3333333333333333
+  mmas_update_period: 25
+  mmas_p_best: 0.05
+
+gp:
+  population_size: 100
+  generations: 50
+  crossover_probability: 0.80
+  mutation_probability: 0.15
+  reproduction_probability: 0.05
+  elite_size: 10
+  tournament_size: 4
+  initial_min_depth: 2
+  initial_max_depth: 4
+  max_depth: 5
+  max_nodes_per_tree: 31
+  checkpoint_interval: 5
+  checkpoint_top_k: 5
+  degradation_penalty: 1.0
+  train_transition: true
+  train_pheromone: true
+
+runtime:
+  processes: 4
+  torch_threads: 1
+  torch_interop_threads: 1
+  multiprocessing_start_method: spawn
+  deterministic_algorithms: true
+
+data:
+  root: Datasets/TSP
+  train:
+    50: [train_dataset/tsp/tsp_50/tsp50_uniform_128k_*.txt]
+    100: [train_dataset/tsp/tsp_100/tsp100_uniform_128k_*.txt]
+  validation:
+    50: [val_dataset/tsp/tsp50_uniform_val.txt]
+    100: [val_dataset/tsp/tsp100_uniform_val.txt]
+  test:
+    tsp50_uniform:
+      scale: 50
+      distribution: uniform
+      files: [test_dataset/tsp/tsp50_concorde_5.688.txt]
+    tsp100_uniform:
+      scale: 100
+      distribution: uniform
+      files: [test_dataset/tsp/tsp100_concorde_7.756.txt]
+    tsp500_uniform:
+      scale: 500
+      distribution: uniform
+      files: [test_dataset/tsp/tsp500_concorde_16.546.txt]
+    tsp500_cluster:
+      scale: 500
+      distribution: cluster
+      files: [test_dataset/tsp/tsp500_cluster_10.723.txt]
+    tsp500_gaussian:
+      scale: 500
+      distribution: gaussian
+      files: [test_dataset/tsp/tsp500_gaussian_77.521.txt]
+    tsplib_le500:
+      scale: 0
+      distribution: tsplib
+      files: [test_dataset/tsp/tsplib/*.txt]
+      max_scale: 500
+    tsplib_extra:
+      scale: 0
+      distribution: tsplib-extra
+      files: [test_dataset/tsp/tsplib/*.txt]
+      min_scale: 501
+  train_instances_per_scale: 1
+  validation_instances_per_scale: 128
+  evaluation_batch_size: 16
