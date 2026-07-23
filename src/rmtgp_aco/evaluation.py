@@ -11,7 +11,7 @@ from typing import Iterable, Iterator, Sequence
 import numpy as np
 
 from .aco import solve
-from .config import ACOConfig
+from .config import ACOConfig, ExecutionBackend
 from .genetic import RMTGPIndividual, compile_individual
 from .model import ProblemBatch, RunResult
 from .program import TensorProgram
@@ -156,6 +156,7 @@ def evaluate_batches(
     seeds_per_batch: int,
     transition_program: TensorProgram | None = None,
     pheromone_program: TensorProgram | None = None,
+    backend: ExecutionBackend | str = ExecutionBackend.TORCH,
     tie_tolerance: float = 1e-12,
 ) -> list[EvaluationRecord]:
     """以完全相同 seed 成对运行 candidate 与原始 ACO。"""
@@ -167,7 +168,7 @@ def evaluate_batches(
     for batch_number, batch in enumerate(batches):
         for replicate in range(seeds_per_batch):
             seed = _batch_seed(root_seed, batch_number, replicate)
-            baseline = solve(batch, config, seed=seed)
+            baseline = solve(batch, config, seed=seed, backend=backend)
             candidate = (
                 baseline
                 if is_baseline
@@ -177,6 +178,7 @@ def evaluate_batches(
                     transition_program=transition_program,
                     pheromone_program=pheromone_program,
                     seed=seed,
+                    backend=backend,
                 )
             )
             records.extend(

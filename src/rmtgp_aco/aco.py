@@ -12,6 +12,7 @@ import torch.nn.functional as functional
 from .config import (
     ACOConfig,
     ACOVariant,
+    ExecutionBackend,
     PheromoneIntegration,
     TransitionIntegration,
 )
@@ -125,12 +126,13 @@ def _build_transition_context(
     candidates: torch.Tensor,
     feasible_mask: torch.Tensor,
     config: ACOConfig,
+    required_terminals: frozenset[str],
     *,
     construction_step: int,
     iteration: int,
     stagnation: torch.Tensor,
 ) -> tuple[TransitionContext, torch.Tensor]:
-    """构造 transition tree 的全部主 terminals。"""
+    """只构造 program 实际引用的 transition terminals。"""
 
     tau = _gather_edges(
         pheromone,
@@ -142,11 +144,6 @@ def _build_transition_context(
         current_city.unsqueeze(-1).expand_as(candidates),
         candidates,
     )
-    distance = _gather_edges(
-        problem.distances,
-        current_city.unsqueeze(-1).expand_as(candidates),
-        candidates,
-    )
     base_score = torch.pow(tau, config.alpha) * torch.pow(eta, config.beta)
     base_score = torch.where(feasible_mask, base_score, torch.zeros_like(base_score))
     base_probability, uniform_fallback = _base_probability(
@@ -155,53 +152,115 @@ def _build_transition_context(
         config.epsilon_numeric,
     )
 
-    log_tau = torch.log(tau.clamp_min(config.epsilon_numeric))
-    log_eta = torch.log(eta.clamp_min(config.epsilon_numeric))
-    rtau = _masked_stdrel(log_tau, feasible_mask)
-    reta = _masked_stdrel(log_eta, feasible_mask)
-    feasible_count = feasible_mask.sum(dim=-1, keepdim=True).clamp_min(1)
-    base_conf = torch.tanh(
-        torch.log(base_probability.clamp_min(config.epsilon_numeric))
-        + torch.log(feasible_count.to(base_probability.dtype))
-    )
-    base_conf = torch.where(feasible_mask, base_conf, torch.zeros_like(base_conf))
-    dist_rank = _normalized_distance_rank(distance, feasible_mask)
+    terminals: dict[str, torch.Tensor] = {}
+    feasible_count: torch.Tensor | None = None
 
-    entropy_value = -(
-        base_probability
-        * torch.log(base_probability.clamp_min(config.epsilon_numeric))
-    ).sum(dim=-1, keepdim=True)
-    entropy_denominator = torch.log(feasible_count.to(base_probability.dtype))
-    entropy = torch.where(
-        feasible_count > 1,
-        2.0 * entropy_value / entropy_denominator.clamp_min(config.epsilon_numeric) - 1.0,
-        torch.full_like(entropy_value, -1.0),
-    ).expand_as(base_score)
+    def counts() -> torch.Tensor:
+        nonlocal feasible_count
+        if feasible_count is None:
+            feasible_count = feasible_mask.sum(dim=-1, keepdim=True).clamp_min(1)
+        return feasible_count
 
-    construct_progress = torch.full_like(
-        base_score,
-        2.0 * construction_step / max(problem.n - 1, 1) - 1.0,
-    )
-    aco_progress = torch.full_like(
-        base_score,
-        2.0 * (iteration - 1) / max(config.iterations - 1, 1) - 1.0,
-    )
-    stagnation_value = (
-        2.0
-        * torch.clamp(stagnation.to(base_score.dtype) / config.iterations, max=1.0)
-        - 1.0
-    )
-    stagnation_field = stagnation_value[:, None, None].expand_as(base_score)
-    feasible_weights = feasible_mask.to(base_score.dtype)
-    feasible_denominator = feasible_weights.sum(dim=-1, keepdim=True).clamp_min(1.0)
-    mean_tau = (
-        (tau * feasible_weights).sum(dim=-1, keepdim=True)
-        / feasible_denominator
-    ).expand_as(base_score)
-    mean_distance = (
-        (distance * feasible_weights).sum(dim=-1, keepdim=True)
-        / feasible_denominator
-    ).expand_as(base_score)
+    distance: torch.Tensor | None = None
+    if required_terminals & {"DistRank", "Distance", "MeanDistance"}:
+        distance = _gather_edges(
+            problem.distances,
+            current_city.unsqueeze(-1).expand_as(candidates),
+            candidates,
+        )
+    if "RTau" in required_terminals:
+        terminals["RTau"] = _masked_stdrel(
+            torch.log(tau.clamp_min(config.epsilon_numeric)),
+            feasible_mask,
+        )
+    if "REta" in required_terminals:
+        terminals["REta"] = _masked_stdrel(
+            torch.log(eta.clamp_min(config.epsilon_numeric)),
+            feasible_mask,
+        )
+    if "BaseConf" in required_terminals:
+        count = counts()
+        value = torch.tanh(
+            torch.log(base_probability.clamp_min(config.epsilon_numeric))
+            + torch.log(count.to(base_probability.dtype))
+        )
+        terminals["BaseConf"] = torch.where(
+            feasible_mask,
+            value,
+            torch.zeros_like(value),
+        )
+    if "DistRank" in required_terminals:
+        assert distance is not None
+        terminals["DistRank"] = _normalized_distance_rank(distance, feasible_mask)
+    if "Entropy" in required_terminals:
+        count = counts()
+        entropy_value = -(
+            base_probability
+            * torch.log(base_probability.clamp_min(config.epsilon_numeric))
+        ).sum(dim=-1, keepdim=True)
+        entropy_denominator = torch.log(count.to(base_probability.dtype))
+        terminals["Entropy"] = torch.where(
+            count > 1,
+            2.0
+            * entropy_value
+            / entropy_denominator.clamp_min(config.epsilon_numeric)
+            - 1.0,
+            torch.full_like(entropy_value, -1.0),
+        ).expand_as(base_score)
+    if "ConstructProg" in required_terminals:
+        terminals["ConstructProg"] = torch.full_like(
+            base_score,
+            2.0 * construction_step / max(problem.n - 1, 1) - 1.0,
+        )
+    if "ACOProg" in required_terminals:
+        terminals["ACOProg"] = torch.full_like(
+            base_score,
+            2.0 * (iteration - 1) / max(config.iterations - 1, 1) - 1.0,
+        )
+    if "Stagnation" in required_terminals:
+        stagnation_value = (
+            2.0
+            * torch.clamp(
+                stagnation.to(base_score.dtype) / config.iterations,
+                max=1.0,
+            )
+            - 1.0
+        )
+        terminals["Stagnation"] = stagnation_value[:, None, None].expand_as(
+            base_score
+        )
+    if "Tau" in required_terminals:
+        terminals["Tau"] = torch.where(
+            feasible_mask,
+            tau,
+            torch.zeros_like(tau),
+        )
+    if "Distance" in required_terminals:
+        assert distance is not None
+        terminals["Distance"] = torch.where(
+            feasible_mask,
+            distance,
+            torch.zeros_like(distance),
+        )
+    if "MeanTau" in required_terminals:
+        weights = feasible_mask.to(base_score.dtype)
+        terminals["MeanTau"] = (
+            (tau * weights).sum(dim=-1, keepdim=True)
+            / weights.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        ).expand_as(base_score)
+    if "MeanDistance" in required_terminals:
+        assert distance is not None
+        weights = feasible_mask.to(base_score.dtype)
+        terminals["MeanDistance"] = (
+            (distance * weights).sum(dim=-1, keepdim=True)
+            / weights.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        ).expand_as(base_score)
+    if "Size" in required_terminals:
+        terminals["Size"] = torch.full_like(base_score, float(problem.n))
+    if "FeasibleCount" in required_terminals:
+        terminals["FeasibleCount"] = counts().to(base_score.dtype).expand_as(
+            base_score
+        )
 
     context = TransitionContext(
         current_city=current_city,
@@ -209,27 +268,7 @@ def _build_transition_context(
         feasible_mask=feasible_mask,
         base_score=base_score,
         base_probability=base_probability,
-        terminals={
-            "RTau": rtau,
-            "REta": reta,
-            "BaseConf": base_conf,
-            "DistRank": dist_rank,
-            "Entropy": entropy,
-            "ConstructProg": construct_progress,
-            "ACOProg": aco_progress,
-            "Stagnation": stagnation_field,
-            # Legacy-GP terminals：保留原始量纲以复现 full-replacement 对照。
-            "Tau": torch.where(feasible_mask, tau, torch.zeros_like(tau)),
-            "Distance": torch.where(
-                feasible_mask,
-                distance,
-                torch.zeros_like(distance),
-            ),
-            "MeanTau": mean_tau,
-            "MeanDistance": mean_distance,
-            "Size": torch.full_like(base_score, float(problem.n)),
-            "FeasibleCount": feasible_count.to(base_score.dtype).expand_as(base_score),
-        },
+        terminals=terminals,
     )
     return context, uniform_fallback
 
@@ -244,7 +283,7 @@ def _residual_score(
     if program is None:
         return context.base_score
     if config.transition_integration is TransitionIntegration.REPLACEMENT:
-        raw = program.evaluate(context.terminals)
+        raw = program.evaluate(context.terminals, template=context.base_score)
         score = (
             functional.softplus(torch.clamp(raw, -20.0, 20.0))
             + config.epsilon_numeric
@@ -256,10 +295,26 @@ def _residual_score(
         )
     if program.is_exact_zero or config.gamma_transition == 0.0:
         return context.base_score
-    raw = program.evaluate(context.terminals)
+    raw = program.evaluate(context.terminals, template=context.base_score)
     multiplier = 1.0 + config.gamma_transition * torch.tanh(raw)
     score = context.base_score * multiplier
     return torch.where(context.feasible_mask, score, torch.zeros_like(score))
+
+
+def _active_transition_terminals(
+    program: TensorProgram | None,
+    config: ACOConfig,
+) -> frozenset[str]:
+    """返回当前集成模式真正需要构造的 transition terminals。"""
+
+    if program is None:
+        return frozenset()
+    if (
+        config.transition_integration is TransitionIntegration.RESIDUAL
+        and (program.is_exact_zero or config.gamma_transition == 0.0)
+    ):
+        return frozenset()
+    return program.required_terminals
 
 
 def _roulette_indices(
@@ -301,6 +356,10 @@ def _choose_next(
     candidate_visited = torch.gather(visited, 2, candidates)
     feasible_mask = ~candidate_visited
     has_candidate = feasible_mask.any(dim=-1)
+    required_terminals = _active_transition_terminals(
+        transition_program,
+        config,
+    )
 
     context, uniform_fallback = _build_transition_context(
         problem,
@@ -309,6 +368,7 @@ def _choose_next(
         candidates,
         feasible_mask,
         config,
+        required_terminals,
         construction_step=construction_step,
         iteration=iteration,
         stagnation=stagnation,
@@ -353,6 +413,7 @@ def _choose_next(
             all_candidates,
             full_mask,
             config,
+            required_terminals,
             construction_step=construction_step,
             iteration=iteration,
             stagnation=stagnation,
@@ -720,11 +781,12 @@ def _build_deposit_events(
     colony_lengths: torch.Tensor,
     state: _SearchState,
     config: ACOConfig,
+    required_terminals: frozenset[str],
     *,
     iteration: int,
     node_log_eta_mean: torch.Tensor,
 ) -> DepositEventBatch:
-    """构造统一的强化 event 和 pheromone terminals。"""
+    """构造统一强化 event，并按 program 需求生成 terminals。"""
 
     batch, sources, _ = source_tours.shape
     n = problem.n
@@ -733,68 +795,78 @@ def _build_deposit_events(
     first = torch.minimum(u, v)
     second = torch.maximum(u, v)
     edge_id = first * n + second
-    tau = _gather_edges(pheromone, u, v)
-    eta = _gather_edges(problem.heuristic, u, v)
     base_deposit = source_lengths.reciprocal().unsqueeze(-1).expand(batch, sources, n)
     base_budget = n / source_lengths
-
-    edge_tau = _masked_stdrel(
-        torch.log(tau.clamp_min(config.epsilon_numeric)),
-        torch.ones_like(tau, dtype=torch.bool),
-    )
-    endpoint_mean_u = torch.gather(
-        node_log_eta_mean,
-        1,
-        u.reshape(batch, -1),
-    ).reshape_as(u)
-    endpoint_mean_v = torch.gather(
-        node_log_eta_mean,
-        1,
-        v.reshape(batch, -1),
-    ).reshape_as(v)
-    eta_relative = (
-        torch.log(eta.clamp_min(config.epsilon_numeric))
-        - 0.5 * (endpoint_mean_u + endpoint_mean_v)
-    )
-    edge_eta = _masked_stdrel(
-        eta_relative,
-        torch.ones_like(eta_relative, dtype=torch.bool),
-    )
-
-    rank_uv = _gather_edges(problem.full_nn_rank, u, v).to(pheromone.dtype)
-    rank_vu = _gather_edges(problem.full_nn_rank, v, u).to(pheromone.dtype)
-    rank_denominator = max(n - 2, 1)
-    normalized_uv = 1.0 - 2.0 * (rank_uv - 1.0) / rank_denominator
-    normalized_vu = 1.0 - 2.0 * (rank_vu - 1.0) / rank_denominator
-    nn_rank = 0.5 * (normalized_uv + normalized_vu)
-
-    frequency_flat = _colony_edge_frequency(colony_tours, n).to(pheromone.dtype)
-    colony_frequency = torch.gather(
-        frequency_flat,
-        1,
-        edge_id.reshape(batch, -1),
-    ).reshape_as(edge_id)
-    colony_frequency = 2.0 * colony_frequency / colony_tours.shape[1] - 1.0
-
-    mean_length = colony_lengths.mean(dim=1, keepdim=True)
-    std_length = colony_lengths.std(dim=1, keepdim=True, unbiased=False)
-    source_quality = torch.tanh(
-        (mean_length - source_lengths)
-        / (std_length + config.epsilon_numeric)
-    ).unsqueeze(-1).expand(batch, sources, n)
-    aco_progress = torch.full_like(
-        base_deposit,
-        2.0 * (iteration - 1) / max(config.iterations - 1, 1) - 1.0,
-    )
-    stagnation_value = (
-        2.0
-        * torch.clamp(
-            state.stagnation.to(pheromone.dtype) / config.iterations,
-            max=1.0,
+    terminals: dict[str, torch.Tensor] = {}
+    if "EdgeTau" in required_terminals:
+        tau = _gather_edges(pheromone, u, v)
+        terminals["EdgeTau"] = _masked_stdrel(
+            torch.log(tau.clamp_min(config.epsilon_numeric)),
+            torch.ones_like(tau, dtype=torch.bool),
         )
-        - 1.0
-    )
-    stagnation_field = stagnation_value[:, None, None].expand_as(base_deposit)
+    if "EdgeEta" in required_terminals:
+        eta = _gather_edges(problem.heuristic, u, v)
+        endpoint_mean_u = torch.gather(
+            node_log_eta_mean,
+            1,
+            u.reshape(batch, -1),
+        ).reshape_as(u)
+        endpoint_mean_v = torch.gather(
+            node_log_eta_mean,
+            1,
+            v.reshape(batch, -1),
+        ).reshape_as(v)
+        eta_relative = (
+            torch.log(eta.clamp_min(config.epsilon_numeric))
+            - 0.5 * (endpoint_mean_u + endpoint_mean_v)
+        )
+        terminals["EdgeEta"] = _masked_stdrel(
+            eta_relative,
+            torch.ones_like(eta_relative, dtype=torch.bool),
+        )
+    if "NNRank" in required_terminals:
+        rank_uv = _gather_edges(problem.full_nn_rank, u, v).to(pheromone.dtype)
+        rank_vu = _gather_edges(problem.full_nn_rank, v, u).to(pheromone.dtype)
+        rank_denominator = max(n - 2, 1)
+        normalized_uv = 1.0 - 2.0 * (rank_uv - 1.0) / rank_denominator
+        normalized_vu = 1.0 - 2.0 * (rank_vu - 1.0) / rank_denominator
+        terminals["NNRank"] = 0.5 * (normalized_uv + normalized_vu)
+    if "ColonyFreq" in required_terminals:
+        frequency_flat = _colony_edge_frequency(colony_tours, n).to(
+            pheromone.dtype
+        )
+        colony_frequency = torch.gather(
+            frequency_flat,
+            1,
+            edge_id.reshape(batch, -1),
+        ).reshape_as(edge_id)
+        terminals["ColonyFreq"] = (
+            2.0 * colony_frequency / colony_tours.shape[1] - 1.0
+        )
+    if "SourceQuality" in required_terminals:
+        mean_length = colony_lengths.mean(dim=1, keepdim=True)
+        std_length = colony_lengths.std(dim=1, keepdim=True, unbiased=False)
+        terminals["SourceQuality"] = torch.tanh(
+            (mean_length - source_lengths)
+            / (std_length + config.epsilon_numeric)
+        ).unsqueeze(-1).expand(batch, sources, n)
+    if "ACOProg" in required_terminals:
+        terminals["ACOProg"] = torch.full_like(
+            base_deposit,
+            2.0 * (iteration - 1) / max(config.iterations - 1, 1) - 1.0,
+        )
+    if "Stagnation" in required_terminals:
+        stagnation_value = (
+            2.0
+            * torch.clamp(
+                state.stagnation.to(pheromone.dtype) / config.iterations,
+                max=1.0,
+            )
+            - 1.0
+        )
+        terminals["Stagnation"] = stagnation_value[:, None, None].expand_as(
+            base_deposit
+        )
 
     return DepositEventBatch(
         edge_u=u,
@@ -803,15 +875,7 @@ def _build_deposit_events(
         source_length=source_lengths,
         base_deposit=base_deposit,
         base_budget=base_budget,
-        terminals={
-            "EdgeEta": edge_eta,
-            "EdgeTau": edge_tau,
-            "NNRank": nn_rank,
-            "ColonyFreq": colony_frequency,
-            "SourceQuality": source_quality,
-            "ACOProg": aco_progress,
-            "Stagnation": stagnation_field,
-        },
+        terminals=terminals,
     )
 
 
@@ -824,7 +888,7 @@ def _residual_deposit(
 
     if program is None:
         return events.base_deposit
-    raw = program.evaluate(events.terminals)
+    raw = program.evaluate(events.terminals, template=events.base_deposit)
     gamma = config.gamma_pheromone
     mode = config.pheromone_integration
     if mode is PheromoneIntegration.REPLACEMENT:
@@ -849,6 +913,22 @@ def _residual_deposit(
         config.epsilon_numeric
     )
     return events.base_budget.unsqueeze(-1) * unnormalized / denominator
+
+
+def _active_pheromone_terminals(
+    program: TensorProgram | None,
+    config: ACOConfig,
+) -> frozenset[str]:
+    """返回当前集成模式真正需要构造的 pheromone terminals。"""
+
+    if program is None:
+        return frozenset()
+    if (
+        config.pheromone_integration is not PheromoneIntegration.REPLACEMENT
+        and (program.is_exact_zero or config.gamma_pheromone == 0.0)
+    ):
+        return frozenset()
+    return program.required_terminals
 
 
 def _scatter_undirected_deposit(
@@ -957,7 +1037,7 @@ def _initial_search_state(
     )
 
 
-def solve(
+def _solve_torch(
     problem: ProblemBatch,
     config: ACOConfig,
     *,
@@ -1003,22 +1083,37 @@ def solve(
         )
         state = _initial_search_state(problem, tau_min, tau_max)
 
-        k = problem.nn_indices.shape[-1]
-        batch_index = _batch_indices(
-            problem.batch_size,
-            problem.n,
-            k,
-            device=device,
+        required_pheromone_terminals = _active_pheromone_terminals(
+            pheromone_program,
+            config,
         )
-        node_index = (
-            torch.arange(problem.n, device=device)
-            .reshape(1, problem.n, 1)
-            .expand(problem.batch_size, problem.n, k)
-        )
-        nn_eta = problem.heuristic[batch_index, node_index, problem.nn_indices]
-        node_log_eta_mean = torch.log(
-            nn_eta.clamp_min(config.epsilon_numeric)
-        ).mean(dim=-1)
+        if "EdgeEta" in required_pheromone_terminals:
+            k = problem.nn_indices.shape[-1]
+            batch_index = _batch_indices(
+                problem.batch_size,
+                problem.n,
+                k,
+                device=device,
+            )
+            node_index = (
+                torch.arange(problem.n, device=device)
+                .reshape(1, problem.n, 1)
+                .expand(problem.batch_size, problem.n, k)
+            )
+            nn_eta = problem.heuristic[
+                batch_index,
+                node_index,
+                problem.nn_indices,
+            ]
+            node_log_eta_mean = torch.log(
+                nn_eta.clamp_min(config.epsilon_numeric)
+            ).mean(dim=-1)
+        else:
+            node_log_eta_mean = torch.empty(
+                (problem.batch_size, problem.n),
+                dtype=problem.coords.dtype,
+                device=device,
+            )
 
         anytime: list[torch.Tensor] = []
         for iteration in range(1, config.iterations + 1):
@@ -1060,6 +1155,7 @@ def solve(
                 lengths,
                 state,
                 config,
+                required_pheromone_terminals,
                 iteration=iteration,
                 node_log_eta_mean=node_log_eta_mean,
             )
@@ -1088,4 +1184,39 @@ def solve(
             * config.iterations
         ),
         diagnostics=diagnostics,
+    )
+
+
+def solve(
+    problem: ProblemBatch,
+    config: ACOConfig,
+    *,
+    transition_program: TensorProgram | None = None,
+    pheromone_program: TensorProgram | None = None,
+    seed: int = 0,
+    backend: ExecutionBackend | str = ExecutionBackend.TORCH,
+) -> RunResult:
+    """按所选后端运行 AS、ACS 或 MMAS。
+
+    PyTorch 是默认参考实现；Numba 后端使用相同科学配置，但采用与 batch
+    划分和进程调度无关的计数随机流，因此不承诺与 PyTorch RNG 逐位一致。
+    """
+
+    selected = ExecutionBackend(backend)
+    if selected is ExecutionBackend.NUMBA:
+        from .aco_numba import solve_numba
+
+        return solve_numba(
+            problem,
+            config,
+            transition_program=transition_program,
+            pheromone_program=pheromone_program,
+            seed=seed,
+        )
+    return _solve_torch(
+        problem,
+        config,
+        transition_program=transition_program,
+        pheromone_program=pheromone_program,
+        seed=seed,
     )

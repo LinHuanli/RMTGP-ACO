@@ -19,6 +19,16 @@ class ACOVariant(StrEnum):
     MMAS = "mmas"
 
 
+class ExecutionBackend(StrEnum):
+    """ACO 数值内核后端。
+
+    ``torch`` 保留为易审计的参考实现；``numba`` 用于正式 CPU 训练。
+    """
+
+    TORCH = "torch"
+    NUMBA = "numba"
+
+
 class TransitionIntegration(StrEnum):
     """GP transition tree 与 ACO desirability 的结合方式。"""
 
@@ -247,8 +257,14 @@ class RuntimeConfig:
     torch_interop_threads: int = 1
     multiprocessing_start_method: str = "spawn"
     deterministic_algorithms: bool = True
+    aco_backend: ExecutionBackend = ExecutionBackend.TORCH
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "aco_backend",
+            ExecutionBackend(self.aco_backend),
+        )
         if self.processes < 1:
             raise ValueError("processes 必须为正整数")
         if self.torch_threads < 1 or self.torch_interop_threads < 1:
@@ -279,12 +295,14 @@ class ExperimentConfig:
         for name in ("transition_terminals", "pheromone_terminals"):
             if gp_values[name] is not None:
                 gp_values[name] = list(gp_values[name])
+        runtime_values = asdict(self.runtime)
+        runtime_values["aco_backend"] = self.runtime.aco_backend.value
         return {
             "experiment_id": self.experiment_id,
             "root_seed": self.root_seed,
             "aco": self.aco.stable_dict(),
             "gp": gp_values,
-            "runtime": asdict(self.runtime),
+            "runtime": runtime_values,
             "train_scales": list(self.train_scales),
             "validation_scales": list(self.validation_scales),
             "test_scales": list(self.test_scales),

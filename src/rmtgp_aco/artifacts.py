@@ -19,7 +19,7 @@ def _project_version() -> str:
     try:
         return version("rmtgp-aco")
     except PackageNotFoundError:
-        return "0.1.0+uninstalled"
+        return "0.2.0+uninstalled"
 
 
 def _git_output(repository: Path, *arguments: str) -> str | None:
@@ -125,6 +125,26 @@ def finalise_run_artifacts(
     payload["status"] = status
     payload["error"] = error
     _write_run_manifest(Path(output_directory), payload)
+
+
+def resume_run_artifacts(
+    output_directory: str | Path,
+) -> dict[str, Any]:
+    """把本地未完成 run 重新标记为 running，并保留原始 provenance。"""
+
+    target = Path(output_directory)
+    source = target / "manifest.json"
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("run manifest 根对象必须为 mapping")
+    payload = dict(payload)
+    payload["status"] = "running"
+    payload["ended_at"] = None
+    payload["error"] = None
+    payload["resume_count"] = int(payload.get("resume_count", 0)) + 1
+    payload["resumed_at"] = datetime.now(UTC).isoformat()
+    _write_run_manifest(target, payload)
+    return payload
 
 
 def _write_run_manifest(target: Path, payload: dict[str, Any]) -> None:

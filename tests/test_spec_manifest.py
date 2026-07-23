@@ -7,7 +7,7 @@ from rmtgp_aco.manifest import (
     verify_manifest,
 )
 from rmtgp_aco.cli import _apply_runtime_overrides
-from rmtgp_aco.config import TransitionIntegration
+from rmtgp_aco.config import ExecutionBackend, TransitionIntegration
 from rmtgp_aco.sampling import (
     ScaleStratifiedSampler,
     iter_problem_batches,
@@ -25,6 +25,8 @@ def test_repository_protocol_configs_resolve() -> None:
         assert set(spec.data.training_paths()) == {50, 100}
         assert len(spec.data.training_paths()[50]) == 10
         assert spec.data.test["tsplib_le500"].max_scale == 500
+        assert spec.experiment.runtime.aco_backend is ExecutionBackend.NUMBA
+        assert spec.experiment.runtime.processes == 8
 
 
 def test_cli_legacy_profile_keeps_common_budget() -> None:
@@ -99,3 +101,29 @@ def test_scale_sampler_uses_without_replacement_stream(tmp_path) -> None:
         )
     )
     assert sum(batch.batch_size for batch in batches) == 3
+
+
+def test_scale_sampler_state_roundtrip(tmp_path) -> None:
+    path = tmp_path / "scale4.txt"
+    path.write_text("\n".join([SQUARE] * 4) + "\n", encoding="utf-8")
+    pools = pools_from_paths({4: [path]})
+    first = ScaleStratifiedSampler(
+        pools,
+        root_seed=17,
+        candidate_size=2,
+        instances_per_scale=1,
+    )
+    first.cases_for_generation(1)
+    state = first.state_dict()
+    expected = first.cases_for_generation(2)[0]
+
+    restored = ScaleStratifiedSampler(
+        pools,
+        root_seed=17,
+        candidate_size=2,
+        instances_per_scale=1,
+    )
+    restored.load_state_dict(state)
+    actual = restored.cases_for_generation(2)[0]
+    assert actual.batch.instance_ids == expected.batch.instance_ids
+    assert actual.seed == expected.seed

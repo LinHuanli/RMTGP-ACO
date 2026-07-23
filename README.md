@@ -32,6 +32,10 @@ python -m pytest
 python -m rmtgp_aco --help
 ```
 
+集群正式环境使用 `constraints-py312.txt` 固定 NumPy/Numba/llvmlite
+兼容组合。正式 Protocol A 配置使用 Numba float64 CPU 后端；首次运行会
+预编译内核，JIT warm-up 不计入逐代用时。
+
 仓库中的 `references/ACOTSP-1.03` 是算法语义参考，保留其原始许可证。
 
 ## 主要入口
@@ -53,7 +57,15 @@ python -m rmtgp_aco train \
   --config configs/as_protocol_a.yaml \
   --method-profile rmtgp \
   --root-seed 1001 \
-  --processes 4
+  --processes 8
+```
+
+训练在每代后原子写入 `training_state.pkl`。中断后使用完全相同配置恢复：
+
+```bash
+python -m rmtgp_aco train \
+  --config configs/as_protocol_a.yaml \
+  --resume runs/protocol-a-as-rmtgp/seed-1001
 ```
 
 `--method-profile` 也可取 `tr-rgp`、`ph-rgp`、`matched-replace` 或

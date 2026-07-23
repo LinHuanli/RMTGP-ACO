@@ -57,3 +57,7 @@ F0/F1 与 terminal ablation 可分别通过 `gp.function_profile`、
 
 `development_acs_tsp50.yaml` 是较完整但仍属探索性的 CPU pilot，用于确认
 GP 是否存在可学习信号；它只训练 TSP50，不能替代 Protocol A 的正式结果。
+
+三个 `*_protocol_a.yaml` 正式配置固定使用 Numba float64 CPU 后端、8 个
+单线程 worker。PyTorch 后端保留为语义参考，可用 CLI `--backend torch`
+显式覆盖，但覆盖后的结果必须作为不同执行后端单独记录。

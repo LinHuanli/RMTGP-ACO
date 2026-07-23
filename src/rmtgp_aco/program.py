@@ -265,6 +265,7 @@ class TensorProgram:
     instructions: tuple[Instruction, ...]
     role: str
     expression: str
+    required_terminals: frozenset[str]
 
     @property
     def is_exact_zero(self) -> bool:
@@ -280,14 +281,16 @@ class TensorProgram:
         self,
         context: Mapping[str, torch.Tensor],
         *,
+        template: torch.Tensor | None = None,
         epsilon_division: float = 1e-6,
         clip_value: float = 10.0,
     ) -> torch.Tensor:
         """执行程序，并在每个 primitive 后进行 finite/clip 保护。"""
 
-        if not context:
-            raise ValueError("context 不能为空")
-        template = next(iter(context.values()))
+        if template is None:
+            if not context:
+                raise ValueError("常数 program 需要显式 template")
+            template = next(iter(context.values()))
         stack: list[torch.Tensor] = []
 
         def sanitize(value: torch.Tensor) -> torch.Tensor:
@@ -400,6 +403,11 @@ def compile_tree(tree: gp.PrimitiveTree, *, role: str) -> TensorProgram:
         instructions=tuple(instructions),
         role=role,
         expression=str(tree),
+        required_terminals=frozenset(
+            str(instruction.argument)
+            for instruction in instructions
+            if instruction.opcode == "TERMINAL"
+        ),
     )
 
 

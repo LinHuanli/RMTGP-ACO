@@ -10,8 +10,16 @@ from pathlib import Path
 import sys
 import traceback
 
-from .artifacts import finalise_run_artifacts, initialise_run_artifacts
-from .config import PheromoneIntegration, TransitionIntegration
+from .artifacts import (
+    finalise_run_artifacts,
+    initialise_run_artifacts,
+    resume_run_artifacts,
+)
+from .config import (
+    ExecutionBackend,
+    PheromoneIntegration,
+    TransitionIntegration,
+)
 from .evaluation import (
     compile_champion,
     evaluate_batches,
@@ -60,6 +68,15 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
         experiment = replace(
             experiment,
             runtime=replace(experiment.runtime, processes=processes),
+        )
+    backend = getattr(args, "backend", None)
+    if backend is not None:
+        experiment = replace(
+            experiment,
+            runtime=replace(
+                experiment.runtime,
+                aco_backend=ExecutionBackend(backend),
+            ),
         )
     method = getattr(args, "method_profile", None)
     if method and method != "rmtgp":
@@ -240,18 +257,26 @@ def _command_train(args: argparse.Namespace) -> int:
         dtype=spec.experiment.aco.dtype,
         device=spec.experiment.aco.device,
     )
-    output = (
-        Path(args.output)
-        if args.output
-        else Path("runs")
-        / spec.experiment.experiment_id
-        / f"seed-{spec.experiment.root_seed}"
-    )
-    artifact_payload = initialise_run_artifacts(
-        output,
-        spec.experiment,
-        repository=_repository_root(),
-        data_manifest=args.manifest,
+    if args.resume and not args.output:
+        resume_path = Path(args.resume)
+        output = resume_path if resume_path.is_dir() else resume_path.parent
+    else:
+        output = (
+            Path(args.output)
+            if args.output
+            else Path("runs")
+            / spec.experiment.experiment_id
+            / f"seed-{spec.experiment.root_seed}"
+        )
+    artifact_payload = (
+        resume_run_artifacts(output)
+        if args.resume
+        else initialise_run_artifacts(
+            output,
+            spec.experiment,
+            repository=_repository_root(),
+            data_manifest=args.manifest,
+        )
     )
     try:
         result = train(
@@ -259,13 +284,18 @@ def _command_train(args: argparse.Namespace) -> int:
             sampler.cases_for_generation,
             validation_cases,
             output_directory=output,
+            resume_from=args.resume,
             progress_callback=lambda record: print(
                 (
                     f"generation={record.generation:03d} "
                     f"unique={record.evaluated_unique:03d} "
                     f"min={record.minimum:.6f} "
+                    f"median={record.median:.6f} "
                     f"mean={record.mean:.6f} "
-                    f"nodes={record.best_nodes}"
+                    f"nodes={record.best_nodes} "
+                    f"time={record.generation_wall_time:.2f}s "
+                    f"eta={record.eta_seconds / 60.0:.1f}min "
+                    f"delta={record.best_mean_delta_by_scale}"
                 ),
                 flush=True,
             ),
@@ -324,6 +354,7 @@ def _command_evaluate(args: argparse.Namespace) -> int:
         seeds_per_batch=args.seeds,
         transition_program=transition,
         pheromone_program=pheromone,
+        backend=spec.experiment.runtime.aco_backend,
     )
     target = write_records(records, args.output)
     print(f"评测完成：{len(records)} 条记录 -> {target}")
@@ -414,6 +445,14 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--root-seed", type=int)
     train_parser.add_argument("--processes", type=int)
     train_parser.add_argument(
+        "--backend",
+        choices=[backend.value for backend in ExecutionBackend],
+    )
+    train_parser.add_argument(
+        "--resume",
+        help="run 目录或 training_state.pkl；配置必须与 checkpoint 完全一致",
+    )
+    train_parser.add_argument(
         "--method-profile",
         choices=["rmtgp", "tr-rgp", "ph-rgp", "matched-replace", "legacy"],
         default="rmtgp",
@@ -436,6 +475,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--skip-manifest-check", action="store_true")
     evaluate.add_argument("--root-seed", type=int)
     evaluate.add_argument("--processes", type=int)
+    evaluate.add_argument(
+        "--backend",
+        choices=[backend.value for backend in ExecutionBackend],
+    )
     evaluate.set_defaults(handler=_command_evaluate)
 
     summarize = subparsers.add_parser("summarize", help="统计检验与论文指标汇总")

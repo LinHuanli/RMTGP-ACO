@@ -151,6 +151,47 @@ class ScaleStratifiedSampler:
         self._positions = {scale: 0 for scale in self.pools}
         self._next_generation = 1
 
+    def state_dict(self) -> dict[str, object]:
+        """返回可 pickle 的精确采样状态，用于逐代断点恢复。"""
+
+        return {
+            "root_seed": self.root_seed,
+            "scales": tuple(self.pools),
+            "rng_states": {
+                scale: rng.bit_generator.state
+                for scale, rng in self._rngs.items()
+            },
+            "orders": {
+                scale: order.copy()
+                for scale, order in self._orders.items()
+            },
+            "positions": dict(self._positions),
+            "next_generation": self._next_generation,
+        }
+
+    def load_state_dict(self, state: Mapping[str, object]) -> None:
+        """恢复由 :meth:`state_dict` 生成的状态并校验数据池身份。"""
+
+        if int(state["root_seed"]) != self.root_seed:
+            raise ValueError("sampler checkpoint 的 root_seed 与当前配置不一致")
+        if tuple(state["scales"]) != tuple(self.pools):
+            raise ValueError("sampler checkpoint 的 scales 与当前数据池不一致")
+        rng_states = state["rng_states"]
+        orders = state["orders"]
+        positions = state["positions"]
+        if not isinstance(rng_states, Mapping):
+            raise TypeError("sampler rng_states 必须为 mapping")
+        if not isinstance(orders, Mapping) or not isinstance(positions, Mapping):
+            raise TypeError("sampler orders/positions 必须为 mapping")
+        for scale in self.pools:
+            self._rngs[scale].bit_generator.state = rng_states[scale]
+            restored = np.asarray(orders[scale], dtype=np.int64)
+            if restored.shape != self._orders[scale].shape:
+                raise ValueError(f"scale={scale} sampler order shape 不一致")
+            self._orders[scale] = restored.copy()
+            self._positions[scale] = int(positions[scale])
+        self._next_generation = int(state["next_generation"])
+
     def _draw_without_replacement(self, scale: int, count: int) -> np.ndarray:
         """跨 generation 维护无放回索引流；一轮耗尽后再独立洗牌。"""
 

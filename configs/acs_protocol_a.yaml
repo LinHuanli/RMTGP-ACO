@@ -36,11 +36,12 @@ gp:
   train_pheromone: true
 
 runtime:
-  processes: 4
+  processes: 8
   torch_threads: 1
   torch_interop_threads: 1
   multiprocessing_start_method: spawn
   deterministic_algorithms: true
+  aco_backend: numba
 
 data:
   root: Datasets/TSP

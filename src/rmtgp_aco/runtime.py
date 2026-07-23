@@ -18,6 +18,7 @@ def configure_runtime(config: RuntimeConfig) -> dict[str, int | bool | str]:
 
     os.environ["OMP_NUM_THREADS"] = str(config.torch_threads)
     os.environ["MKL_NUM_THREADS"] = str(config.torch_threads)
+    os.environ["NUMBA_NUM_THREADS"] = "1"
     torch.set_num_threads(config.torch_threads)
     current_interop = torch.get_num_interop_threads()
     if current_interop != config.torch_interop_threads:
@@ -38,6 +39,7 @@ def runtime_state(config: RuntimeConfig) -> dict[str, int | bool | str]:
 
     return {
         "processes": config.processes,
+        "aco_backend": config.aco_backend.value,
         "torch_threads": torch.get_num_threads(),
         "torch_interop_threads": torch.get_num_interop_threads(),
         "multiprocessing_start_method": config.multiprocessing_start_method,

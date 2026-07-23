@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
 import torch
 import yaml
 
@@ -90,3 +91,70 @@ def test_tiny_training_run_is_reproducible(tmp_path) -> None:
         (output / "config.yaml").read_text(encoding="utf-8")
     )
     assert loaded_config["experiment_id"] == "tiny"
+
+
+def test_training_resume_matches_uninterrupted_evolution(tmp_path) -> None:
+    cases = in_memory_cases(
+        {5: [make_instance(5, 7), make_instance(5, 8)]},
+        seed=300,
+        candidate_size=2,
+    )
+    gp = GPConfig(
+        population_size=6,
+        generations=3,
+        elite_size=1,
+        tournament_size=2,
+        initial_min_depth=1,
+        initial_max_depth=2,
+        max_depth=3,
+        checkpoint_interval=1,
+        checkpoint_top_k=2,
+    )
+    experiment = ExperimentConfig(
+        experiment_id="resume-tiny",
+        root_seed=123,
+        aco=replace(
+            ACOConfig.acotsp_default("as", iterations=2),
+            ants=3,
+            candidate_size=2,
+        ),
+        gp=gp,
+        train_scales=(5,),
+        validation_scales=(5,),
+        test_scales=(5,),
+    )
+    uninterrupted = train(
+        experiment,
+        lambda _generation: cases,
+        cases,
+    )
+
+    run_directory = tmp_path / "interrupted"
+
+    def interrupt_after_first(record) -> None:
+        if record.generation == 1:
+            raise RuntimeError("simulated interruption")
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        train(
+            experiment,
+            lambda _generation: cases,
+            cases,
+            output_directory=run_directory,
+            progress_callback=interrupt_after_first,
+        )
+    resumed = train(
+        experiment,
+        lambda _generation: cases,
+        cases,
+        output_directory=run_directory,
+        resume_from=run_directory,
+    )
+    assert [
+        (record.minimum, record.mean, record.best_hash)
+        for record in resumed.history
+    ] == [
+        (record.minimum, record.mean, record.best_hash)
+        for record in uninterrupted.history
+    ]
+    assert resumed.champion.structural_hash == uninterrupted.champion.structural_hash

@@ -1,19 +1,22 @@
-"""RMTGP 的 fitness、训练循环、validation selection 与 artifacts。"""
+"""RMTGP fitness、持久并行训练、断点恢复与 validation selection。"""
 
 from __future__ import annotations
 
-from copy import deepcopy
 from concurrent.futures import ProcessPoolExecutor
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 import json
 import multiprocessing as mp
+import os
 from pathlib import Path
 import pickle
 import platform
 import random
 from statistics import fmean
-from typing import Callable, Iterable, Sequence
+from time import perf_counter, sleep
+from typing import Callable, Iterable, Sequence, TypeVar
 
 from deap import tools
 import numpy as np
@@ -21,7 +24,7 @@ import torch
 import yaml
 
 from .aco import solve
-from .config import ExperimentConfig
+from .config import ExecutionBackend, ExperimentConfig
 from .genetic import (
     RMTGPIndividual,
     compile_individual,
@@ -34,8 +37,8 @@ from .sampling import EvaluationCase
 
 
 _WORKER_EXPERIMENT: ExperimentConfig | None = None
-_WORKER_CASES: tuple[EvaluationCase, ...] = ()
-_WORKER_BASELINES: tuple[torch.Tensor, ...] = ()
+_CHECKPOINT_SCHEMA_VERSION = 1
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,16 +51,73 @@ class FitnessBreakdown:
 
 
 @dataclass(slots=True)
+class PopulationEvaluationResult:
+    """一代 population evaluation 的结果和分阶段耗时。"""
+
+    evaluated_unique: int
+    breakdowns: dict[str, FitnessBreakdown]
+    baseline_wall_time: float
+    evaluation_wall_time: float
+
+
+@dataclass(slots=True)
 class GenerationRecord:
-    """一代 GP 的汇总统计。"""
+    """一代 GP 的质量、复杂度和墙钟时间统计。"""
 
     generation: int
     evaluated_unique: int
+    unique_genotypes: int
     minimum: float
+    first_quartile: float
+    median: float
     mean: float
+    third_quartile: float
     standard_deviation: float
     best_nodes: int
+    best_transition_nodes: int
+    best_pheromone_nodes: int
     best_hash: str
+    best_transition_expression: str
+    best_pheromone_expression: str
+    best_mean_delta_by_scale: dict[int, float]
+    best_degradation_by_scale: dict[int, float]
+    baseline_wall_time: float
+    evaluation_wall_time: float
+    breeding_wall_time: float
+    checkpoint_wall_time: float
+    generation_wall_time: float
+    cumulative_wall_time: float
+    unique_individuals_per_second: float
+    eta_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationScaleSummary:
+    """锁定候选在一个规模上的 paired validation 汇总。"""
+
+    scale: int
+    observations: int
+    mean_delta_pp: float
+    median_delta_pp: float
+    bootstrap_ci_low: float
+    bootstrap_ci_high: float
+    normal_upper_bound_95: float
+    wins: int
+    ties: int
+    losses: int
+
+
+@dataclass(slots=True)
+class ValidationSelection:
+    """validation 模型选择、门控和候选审计信息。"""
+
+    champion: RMTGPIndividual
+    passed_noninferiority: bool
+    selected_candidate_hash: str
+    selected_macro_delta_pp: float
+    unique_candidates: int
+    wall_time_sec: float
+    scales: list[ValidationScaleSummary]
 
 
 @dataclass(slots=True)
@@ -68,29 +128,60 @@ class TrainingResult:
     history: list[GenerationRecord]
     checkpoints: list[RMTGPIndividual]
     passed_noninferiority: bool
+    validation: ValidationSelection
     output_directory: Path | None = None
 
 
 class BaselineCache:
-    """按配置、实例 IDs 和 seed 缓存原始 ACO 结果。"""
+    """按配置、后端、实例 IDs 和 seed 缓存原始 ACO 结果。"""
 
     def __init__(self) -> None:
         self._values: dict[tuple[object, ...], torch.Tensor] = {}
+
+    @staticmethod
+    def key(
+        case: EvaluationCase,
+        experiment: ExperimentConfig,
+    ) -> tuple[object, ...]:
+        return (
+            experiment.aco.config_hash,
+            experiment.runtime.aco_backend.value,
+            tuple(case.batch.instance_ids),
+            case.seed,
+        )
+
+    def get_cpu(
+        self,
+        case: EvaluationCase,
+        experiment: ExperimentConfig,
+    ) -> torch.Tensor | None:
+        return self._values.get(self.key(case, experiment))
+
+    def put(
+        self,
+        case: EvaluationCase,
+        experiment: ExperimentConfig,
+        value: torch.Tensor,
+    ) -> None:
+        self._values[self.key(case, experiment)] = value.detach().cpu()
 
     def best_length(
         self,
         case: EvaluationCase,
         experiment: ExperimentConfig,
     ) -> torch.Tensor:
-        key = (
-            experiment.aco.config_hash,
-            tuple(case.batch.instance_ids),
-            case.seed,
-        )
-        if key not in self._values:
-            result = solve(case.batch, experiment.aco, seed=case.seed)
-            self._values[key] = result.best_length.detach().cpu()
-        return self._values[key].to(case.batch.device)
+        value = self.get_cpu(case, experiment)
+        if value is None:
+            result = solve(
+                case.batch,
+                experiment.aco,
+                seed=case.seed,
+                backend=experiment.runtime.aco_backend,
+            )
+            self.put(case, experiment, result.best_length)
+            value = self.get_cpu(case, experiment)
+            assert value is not None
+        return value.to(case.batch.device)
 
 
 def baseline_relative_fitness(
@@ -100,12 +191,11 @@ def baseline_relative_fitness(
     *,
     degradation_penalty: float,
 ) -> FitnessBreakdown:
-    """实现文档定义的 scale-balanced、退化惩罚 fitness。"""
+    """实现 scale-balanced、退化惩罚 fitness。"""
 
     mean_delta: dict[int, float] = {}
     degradation: dict[int, float] = {}
     terms: list[float] = []
-
     for scale in sorted(candidate_lengths):
         candidate = torch.cat(candidate_lengths[scale])
         baseline = torch.cat(baseline_lengths[scale])
@@ -116,7 +206,6 @@ def baseline_relative_fitness(
         mean_delta[scale] = scale_mean
         degradation[scale] = scale_degradation
         terms.append(scale_mean + degradation_penalty * scale_degradation)
-
     return FitnessBreakdown(
         fitness=fmean(terms),
         mean_delta_by_scale=mean_delta,
@@ -125,7 +214,7 @@ def baseline_relative_fitness(
 
 
 class IndividualEvaluator:
-    """把双树编译、嵌入 ACO 并计算 paired fitness。"""
+    """单进程便利 evaluator；正式训练使用持久 ``EvaluationPool``。"""
 
     def __init__(
         self,
@@ -139,30 +228,15 @@ class IndividualEvaluator:
         self.last_breakdown: dict[str, FitnessBreakdown] = {}
 
     def __call__(self, individual: RMTGPIndividual) -> float:
-        transition, pheromone = compile_individual(individual)
-        candidate: dict[int, list[torch.Tensor]] = {}
-        baseline: dict[int, list[torch.Tensor]] = {}
-        references: dict[int, list[torch.Tensor]] = {}
-
-        for case in self.cases:
-            result = solve(
-                case.batch,
-                self.experiment.aco,
-                transition_program=transition,
-                pheromone_program=pheromone,
-                seed=case.seed,
-            )
-            candidate.setdefault(case.scale, []).append(result.best_length)
-            baseline.setdefault(case.scale, []).append(
-                self.baseline_cache.best_length(case, self.experiment)
-            )
-            references.setdefault(case.scale, []).append(case.batch.reference_length)
-
-        breakdown = baseline_relative_fitness(
-            candidate,
-            baseline,
-            references,
-            degradation_penalty=self.experiment.gp.degradation_penalty,
+        baseline_values = tuple(
+            self.baseline_cache.best_length(case, self.experiment).detach().cpu()
+            for case in self.cases
+        )
+        breakdown = _score_with_explicit_baselines(
+            individual,
+            self.experiment,
+            self.cases,
+            baseline_values,
         )
         self.last_breakdown[individual.structural_hash] = breakdown
         return breakdown.fitness
@@ -173,8 +247,8 @@ def _score_with_explicit_baselines(
     experiment: ExperimentConfig,
     cases: Sequence[EvaluationCase],
     baseline_values: Sequence[torch.Tensor],
-) -> float:
-    """在 worker 内评估个体；baseline 已由主进程按 paired seed 计算。"""
+) -> FitnessBreakdown:
+    """在 worker 内评估个体；baseline 已按 paired seed 明确给出。"""
 
     transition, pheromone = compile_individual(individual)
     candidate: dict[int, list[torch.Tensor]] = {}
@@ -187,6 +261,7 @@ def _score_with_explicit_baselines(
             transition_program=transition,
             pheromone_program=pheromone,
             seed=case.seed,
+            backend=experiment.runtime.aco_backend,
         )
         candidate.setdefault(case.scale, []).append(result.best_length)
         baseline.setdefault(case.scale, []).append(
@@ -198,37 +273,354 @@ def _score_with_explicit_baselines(
         baseline,
         references,
         degradation_penalty=experiment.gp.degradation_penalty,
-    ).fitness
+    )
 
 
-def _initialise_evaluation_worker(
+def _validation_arrays_with_explicit_baselines(
+    individual: RMTGPIndividual,
     experiment: ExperimentConfig,
-    cases: tuple[EvaluationCase, ...],
-    baseline_values: tuple[torch.Tensor, ...],
-) -> None:
-    """初始化一个 GP 个体评估进程，控制内部 PyTorch 线程数。"""
+    cases: Sequence[EvaluationCase],
+    baseline_values: Sequence[torch.Tensor],
+) -> dict[int, np.ndarray]:
+    transition, pheromone = compile_individual(individual)
+    deltas: dict[int, list[np.ndarray]] = {}
+    for case, baseline in zip(cases, baseline_values, strict=True):
+        result = solve(
+            case.batch,
+            experiment.aco,
+            transition_program=transition,
+            pheromone_program=pheromone,
+            seed=case.seed,
+            backend=experiment.runtime.aco_backend,
+        )
+        delta = (
+            100.0
+            * (result.best_length - baseline.to(case.batch.device))
+            / case.batch.reference_length
+        )
+        deltas.setdefault(case.scale, []).append(delta.detach().cpu().numpy())
+    return {
+        scale: np.concatenate(values)
+        for scale, values in deltas.items()
+    }
 
-    global _WORKER_EXPERIMENT, _WORKER_CASES, _WORKER_BASELINES
+
+def _initialise_evaluation_worker(experiment: ExperimentConfig) -> None:
+    """初始化持久 worker，并禁止任何内层线程超额订阅。"""
+
+    global _WORKER_EXPERIMENT
     _WORKER_EXPERIMENT = experiment
-    _WORKER_CASES = cases
-    _WORKER_BASELINES = baseline_values
+    os.environ["OMP_NUM_THREADS"] = str(experiment.runtime.torch_threads)
+    os.environ["MKL_NUM_THREADS"] = str(experiment.runtime.torch_threads)
+    os.environ["NUMBA_NUM_THREADS"] = "1"
     torch.set_num_threads(experiment.runtime.torch_threads)
     torch.use_deterministic_algorithms(
         experiment.runtime.deterministic_algorithms
     )
 
 
-def _score_in_worker(individual: RMTGPIndividual) -> float:
-    """ProcessPoolExecutor 的顶层可 pickle worker 函数。"""
+def _score_chunk_in_worker(
+    payload: tuple[
+        tuple[RMTGPIndividual, ...],
+        tuple[EvaluationCase, ...],
+        tuple[torch.Tensor, ...],
+    ],
+) -> list[FitnessBreakdown]:
+    if _WORKER_EXPERIMENT is None:
+        raise RuntimeError("评估 worker 尚未初始化")
+    individuals, cases, baseline_values = payload
+    return [
+        _score_with_explicit_baselines(
+            individual,
+            _WORKER_EXPERIMENT,
+            cases,
+            baseline_values,
+        )
+        for individual in individuals
+    ]
+
+
+def _baseline_chunk_in_worker(
+    cases: tuple[EvaluationCase, ...],
+) -> list[torch.Tensor]:
+    if _WORKER_EXPERIMENT is None:
+        raise RuntimeError("评估 worker 尚未初始化")
+    return [
+        solve(
+            case.batch,
+            _WORKER_EXPERIMENT.aco,
+            seed=case.seed,
+            backend=_WORKER_EXPERIMENT.runtime.aco_backend,
+        ).best_length.detach().cpu()
+        for case in cases
+    ]
+
+
+def _validation_chunk_in_worker(
+    payload: tuple[
+        tuple[RMTGPIndividual, ...],
+        tuple[EvaluationCase, ...],
+        tuple[torch.Tensor, ...],
+    ],
+) -> list[tuple[str, dict[int, np.ndarray]]]:
+    if _WORKER_EXPERIMENT is None:
+        raise RuntimeError("评估 worker 尚未初始化")
+    individuals, cases, baseline_values = payload
+    return [
+        (
+            individual.structural_hash,
+            _validation_arrays_with_explicit_baselines(
+                individual,
+                _WORKER_EXPERIMENT,
+                cases,
+                baseline_values,
+            ),
+        )
+        for individual in individuals
+    ]
+
+
+def _warm_worker(case: EvaluationCase) -> int:
+    """触发 worker 的 Numba cache load，并返回 PID 供覆盖审计。"""
 
     if _WORKER_EXPERIMENT is None:
         raise RuntimeError("评估 worker 尚未初始化")
-    return _score_with_explicit_baselines(
-        individual,
-        _WORKER_EXPERIMENT,
-        _WORKER_CASES,
-        _WORKER_BASELINES,
+    solve(
+        case.batch,
+        _WORKER_EXPERIMENT.aco,
+        seed=case.seed,
+        backend=_WORKER_EXPERIMENT.runtime.aco_backend,
     )
+    # 给 executor 足够时间启动全部 worker，避免一个进程吞掉全部 warm tasks。
+    sleep(0.02)
+    return os.getpid()
+
+
+def _chunked(
+    items: Sequence[_T],
+    chunks: int,
+) -> list[tuple[_T, ...]]:
+    if not items:
+        return []
+    count = min(max(chunks, 1), len(items))
+    chunk_size = (len(items) + count - 1) // count
+    return [
+        tuple(items[start : start + chunk_size])
+        for start in range(0, len(items), chunk_size)
+    ]
+
+
+class EvaluationPool:
+    """跨 generations 复用的确定性个体层进程池。"""
+
+    def __init__(self, experiment: ExperimentConfig) -> None:
+        self.experiment = experiment
+        self.executor: ProcessPoolExecutor | None = None
+
+    def __enter__(self) -> "EvaluationPool":
+        if self.experiment.runtime.processes > 1:
+            if self.experiment.aco.device != "cpu":
+                raise ValueError("多进程评估仅支持 CPU ACO")
+            context = mp.get_context(
+                self.experiment.runtime.multiprocessing_start_method
+            )
+            self.executor = ProcessPoolExecutor(
+                max_workers=self.experiment.runtime.processes,
+                mp_context=context,
+                initializer=_initialise_evaluation_worker,
+                initargs=(self.experiment,),
+            )
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self.executor is not None:
+            self.executor.shutdown(wait=True, cancel_futures=False)
+            self.executor = None
+
+    def warm(self, case: EvaluationCase) -> set[int]:
+        """在正式计时前加载每个 worker 的已编译 Numba cache。"""
+
+        if (
+            self.executor is None
+            or self.experiment.runtime.aco_backend is not ExecutionBackend.NUMBA
+        ):
+            return set()
+        expected = self.experiment.runtime.processes
+        seen: set[int] = set()
+        for _ in range(4):
+            futures = [
+                self.executor.submit(_warm_worker, case)
+                for _ in range(expected * 2)
+            ]
+            seen.update(future.result() for future in futures)
+            if len(seen) >= expected:
+                break
+        return seen
+
+    def baseline_values(
+        self,
+        cases: Sequence[EvaluationCase],
+        cache: BaselineCache,
+        *,
+        parallel: bool,
+    ) -> tuple[torch.Tensor, ...]:
+        missing = [
+            case
+            for case in cases
+            if cache.get_cpu(case, self.experiment) is None
+        ]
+        if missing:
+            if self.executor is not None and parallel:
+                case_chunks = _chunked(
+                    missing,
+                    self.experiment.runtime.processes,
+                )
+                chunk_results = list(
+                    self.executor.map(
+                        _baseline_chunk_in_worker,
+                        case_chunks,
+                        chunksize=1,
+                    )
+                )
+                values = [
+                    value
+                    for chunk in chunk_results
+                    for value in chunk
+                ]
+            else:
+                values = [
+                    solve(
+                        case.batch,
+                        self.experiment.aco,
+                        seed=case.seed,
+                        backend=self.experiment.runtime.aco_backend,
+                    ).best_length.detach().cpu()
+                    for case in missing
+                ]
+            for case, value in zip(missing, values, strict=True):
+                cache.put(case, self.experiment, value)
+        result: list[torch.Tensor] = []
+        for case in cases:
+            value = cache.get_cpu(case, self.experiment)
+            assert value is not None
+            result.append(value)
+        return tuple(result)
+
+    def evaluate_population(
+        self,
+        population: Sequence[RMTGPIndividual],
+        cases: Sequence[EvaluationCase],
+        baseline_cache: BaselineCache,
+    ) -> PopulationEvaluationResult:
+        representatives: dict[str, RMTGPIndividual] = {}
+        waiting: dict[str, list[RMTGPIndividual]] = {}
+        for individual in population:
+            if individual.fitness.valid:
+                continue
+            key = individual.structural_hash
+            representatives.setdefault(key, individual)
+            waiting.setdefault(key, []).append(individual)
+        if not representatives:
+            return PopulationEvaluationResult(0, {}, 0.0, 0.0)
+
+        baseline_started = perf_counter()
+        baseline_values = self.baseline_values(
+            cases,
+            baseline_cache,
+            parallel=False,
+        )
+        baseline_elapsed = perf_counter() - baseline_started
+        ordered_keys = list(representatives)
+        individuals = [representatives[key] for key in ordered_keys]
+
+        evaluation_started = perf_counter()
+        if self.executor is None:
+            breakdowns = [
+                _score_with_explicit_baselines(
+                    individual,
+                    self.experiment,
+                    cases,
+                    baseline_values,
+                )
+                for individual in individuals
+            ]
+        else:
+            individual_chunks = _chunked(
+                individuals,
+                self.experiment.runtime.processes,
+            )
+            payloads = [
+                (chunk, tuple(cases), baseline_values)
+                for chunk in individual_chunks
+            ]
+            chunk_results = list(
+                self.executor.map(
+                    _score_chunk_in_worker,
+                    payloads,
+                    chunksize=1,
+                )
+            )
+            breakdowns = [
+                breakdown
+                for chunk in chunk_results
+                for breakdown in chunk
+            ]
+        evaluation_elapsed = perf_counter() - evaluation_started
+
+        by_hash: dict[str, FitnessBreakdown] = {}
+        for key, breakdown in zip(ordered_keys, breakdowns, strict=True):
+            by_hash[key] = breakdown
+            for individual in waiting[key]:
+                individual.fitness.values = (float(breakdown.fitness),)
+                individual.metadata["fitness_breakdown"] = breakdown
+        return PopulationEvaluationResult(
+            evaluated_unique=len(ordered_keys),
+            breakdowns=by_hash,
+            baseline_wall_time=baseline_elapsed,
+            evaluation_wall_time=evaluation_elapsed,
+        )
+
+    def validation_arrays(
+        self,
+        candidates: Sequence[RMTGPIndividual],
+        cases: Sequence[EvaluationCase],
+        baseline_cache: BaselineCache,
+    ) -> dict[str, dict[int, np.ndarray]]:
+        baseline_values = self.baseline_values(
+            cases,
+            baseline_cache,
+            parallel=True,
+        )
+        if self.executor is None:
+            return {
+                individual.structural_hash: _validation_arrays_with_explicit_baselines(
+                    individual,
+                    self.experiment,
+                    cases,
+                    baseline_values,
+                )
+                for individual in candidates
+            }
+        candidate_chunks = _chunked(
+            candidates,
+            self.experiment.runtime.processes * 2,
+        )
+        payloads = [
+            (chunk, tuple(cases), baseline_values)
+            for chunk in candidate_chunks
+        ]
+        results = list(
+            self.executor.map(
+                _validation_chunk_in_worker,
+                payloads,
+                chunksize=1,
+            )
+        )
+        return {
+            key: arrays
+            for chunk in results
+            for key, arrays in chunk
+        }
 
 
 def evaluate_invalid_population(
@@ -237,65 +629,36 @@ def evaluate_invalid_population(
     cases: Sequence[EvaluationCase],
     baseline_cache: BaselineCache,
 ) -> int:
-    """按 structural hash 去重，并可在 CPU 上跨进程评估 GP 个体。"""
+    """兼容公共接口；一次性调用仍使用相同的并行实现。"""
 
-    representatives: dict[str, RMTGPIndividual] = {}
-    waiting: dict[str, list[RMTGPIndividual]] = {}
-    for individual in population:
-        if individual.fitness.valid:
-            continue
-        key = individual.structural_hash
-        representatives.setdefault(key, individual)
-        waiting.setdefault(key, []).append(individual)
-    if not representatives:
-        return 0
-
-    ordered_keys = list(representatives)
-    individuals = [representatives[key] for key in ordered_keys]
-    baseline_values = tuple(
-        baseline_cache.best_length(case, experiment).detach().cpu()
-        for case in cases
-    )
-
-    if experiment.runtime.processes == 1:
-        scores = [
-            _score_with_explicit_baselines(
-                individual,
-                experiment,
-                cases,
-                baseline_values,
-            )
-            for individual in individuals
-        ]
-    else:
-        if experiment.aco.device != "cpu":
-            raise ValueError(
-                "CUDA 模式下 processes 必须为 1；请依靠 tensor batch 并行"
-            )
-        context = mp.get_context(
-            experiment.runtime.multiprocessing_start_method
-        )
-        with ProcessPoolExecutor(
-            max_workers=experiment.runtime.processes,
-            mp_context=context,
-            initializer=_initialise_evaluation_worker,
-            initargs=(experiment, tuple(cases), baseline_values),
-        ) as executor:
-            scores = list(executor.map(_score_in_worker, individuals, chunksize=1))
-
-    for key, score in zip(ordered_keys, scores, strict=True):
-        for individual in waiting[key]:
-            individual.fitness.values = (float(score),)
-    return len(ordered_keys)
+    with EvaluationPool(experiment) as evaluator:
+        return evaluator.evaluate_population(
+            population,
+            cases,
+            baseline_cache,
+        ).evaluated_unique
 
 
 def _normal_upper_bound(values: np.ndarray) -> float:
-    """单侧 95% 正态近似上界；单样本时保守返回该值。"""
-
     if values.size <= 1:
         return float(values.mean())
     standard_error = values.std(ddof=1) / np.sqrt(values.size)
     return float(values.mean() + 1.645 * standard_error)
+
+
+def _bootstrap_mean_ci(
+    values: np.ndarray,
+    *,
+    seed: int,
+    replicates: int = 10_000,
+) -> tuple[float, float]:
+    rng = np.random.default_rng(seed)
+    means = np.empty(replicates, dtype=np.float64)
+    for replicate in range(replicates):
+        indices = rng.integers(0, values.size, size=values.size)
+        means[replicate] = values[indices].mean()
+    low, high = np.quantile(means, [0.025, 0.975])
+    return float(low), float(high)
 
 
 def validate_candidates(
@@ -303,50 +666,43 @@ def validate_candidates(
     experiment: ExperimentConfig,
     validation_cases: Sequence[EvaluationCase],
     baseline_cache: BaselineCache,
-) -> tuple[RMTGPIndividual, bool]:
-    """在 validation 上选择 champion 并执行逐规模 non-inferiority gate。"""
+    *,
+    evaluator_pool: EvaluationPool | None = None,
+) -> ValidationSelection:
+    """在固定 validation 上选 champion，并执行逐规模 non-inferiority gate。"""
 
     unique = {
         individual.structural_hash: individual
         for individual in candidates
     }
-    scored: list[tuple[float, int, RMTGPIndividual, dict[int, np.ndarray]]] = []
+    if not unique:
+        raise ValueError("validation candidates 不能为空")
+    started = perf_counter()
+    if evaluator_pool is None:
+        with EvaluationPool(experiment) as temporary:
+            arrays_by_hash = temporary.validation_arrays(
+                list(unique.values()),
+                validation_cases,
+                baseline_cache,
+            )
+    else:
+        arrays_by_hash = evaluator_pool.validation_arrays(
+            list(unique.values()),
+            validation_cases,
+            baseline_cache,
+        )
 
-    for individual in unique.values():
-        transition, pheromone = compile_individual(individual)
-        deltas: dict[int, list[np.ndarray]] = {}
-        for case in validation_cases:
-            result = solve(
-                case.batch,
-                experiment.aco,
-                transition_program=transition,
-                pheromone_program=pheromone,
-                seed=case.seed,
-            )
-            baseline = baseline_cache.best_length(case, experiment)
-            delta = (
-                100.0
-                * (result.best_length - baseline)
-                / case.batch.reference_length
-            )
-            deltas.setdefault(case.scale, []).append(
-                delta.detach().cpu().numpy()
-            )
-        arrays = {
-            scale: np.concatenate(values)
-            for scale, values in deltas.items()
-        }
+    scored: list[
+        tuple[float, int, RMTGPIndividual, dict[int, np.ndarray]]
+    ] = []
+    for key, individual in unique.items():
+        arrays = arrays_by_hash[key]
         macro = fmean(float(values.mean()) for values in arrays.values())
         scored.append((macro, individual.total_nodes, individual, arrays))
-
     scored.sort(key=lambda item: (item[0], item[1]))
     best_macro = scored[0][0]
-    near_ties = [
-        item
-        for item in scored
-        if item[0] <= best_macro + 0.01
-    ]
-    _, _, champion, arrays = min(
+    near_ties = [item for item in scored if item[0] <= best_macro + 0.01]
+    macro, _, selected, arrays = min(
         near_ties,
         key=lambda item: (item[1], item[0]),
     )
@@ -354,56 +710,136 @@ def validate_candidates(
         _normal_upper_bound(values) <= experiment.noninferiority_tolerance
         for values in arrays.values()
     )
-    if passed:
-        return champion.clone(), True
 
-    transition_pset, pheromone_pset = create_primitive_sets(
-        transition_profile=experiment.gp.transition_profile,
-        function_profile=experiment.gp.function_profile,
-        transition_terminals=experiment.gp.transition_terminals,
-        pheromone_terminals=experiment.gp.pheromone_terminals,
+    scale_summaries: list[ValidationScaleSummary] = []
+    for scale, values in sorted(arrays.items()):
+        ci_low, ci_high = _bootstrap_mean_ci(
+            values,
+            seed=int(
+                np.random.default_rng(
+                    np.random.SeedSequence(
+                        [experiment.root_seed, scale, 0x424F4F54]
+                    )
+                ).integers(0, 2**63 - 1)
+            ),
+        )
+        scale_summaries.append(
+            ValidationScaleSummary(
+                scale=scale,
+                observations=int(values.size),
+                mean_delta_pp=float(values.mean()),
+                median_delta_pp=float(np.median(values)),
+                bootstrap_ci_low=ci_low,
+                bootstrap_ci_high=ci_high,
+                normal_upper_bound_95=_normal_upper_bound(values),
+                wins=int(np.sum(values < -1e-12)),
+                ties=int(np.sum(np.abs(values) <= 1e-12)),
+                losses=int(np.sum(values > 1e-12)),
+            )
+        )
+
+    if passed:
+        champion = selected.clone()
+    else:
+        transition_pset, pheromone_pset = create_primitive_sets(
+            transition_profile=experiment.gp.transition_profile,
+            function_profile=experiment.gp.function_profile,
+            transition_terminals=experiment.gp.transition_terminals,
+            pheromone_terminals=experiment.gp.pheromone_terminals,
+        )
+        champion = make_individual(
+            transition_pset,
+            pheromone_pset,
+            experiment.gp,
+            mode="baseline",
+        )
+        champion.fitness.values = (0.0,)
+    return ValidationSelection(
+        champion=champion,
+        passed_noninferiority=passed,
+        selected_candidate_hash=selected.structural_hash,
+        selected_macro_delta_pp=float(macro),
+        unique_candidates=len(unique),
+        wall_time_sec=perf_counter() - started,
+        scales=scale_summaries,
     )
-    baseline = make_individual(
-        transition_pset,
-        pheromone_pset,
-        experiment.gp,
-        mode="baseline",
-    )
-    baseline.fitness.values = (0.0,)
-    return baseline, False
 
 
 def _generation_record(
     generation: int,
     population: Sequence[RMTGPIndividual],
-    evaluated_unique: int,
+    evaluation: PopulationEvaluationResult,
+    *,
+    breeding_wall_time: float,
+    cumulative_wall_time: float,
+    generation_wall_time: float,
+    eta_seconds: float,
 ) -> GenerationRecord:
-    values = np.asarray([item.fitness.values[0] for item in population], dtype=float)
-    best = min(population, key=lambda item: (item.fitness.values[0], item.total_nodes))
+    values = np.asarray(
+        [item.fitness.values[0] for item in population],
+        dtype=float,
+    )
+    best = min(
+        population,
+        key=lambda item: (item.fitness.values[0], item.total_nodes),
+    )
+    breakdown = evaluation.breakdowns.get(best.structural_hash)
+    if breakdown is None:
+        stored = best.metadata.get("fitness_breakdown")
+        if isinstance(stored, FitnessBreakdown):
+            breakdown = stored
     return GenerationRecord(
         generation=generation,
-        evaluated_unique=evaluated_unique,
+        evaluated_unique=evaluation.evaluated_unique,
+        unique_genotypes=len({item.structural_hash for item in population}),
         minimum=float(values.min()),
+        first_quartile=float(np.quantile(values, 0.25)),
+        median=float(np.median(values)),
         mean=float(values.mean()),
+        third_quartile=float(np.quantile(values, 0.75)),
         standard_deviation=float(values.std()),
         best_nodes=best.total_nodes,
+        best_transition_nodes=len(best.transition_tree),
+        best_pheromone_nodes=len(best.pheromone_tree),
         best_hash=best.structural_hash,
+        best_transition_expression=str(best.transition_tree),
+        best_pheromone_expression=str(best.pheromone_tree),
+        best_mean_delta_by_scale=(
+            {} if breakdown is None else dict(breakdown.mean_delta_by_scale)
+        ),
+        best_degradation_by_scale=(
+            {} if breakdown is None else dict(breakdown.degradation_by_scale)
+        ),
+        baseline_wall_time=evaluation.baseline_wall_time,
+        evaluation_wall_time=evaluation.evaluation_wall_time,
+        breeding_wall_time=breeding_wall_time,
+        checkpoint_wall_time=0.0,
+        generation_wall_time=generation_wall_time,
+        cumulative_wall_time=cumulative_wall_time,
+        unique_individuals_per_second=(
+            evaluation.evaluated_unique
+            / max(evaluation.evaluation_wall_time, 1e-12)
+        ),
+        eta_seconds=eta_seconds,
     )
 
 
 def _environment_payload() -> dict[str, object]:
-    """记录足以解释后端差异的基础环境。"""
-
     try:
         import deap
+
         deap_version = deap.__version__
     except AttributeError:
         deap_version = "unknown"
     try:
+        import llvmlite
         import numba
+
         numba_version = numba.__version__
+        llvmlite_version = llvmlite.__version__
     except (ImportError, ModuleNotFoundError):
         numba_version = "unavailable"
+        llvmlite_version = "unavailable"
     return {
         "created_at": datetime.now(UTC).isoformat(),
         "python": platform.python_version(),
@@ -412,6 +848,7 @@ def _environment_payload() -> dict[str, object]:
         "torch": torch.__version__,
         "deap": deap_version,
         "numba": numba_version,
+        "llvmlite": llvmlite_version,
         "cuda_available": torch.cuda.is_available(),
         "cuda_device": (
             torch.cuda.get_device_name(0)
@@ -421,62 +858,222 @@ def _environment_payload() -> dict[str, object]:
     }
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _write_incremental_metrics(
+    history: Sequence[GenerationRecord],
+    target: Path,
+) -> None:
+    payload = [asdict(record) for record in history]
+    _atomic_write_text(
+        target / "training_metrics.json",
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+    _atomic_write_text(
+        target / "training_metrics.jsonl",
+        "".join(
+            json.dumps(record, ensure_ascii=False) + "\n"
+            for record in payload
+        ),
+    )
+
+
+def _experiment_hash(experiment: ExperimentConfig) -> str:
+    payload = json.dumps(
+        experiment.stable_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _sampler_owner(
+    provider: Callable[[int], Sequence[EvaluationCase]],
+) -> object | None:
+    owner = getattr(provider, "__self__", None)
+    if (
+        owner is not None
+        and hasattr(owner, "state_dict")
+        and hasattr(owner, "load_state_dict")
+    ):
+        return owner
+    return None
+
+
+def _save_resume_checkpoint(
+    target: Path,
+    *,
+    experiment: ExperimentConfig,
+    completed_generation: int,
+    population: Sequence[RMTGPIndividual],
+    checkpoints: Sequence[RMTGPIndividual],
+    history: Sequence[GenerationRecord],
+    sampler_owner: object | None,
+) -> None:
+    sampler_state = (
+        sampler_owner.state_dict()  # type: ignore[attr-defined]
+        if sampler_owner is not None
+        else None
+    )
+    payload = {
+        "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+        "experiment_hash": _experiment_hash(experiment),
+        "completed_generation": completed_generation,
+        "population": list(population),
+        "checkpoints": list(checkpoints),
+        "history": list(history),
+        "python_random_state": random.getstate(),
+        "numpy_random_state": np.random.get_state(),
+        "torch_random_state": torch.get_rng_state(),
+        "sampler_state": sampler_state,
+    }
+    temporary = target / "training_state.pkl.tmp"
+    with temporary.open("wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    temporary.replace(target / "training_state.pkl")
+
+
+def _load_resume_checkpoint(
+    resume_from: str | Path,
+    *,
+    experiment: ExperimentConfig,
+    sampler_owner: object | None,
+) -> dict[str, object]:
+    source = Path(resume_from)
+    if source.is_dir():
+        source = source / "training_state.pkl"
+    with source.open("rb") as handle:
+        payload = pickle.load(handle)
+    if not isinstance(payload, dict):
+        raise TypeError("training checkpoint 根对象必须为 dict")
+    if payload.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION:
+        raise ValueError("training checkpoint schema 不兼容")
+    if payload.get("experiment_hash") != _experiment_hash(experiment):
+        raise ValueError("resume 配置与 checkpoint 不一致")
+    sampler_state = payload.get("sampler_state")
+    if sampler_state is not None:
+        if sampler_owner is None:
+            raise ValueError("当前 training case provider 不支持恢复 sampler")
+        sampler_owner.load_state_dict(sampler_state)  # type: ignore[attr-defined]
+    random.setstate(payload["python_random_state"])
+    np.random.set_state(payload["numpy_random_state"])
+    torch.set_rng_state(payload["torch_random_state"])
+    return payload
+
+
+def _evolution_summary(result: TrainingResult) -> str:
+    lines = [
+        "# 训练进化摘要",
+        "",
+        "| 代 | 用时(s) | 累计(s) | 最优 fitness | 均值 | 中位数 | 节点 | 分规模 Δ(pp) |",
+        "|---:|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    for record in result.history:
+        scale_delta = ", ".join(
+            f"TSP{scale}={value:+.4f}"
+            for scale, value in sorted(record.best_mean_delta_by_scale.items())
+        )
+        lines.append(
+            f"| {record.generation} | {record.generation_wall_time:.3f} | "
+            f"{record.cumulative_wall_time:.3f} | {record.minimum:.6f} | "
+            f"{record.mean:.6f} | {record.median:.6f} | {record.best_nodes} | "
+            f"{scale_delta} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Validation",
+            "",
+            f"- 唯一候选数：{result.validation.unique_candidates}",
+            f"- 选中候选 macro Δ：{result.validation.selected_macro_delta_pp:+.6f} pp",
+            (
+                "- Non-inferiority："
+                + ("通过" if result.passed_noninferiority else "失败，部署 baseline fallback")
+            ),
+        ]
+    )
+    for summary in result.validation.scales:
+        lines.append(
+            f"- TSP{summary.scale}: mean={summary.mean_delta_pp:+.6f} pp, "
+            f"95% CI=[{summary.bootstrap_ci_low:+.6f}, "
+            f"{summary.bootstrap_ci_high:+.6f}], "
+            f"W/T/L={summary.wins}/{summary.ties}/{summary.losses}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def save_training_result(
     result: TrainingResult,
     experiment: ExperimentConfig,
     output_directory: str | Path,
 ) -> Path:
-    """保存小型可复现 artifact；大型 tensor checkpoints 由上层策略控制。"""
+    """保存可复现 artifact、validation 统计与全部候选。"""
 
     target = Path(output_directory)
     target.mkdir(parents=True, exist_ok=True)
-    (target / "config.yaml").write_text(
+    _atomic_write_text(
+        target / "config.yaml",
         yaml.safe_dump(
             experiment.stable_dict(),
             allow_unicode=True,
             sort_keys=False,
         ),
-        encoding="utf-8",
     )
-    (target / "environment.json").write_text(
+    _atomic_write_text(
+        target / "environment.json",
         json.dumps(_environment_payload(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
-    history_payload = [asdict(record) for record in result.history]
-    (target / "training_metrics.json").write_text(
-        json.dumps(history_payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    (target / "training_metrics.jsonl").write_text(
-        "".join(
-            json.dumps(record, ensure_ascii=False) + "\n"
-            for record in history_payload
-        ),
-        encoding="utf-8",
-    )
-    (target / "champion_expression.txt").write_text(
+    _write_incremental_metrics(result.history, target)
+    _atomic_write_text(
+        target / "champion_expression.txt",
         (
             f"transition: {result.champion.transition_tree}\n"
             f"pheromone: {result.champion.pheromone_tree}\n"
             f"passed_noninferiority: {result.passed_noninferiority}\n"
+            f"selected_candidate_hash: "
+            f"{result.validation.selected_candidate_hash}\n"
         ),
-        encoding="utf-8",
     )
     with (target / "champion.pkl").open("wb") as handle:
-        pickle.dump(result.champion, handle)
-    (target / "validation_summary.csv").write_text(
+        pickle.dump(result.champion, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    validation_lines = [
         (
-            "champion_hash,total_nodes,passed_noninferiority\n"
-            f"{result.champion.structural_hash},{result.champion.total_nodes},"
+            "scale,observations,mean_delta_pp,median_delta_pp,"
+            "bootstrap_ci_low,bootstrap_ci_high,normal_upper_bound_95,"
+            "wins,ties,losses,passed_noninferiority\n"
+        )
+    ]
+    for summary in result.validation.scales:
+        validation_lines.append(
+            f"{summary.scale},{summary.observations},"
+            f"{summary.mean_delta_pp:.17g},{summary.median_delta_pp:.17g},"
+            f"{summary.bootstrap_ci_low:.17g},{summary.bootstrap_ci_high:.17g},"
+            f"{summary.normal_upper_bound_95:.17g},{summary.wins},"
+            f"{summary.ties},{summary.losses},"
             f"{str(result.passed_noninferiority).lower()}\n"
-        ),
-        encoding="utf-8",
+        )
+    _atomic_write_text(
+        target / "validation_summary.csv",
+        "".join(validation_lines),
     )
+    _atomic_write_text(
+        target / "evolution_summary.md",
+        _evolution_summary(result),
+    )
+
     checkpoint_directory = target / "checkpoints"
     checkpoint_directory.mkdir(exist_ok=True)
     for index, checkpoint in enumerate(result.checkpoints):
-        with (checkpoint_directory / f"candidate_{index:04d}.pkl").open("wb") as handle:
-            pickle.dump(checkpoint, handle)
+        with (checkpoint_directory / f"candidate_{index:04d}.pkl").open(
+            "wb"
+        ) as handle:
+            pickle.dump(checkpoint, handle, protocol=pickle.HIGHEST_PROTOCOL)
     result.output_directory = target
     return target
 
@@ -488,67 +1085,185 @@ def train(
     *,
     output_directory: str | Path | None = None,
     progress_callback: Callable[[GenerationRecord], None] | None = None,
+    resume_from: str | Path | None = None,
 ) -> TrainingResult:
-    """执行一次独立、可复现的 Strongly Typed Multi-Tree GP run。"""
+    """执行可逐代恢复的 Strongly Typed Multi-Tree GP run。"""
 
-    random.seed(experiment.root_seed)
-    np.random.seed(experiment.root_seed % (2**32))
-    torch.manual_seed(experiment.root_seed)
+    target = Path(output_directory) if output_directory is not None else None
+    if target is not None:
+        target.mkdir(parents=True, exist_ok=True)
+    sampler_owner = _sampler_owner(training_cases_for_generation)
 
-    population, transition_pset, pheromone_pset = initialise_population(experiment.gp)
-    baseline_cache = BaselineCache()
-    history: list[GenerationRecord] = []
-    checkpoints: list[RMTGPIndividual] = []
-
-    for generation in range(1, experiment.gp.generations + 1):
-        cases = training_cases_for_generation(generation)
-        # 每代使用不同的 mini-batch。即使是 elite 或 reproduction clone，
-        # 其上一代 fitness 也不再可比，因此必须让整代个体共享当前评估环境。
-        for individual in population:
-            if individual.fitness.valid:
-                del individual.fitness.values
-        evaluated_unique = evaluate_invalid_population(
+    if resume_from is None:
+        random.seed(experiment.root_seed)
+        np.random.seed(experiment.root_seed % (2**32))
+        torch.manual_seed(experiment.root_seed)
+        (
             population,
-            experiment,
-            cases,
-            baseline_cache,
+            transition_pset,
+            pheromone_pset,
+        ) = initialise_population(experiment.gp)
+        history: list[GenerationRecord] = []
+        checkpoints: list[RMTGPIndividual] = []
+        completed_generation = 0
+    else:
+        transition_pset, pheromone_pset = create_primitive_sets(
+            transition_profile=experiment.gp.transition_profile,
+            function_profile=experiment.gp.function_profile,
+            transition_terminals=experiment.gp.transition_terminals,
+            pheromone_terminals=experiment.gp.pheromone_terminals,
         )
-        record = _generation_record(generation, population, evaluated_unique)
-        history.append(record)
-        if progress_callback is not None:
-            progress_callback(record)
+        state = _load_resume_checkpoint(
+            resume_from,
+            experiment=experiment,
+            sampler_owner=sampler_owner,
+        )
+        population = list(state["population"])
+        checkpoints = list(state["checkpoints"])
+        history = list(state["history"])
+        completed_generation = int(state["completed_generation"])
 
-        if generation % experiment.gp.checkpoint_interval == 0:
-            selected = tools.selBest(
+    baseline_cache = BaselineCache()
+    first_generation = completed_generation + 1
+    pending_cases: Sequence[EvaluationCase] | None = None
+    if first_generation <= experiment.gp.generations:
+        pending_cases = training_cases_for_generation(first_generation)
+        warm_case = pending_cases[0]
+    elif validation_cases:
+        warm_case = validation_cases[0]
+    else:
+        raise ValueError("training 与 validation cases 不能同时为空")
+
+    # 主进程先生成 Numba disk cache；随后 worker 只需加载，不计入每代时间。
+    if experiment.runtime.aco_backend is ExecutionBackend.NUMBA:
+        baseline_cache.best_length(warm_case, experiment)
+
+    cumulative = history[-1].cumulative_wall_time if history else 0.0
+    with EvaluationPool(experiment) as evaluator:
+        evaluator.warm(warm_case)
+        for generation in range(
+            first_generation,
+            experiment.gp.generations + 1,
+        ):
+            generation_started = perf_counter()
+            if generation == first_generation:
+                assert pending_cases is not None
+                cases = pending_cases
+            else:
+                cases = training_cases_for_generation(generation)
+
+            for individual in population:
+                if individual.fitness.valid:
+                    del individual.fitness.values
+            evaluation = evaluator.evaluate_population(
                 population,
-                experiment.gp.checkpoint_top_k,
+                cases,
+                baseline_cache,
             )
-            checkpoints.extend(deepcopy(selected))
 
-        if generation < experiment.gp.generations:
-            population = evolve_generation(
+            if generation % experiment.gp.checkpoint_interval == 0:
+                selected = tools.selBest(
+                    population,
+                    experiment.gp.checkpoint_top_k,
+                )
+                checkpoints.extend(deepcopy(selected))
+
+            before_breeding = perf_counter() - generation_started
+            estimated_average = (
+                (cumulative + before_breeding) / generation
+            )
+            record = _generation_record(
+                generation,
                 population,
-                transition_pset,
-                pheromone_pset,
-                experiment.gp,
+                evaluation,
+                breeding_wall_time=0.0,
+                cumulative_wall_time=cumulative + before_breeding,
+                generation_wall_time=before_breeding,
+                eta_seconds=estimated_average
+                * (experiment.gp.generations - generation),
             )
 
-    # 最后一代即使不落在 checkpoint interval，也必须进入候选集合。
-    checkpoints.extend(
-        deepcopy(tools.selBest(population, experiment.gp.checkpoint_top_k))
-    )
-    champion, passed = validate_candidates(
-        checkpoints,
-        experiment,
-        validation_cases,
-        baseline_cache,
-    )
+            breeding_started = perf_counter()
+            if generation < experiment.gp.generations:
+                next_population = evolve_generation(
+                    population,
+                    transition_pset,
+                    pheromone_pset,
+                    experiment.gp,
+                )
+            else:
+                next_population = population
+            breeding_elapsed = perf_counter() - breeding_started
+            record.breeding_wall_time = breeding_elapsed
+            record.generation_wall_time = perf_counter() - generation_started
+            record.cumulative_wall_time = (
+                cumulative + record.generation_wall_time
+            )
+            history.append(record)
+            population = next_population
+
+            if target is not None:
+                checkpoint_started = perf_counter()
+                _save_resume_checkpoint(
+                    target,
+                    experiment=experiment,
+                    completed_generation=generation,
+                    population=population,
+                    checkpoints=checkpoints,
+                    history=history,
+                    sampler_owner=sampler_owner,
+                )
+                checkpoint_elapsed = perf_counter() - checkpoint_started
+                record.checkpoint_wall_time = checkpoint_elapsed
+                record.generation_wall_time = (
+                    perf_counter() - generation_started
+                )
+                record.cumulative_wall_time = (
+                    cumulative + record.generation_wall_time
+                )
+                record.eta_seconds = (
+                    record.cumulative_wall_time
+                    / generation
+                    * (experiment.gp.generations - generation)
+                )
+                # 第二次原子写入使 checkpoint 内的 timing record 也完整。
+                _save_resume_checkpoint(
+                    target,
+                    experiment=experiment,
+                    completed_generation=generation,
+                    population=population,
+                    checkpoints=checkpoints,
+                    history=history,
+                    sampler_owner=sampler_owner,
+                )
+                _write_incremental_metrics(history, target)
+            cumulative = record.cumulative_wall_time
+            if progress_callback is not None:
+                progress_callback(record)
+
+        checkpoints.extend(
+            deepcopy(
+                tools.selBest(
+                    population,
+                    experiment.gp.checkpoint_top_k,
+                )
+            )
+        )
+        validation = validate_candidates(
+            checkpoints,
+            experiment,
+            validation_cases,
+            baseline_cache,
+            evaluator_pool=evaluator,
+        )
+
     result = TrainingResult(
-        champion=champion,
+        champion=validation.champion,
         history=history,
         checkpoints=checkpoints,
-        passed_noninferiority=passed,
+        passed_noninferiority=validation.passed_noninferiority,
+        validation=validation,
     )
-    if output_directory is not None:
-        save_training_result(result, experiment, output_directory)
+    if target is not None:
+        save_training_result(result, experiment, target)
     return result
