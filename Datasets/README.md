@@ -1,22 +1,27 @@
 # 数据快照
 
 原始数据约 15 GB，不进入 Git；本目录只版本化本说明与
-[`manifest.json`](manifest.json)。manifest 对本研究允许使用的 81 个文件
+[`manifest.json`](manifest.json)。manifest 对本研究允许使用的 82 个文件
 记录了实例数、字节数和完整 SHA-256。
 
-正式研究只使用 TSP50、TSP100、TSP500：
+Protocol A 主研究使用 TSP50、TSP100、TSP500；纯 TSP100 三种子扩展实验
+另外登记 TSP1000 uniform 为锁定模型后的 test-only 外推集：
 
 - training：TSP50（10 × 128,000）、TSP100（10 × 128,000）、
   TSP500（4 × 16,000）；
 - validation：TSP50/TSP100 各 1,280，TSP500 为 128；
 - test：TSP50/TSP100 各 1,280，TSP500 的 uniform、cluster、Gaussian
-  各 128，以及 49 个 TSPLIB 实例。
+  各 128，TSP1000 uniform 为 128，以及 49 个 TSPLIB 实例。
 
 其中 TSPLIB 有 42 个实例满足 \(n\le500\)，其余 7 个仅作为额外外推，
 不进入主统计。下列数据被显式排除：
 
 - `tsp100_concorde_7.756 copy.txt`（与原文件逐字节重复）；
-- 所有 TSP200、TSP1K、TSP10K train/test 文件。
+- 所有 TSP200、TSP1K、TSP10K train/validation 文件；
+- TSP200、TSP10K test 文件。
+
+TSP1000 不得用于训练、validation、terminal/function 选择或参数调整，只作为
+预先声明的补充规模外推测试。
 
 快速核验文件状态与每文件首条记录：
 

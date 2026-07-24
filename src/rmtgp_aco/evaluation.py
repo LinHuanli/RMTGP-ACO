@@ -6,6 +6,7 @@ import csv
 import pickle
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,9 @@ class EvaluationRecord:
     bound_clip_count: int
     gp_run_id: str = ""
     gp_root_seed: int = 0
+    baseline_best_iteration: int = -1
+    baseline_anytime_gap_auc: float = float("nan")
+    baseline_tours_per_second: float = float("nan")
 
 
 def load_champion(path: str | Path) -> RMTGPIndividual:
@@ -82,6 +86,33 @@ def _batch_seed(root_seed: int, batch_number: int, replicate: int) -> int:
     return int(rng.integers(0, 2**63 - 1))
 
 
+def study_test_seed(
+    root_seed: int,
+    partition: str,
+    batch_number: int,
+    replicate: int,
+) -> int:
+    """生成与 GP root seed 解耦、跨 champion 共享的测试随机种子。"""
+
+    partition_code = int.from_bytes(
+        sha256(partition.encode("utf-8")).digest()[:4],
+        byteorder="little",
+        signed=False,
+    )
+    rng = np.random.default_rng(
+        np.random.SeedSequence(
+            [
+                root_seed,
+                partition_code,
+                batch_number,
+                replicate,
+                0x54455354,
+            ]
+        )
+    )
+    return int(rng.integers(0, 2**63 - 1))
+
+
 def _record_batch(
     *,
     method: str,
@@ -105,7 +136,15 @@ def _record_batch(
         candidate.anytime_best - reference[:, None]
     ) / reference[:, None]
     anytime_auc = anytime_gap.mean(dim=1)
+    baseline_anytime_gap = 100.0 * (
+        baseline.anytime_best - reference[:, None]
+    ) / reference[:, None]
+    baseline_anytime_auc = baseline_anytime_gap.mean(dim=1)
     throughput = candidate.constructed_tours / max(candidate.wall_time_sec, 1e-12)
+    baseline_throughput = baseline.constructed_tours / max(
+        baseline.wall_time_sec,
+        1e-12,
+    )
     inference_overhead = 100.0 * (
         candidate.wall_time_sec - baseline.wall_time_sec
     ) / max(baseline.wall_time_sec, 1e-12)
@@ -147,7 +186,53 @@ def _record_batch(
             bound_clip_count=candidate.diagnostics.bound_clip_count,
             gp_run_id=gp_run_id,
             gp_root_seed=gp_root_seed,
+            baseline_best_iteration=int(
+                baseline.best_iteration[index].item()
+            ),
+            baseline_anytime_gap_auc=float(
+                baseline_anytime_auc[index].item()
+            ),
+            baseline_tours_per_second=float(baseline_throughput),
         )
+
+
+def records_from_paired_results(
+    *,
+    method: str,
+    champion_id: str,
+    partition: str,
+    distribution: str,
+    batch: ProblemBatch,
+    seed: int,
+    candidate: RunResult,
+    baseline: RunResult,
+    config: ACOConfig,
+    tie_tolerance: float = 1e-12,
+    gp_run_id: str | None = None,
+    gp_root_seed: int = 0,
+) -> list[EvaluationRecord]:
+    """把已计算的 paired 结果展开为长表。
+
+    该入口允许正式 study 在多个 GP champion 之间复用不可变 baseline，
+    避免每次候选测试都重新执行同一组原始 ACO。
+    """
+
+    return list(
+        _record_batch(
+            method=method,
+            champion_id=champion_id,
+            partition=partition,
+            distribution=distribution,
+            batch=batch,
+            seed=seed,
+            candidate=candidate,
+            baseline=baseline,
+            config=config,
+            tie_tolerance=tie_tolerance,
+            gp_run_id=gp_run_id or champion_id,
+            gp_root_seed=gp_root_seed,
+        )
+    )
 
 
 def evaluate_batches(
@@ -224,10 +309,12 @@ def write_records(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [field.name for field in EvaluationRecord.__dataclass_fields__.values()]
-    with target.open("w", encoding="utf-8", newline="") as handle:
+    temporary = target.with_suffix(f"{target.suffix}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(asdict(record) for record in records)
+    temporary.replace(target)
     return target
 
 
@@ -243,6 +330,7 @@ def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
         "uniform_fallback_count",
         "bound_clip_count",
         "gp_root_seed",
+        "baseline_best_iteration",
     }
     float_fields = {
         "best_length",
@@ -256,6 +344,8 @@ def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
         "baseline_wall_time_sec",
         "inference_overhead_percent",
         "tours_per_second",
+        "baseline_anytime_gap_auc",
+        "baseline_tours_per_second",
     }
     records: list[EvaluationRecord] = []
     for path in paths:
@@ -265,6 +355,9 @@ def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
                 # 兼容 v0.2 长表；新结果显式保留 GP run 的配对标识。
                 values.setdefault("gp_run_id", str(values["champion_id"]))
                 values.setdefault("gp_root_seed", "0")
+                values.setdefault("baseline_best_iteration", "-1")
+                values.setdefault("baseline_anytime_gap_auc", "nan")
+                values.setdefault("baseline_tours_per_second", "nan")
                 for name in integer_fields:
                     values[name] = int(values[name])
                 for name in float_fields:

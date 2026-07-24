@@ -129,6 +129,39 @@ python -m rmtgp_aco summarize \
 Holm-Wilcoxon、paired rank-biserial 和 champion–instance–seed 三层
 bootstrap 置信区间。
 
+## 纯 TSP100 单卡三种子 study
+
+`experiments/tsp100_gpu0_3seed/study.yaml` 冻结了当前完整预算 pilot：
+AS、ACS、MMAS 各 3 个 GP seeds，每代 32 个不同 TSP100 instances，
+population 100、50 generations、32 ants、500 ACO iterations。TSP50、
+TSP100、TSP500、TSP1000 只在候选锁定后测试，其中 TSP1000 明确为补充
+外推，不能用于训练、validation、候选选择或 gate。
+
+后台队列只接受物理 GPU0 可见，并逐个执行九个训练 run，避免多个进程争用
+同一卡：
+
+```bash
+mkdir -p runs/tsp100-gpu0-3seed
+nohup env CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 \
+  .venv/bin/python -m rmtgp_aco run-study \
+  --study-config experiments/tsp100_gpu0_3seed/study.yaml \
+  > runs/tsp100-gpu0-3seed/nohup.log 2>&1 &
+```
+
+查看当前任务、训练代数、每代时间与 ETA：
+
+```bash
+.venv/bin/python -m rmtgp_aco study-status \
+  --study-config experiments/tsp100_gpu0_3seed/study.yaml
+```
+
+队列为每个 run 冻结 schedule、预计算 baseline、原子 checkpoint，并在失败
+后从最近完整 generation 恢复。最终测试的随机流由独立 root seed 9001
+生成；三个 GP champions 共享相同的 instance×ACO-seed baseline cache。
+报告位于 `runs/tsp100-gpu0-3seed/report/`，同时区分原始 selected candidate
+与 validation gate 后的 deployed/fallback 行为。3 个 GP seeds 只构成
+pilot，不能作为 30-run 确认性结论。
+
 ## 1--3 代加速短跑
 
 在恢复 50 代正式训练前，使用 `benchmark-training` 按完整单代负载执行
@@ -209,6 +242,8 @@ seeds，再分别要求 TSP50、TSP100 和 pooled 的单侧 95% 上界不超过
 - `baseline.py` / `training.py`：不可变 baseline archive、absolute reference
   gap fitness、staged validation 与 non-inferiority fallback；
 - `evaluation.py` / `stats.py`：锁定模型后的 paired test 和论文统计；
+- `study.py` / `study_report.py`：单 GPU0 可恢复队列、跨 champion baseline
+  test cache、训练/验证曲线与三层统计报告；
 - `manifest.py` / `artifacts.py`：数据哈希、Git/环境/seed provenance。
 
 正式主方法使用 support-preserving transition residual 与 per-source

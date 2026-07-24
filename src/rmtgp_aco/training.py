@@ -38,7 +38,7 @@ from .program import create_primitive_sets
 from .sampling import EvaluationCase
 
 _WORKER_EXPERIMENT: ExperimentConfig | None = None
-_CHECKPOINT_SCHEMA_VERSION = 3
+_CHECKPOINT_SCHEMA_VERSION = 4
 _T = TypeVar("_T")
 
 
@@ -108,6 +108,16 @@ class GenerationRecord:
     constructed_tours: int
     tours_per_second: float
     eta_seconds: float
+    validation_monitor_candidate_gap_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    validation_monitor_baseline_gap_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    validation_monitor_delta_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    validation_monitor_wall_time: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +142,7 @@ class ValidationSelection:
     """validation 模型选择、门控和候选审计信息。"""
 
     champion: RMTGPIndividual
+    selected_candidate: RMTGPIndividual
     backend: ExecutionBackend
     passed_noninferiority: bool
     selected_candidate_hash: str
@@ -1178,6 +1189,7 @@ def validate_candidates(
         champion.fitness.values = (0.0,)
     return ValidationSelection(
         champion=champion,
+        selected_candidate=selected.clone(),
         backend=experiment.runtime.aco_backend,
         passed_noninferiority=passed,
         selected_candidate_hash=selected.structural_hash,
@@ -1344,6 +1356,57 @@ def _write_incremental_metrics(
             json.dumps(record, ensure_ascii=False) + "\n"
             for record in payload
         ),
+    )
+    _write_training_validation_curve(history, target)
+
+
+def _write_training_validation_curve(
+    history: Sequence[GenerationRecord],
+    target: Path,
+) -> None:
+    """写出可直接绘制 train/validation 曲线的逐代长表。"""
+
+    lines = [
+        (
+            "generation,scale,train_candidate_gap_percent,"
+            "train_baseline_gap_percent,train_delta_pp,"
+            "validation_candidate_gap_percent,"
+            "validation_baseline_gap_percent,validation_delta_pp,"
+            "generation_wall_time_sec,validation_monitor_wall_time_sec\n"
+        )
+    ]
+    for record in history:
+        scales = sorted(
+            set(record.best_mean_gap_by_scale)
+            | set(record.validation_monitor_candidate_gap_by_scale)
+        )
+        for scale in scales:
+            values = (
+                record.best_mean_gap_by_scale.get(scale, float("nan")),
+                record.baseline_mean_gap_by_scale.get(scale, float("nan")),
+                record.best_mean_delta_by_scale.get(scale, float("nan")),
+                record.validation_monitor_candidate_gap_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+                record.validation_monitor_baseline_gap_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+                record.validation_monitor_delta_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+            )
+            rendered = ",".join(f"{value:.17g}" for value in values)
+            lines.append(
+                f"{record.generation},{scale},{rendered},"
+                f"{record.generation_wall_time:.17g},"
+                f"{record.validation_monitor_wall_time:.17g}\n"
+            )
+    _atomic_write_text(
+        target / "training_validation_curve.csv",
+        "".join(lines),
     )
 
 
@@ -1600,6 +1663,50 @@ def save_training_result(
     )
     with (target / "champion.pkl").open("wb") as handle:
         pickle.dump(result.champion, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    _atomic_write_text(
+        target / "selected_candidate_expression.txt",
+        (
+            f"transition: {result.validation.selected_candidate.transition_tree}\n"
+            f"pheromone: {result.validation.selected_candidate.pheromone_tree}\n"
+            f"selected_candidate_hash: "
+            f"{result.validation.selected_candidate_hash}\n"
+            f"selection_backend: {result.validation.backend.value}\n"
+            f"selection_passed_noninferiority: "
+            f"{result.validation.passed_noninferiority}\n"
+            f"final_deployed: {result.passed_noninferiority}\n"
+        ),
+    )
+    with (target / "selected_candidate.pkl").open("wb") as handle:
+        pickle.dump(
+            result.validation.selected_candidate,
+            handle,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    _atomic_write_text(
+        target / "deployment_decision.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "selected_candidate_hash": (
+                    result.validation.selected_candidate_hash
+                ),
+                "deployed_champion_hash": result.champion.structural_hash,
+                "selection_backend": result.validation.backend.value,
+                "selection_passed_noninferiority": (
+                    result.validation.passed_noninferiority
+                ),
+                "cpu_fp64_audit_passed": audit_passed,
+                "final_passed_noninferiority": result.passed_noninferiority,
+                "deployed_method": (
+                    "rmtgp-selected"
+                    if result.passed_noninferiority
+                    else "baseline-fallback"
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
 
     _atomic_write_text(
         target / "validation_summary.csv",
@@ -1671,6 +1778,7 @@ def train(
     *,
     validation_screening_cases: Sequence[EvaluationCase] | None = None,
     validation_gate_cases: Sequence[EvaluationCase] | None = None,
+    validation_monitor_cases: Sequence[EvaluationCase] | None = None,
     baseline_archive: BaselineArchive | None = None,
     output_directory: str | Path | None = None,
     progress_callback: Callable[[GenerationRecord], None] | None = None,
@@ -1774,6 +1882,40 @@ def train(
                 eta_seconds=estimated_average
                 * (experiment.gp.generations - generation),
             )
+
+            if validation_monitor_cases:
+                monitor_started = perf_counter()
+                monitor_candidate = min(
+                    population,
+                    key=lambda item: (
+                        item.fitness.values[0],
+                        item.total_nodes,
+                    ),
+                )
+                monitor_data = evaluator.validation_data(
+                    [monitor_candidate],
+                    validation_monitor_cases,
+                    baseline_cache,
+                )[monitor_candidate.structural_hash]
+                record.validation_monitor_candidate_gap_by_scale = {
+                    scale: float(values.mean())
+                    for scale, values in (
+                        monitor_data.candidate_gap_by_scale.items()
+                    )
+                }
+                record.validation_monitor_baseline_gap_by_scale = {
+                    scale: float(values.mean())
+                    for scale, values in (
+                        monitor_data.baseline_gap_by_scale.items()
+                    )
+                }
+                record.validation_monitor_delta_by_scale = {
+                    scale: float(values.mean())
+                    for scale, values in monitor_data.delta_by_scale.items()
+                }
+                record.validation_monitor_wall_time = (
+                    perf_counter() - monitor_started
+                )
 
             breeding_started = perf_counter()
             if generation < experiment.gp.generations:

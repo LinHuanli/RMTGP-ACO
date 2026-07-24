@@ -20,7 +20,8 @@ from .config import (
     TransitionIntegration,
 )
 
-ALLOWED_SCALES = frozenset({50, 100, 500})
+ALLOWED_TRAIN_VALIDATION_SCALES = frozenset({50, 100, 500})
+ALLOWED_TEST_SCALES = frozenset({50, 100, 500, 1000})
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -79,11 +80,14 @@ class DatasetSpec:
 
     def __post_init__(self) -> None:
         for label, mapping in (("train", self.train), ("validation", self.validation)):
-            invalid = set(mapping) - ALLOWED_SCALES
+            invalid = set(mapping) - ALLOWED_TRAIN_VALIDATION_SCALES
             if invalid:
                 raise ValueError(f"{label} 含禁止规模 {sorted(invalid)}；仅允许 50/100/500")
         for name, partition in self.test.items():
-            if partition.scale not in ALLOWED_SCALES and not name.startswith("tsplib"):
+            if (
+                partition.scale not in ALLOWED_TEST_SCALES
+                and not name.startswith("tsplib")
+            ):
                 raise ValueError(
                     f"test partition {name!r} 含禁止规模 {partition.scale}"
                 )

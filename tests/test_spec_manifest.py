@@ -102,13 +102,18 @@ def test_quick_manifest_inventory_and_verification(tmp_path) -> None:
     (train / "tsp50_uniform_128k_1.txt").write_text(SQUARE + "\n", encoding="utf-8")
     (validation / "tsp50_uniform_val.txt").write_text(SQUARE + "\n", encoding="utf-8")
     (test / "tsp50_concorde_5.688.txt").write_text(SQUARE + "\n", encoding="utf-8")
+    (test / "tsp1000_concorde_23.118.txt").write_text(
+        SQUARE + "\n",
+        encoding="utf-8",
+    )
     (test / "tsp100_concorde_7.756 copy.txt").write_text(
         SQUARE + "\n",
         encoding="utf-8",
     )
     manifest = build_manifest(root, full_hashes=False)
-    assert len(manifest.files) == 3
+    assert len(manifest.files) == 4
     assert all("copy" not in record.path for record in manifest.files)
+    assert any("tsp1000_" in record.path for record in manifest.files)
     assert verify_manifest(
         manifest,
         root=root,

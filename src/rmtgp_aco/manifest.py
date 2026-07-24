@@ -66,7 +66,7 @@ def _expected_instances(path: Path, split: str) -> int:
         return 1_280
     if path.parent.name == "tsplib":
         return 1
-    if "tsp500_" in name:
+    if "tsp500_" in name or "tsp1000_" in name:
         return 128
     if "tsp50_" in name or "tsp100_" in name:
         return 1_280
@@ -101,7 +101,11 @@ def _digest_and_count(path: Path) -> tuple[str, int]:
 
 
 def discover_research_files(root: str | Path) -> list[tuple[Path, str, str]]:
-    """仅发现 50/100/500 主研究及 TSPLIB 文件，绝不纳入 TSP200。"""
+    """发现主研究文件及 TSP1000 test-only 外推集。
+
+    TSP1000 只允许作为锁定模型后的测试数据；训练和 validation 的发现范围
+    仍严格限制为 50/100/500，且绝不纳入 TSP200/10K。
+    """
 
     base = Path(root)
     discovered: list[tuple[Path, str, str]] = []
@@ -125,6 +129,7 @@ def discover_research_files(root: str | Path) -> list[tuple[Path, str, str]]:
         "tsp50_concorde_5.688.txt": "uniform",
         "tsp100_concorde_7.756.txt": "uniform",
         "tsp500_concorde_16.546.txt": "uniform",
+        "tsp1000_concorde_23.118.txt": "uniform",
         "tsp500_cluster_10.723.txt": "cluster",
         "tsp500_gaussian_77.521.txt": "gaussian",
     }
@@ -209,14 +214,13 @@ def build_manifest(
         schema_version=1,
         generated_at=datetime.now(UTC).isoformat(),
         root=supplied_root.as_posix(),
-        allowed_scales=(50, 100, 500),
+        allowed_scales=(50, 100, 500, 1000),
         excluded_files=(
             "test_dataset/tsp/tsp100_concorde_7.756 copy.txt",
             "train_dataset/tsp/tsp_200/**",
             "train_dataset/tsp/tsp_1k/**",
             "train_dataset/tsp/tsp_10k/**",
             "test_dataset/tsp/tsp200_concorde_10.719.txt",
-            "test_dataset/tsp/tsp1000_concorde_23.118.txt",
             "test_dataset/tsp/tsp10000_lkh_500_71.755.txt",
         ),
         duplicate_exclusions=tuple(duplicate_exclusions),
@@ -229,7 +233,7 @@ def write_manifest(manifest: DataManifest, path: str | Path) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2),
+        json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     return target

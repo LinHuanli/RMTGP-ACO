@@ -3136,6 +3136,97 @@ program--instance 的构造 tour 数提高 16 倍。
 
 ---
 
+# 31. 纯 TSP100 三种子 GPU pilot 执行附录
+
+本节冻结 2026-07-25 启动的工程与科学 pilot。它不替代上文的 30-run
+确认性设计，也不改变消融实验矩阵。
+
+## 31.1 训练与 validation
+
+AS、ACS、MMAS 分别执行三个独立 GP runs：
+
+\[
+\mathcal S_{\mathrm{AS}}=\{1001,1002,1003\},\quad
+\mathcal S_{\mathrm{ACS}}=\{2001,2002,2003\},\quad
+\mathcal S_{\mathrm{MMAS}}=\{3001,3002,3003\}.
+\]
+
+所有 run 仅使用 TSP100。每一代无放回选择 32 个不同训练 instances；GP
+population 为 100、运行 50 代，ACO 为 32 ants、500 iterations。每个
+run 因而在逐代训练中暴露 \(32\times50=1600\) 个 TSP100 instance
+occurrences。Selection 与 holdout gate 各使用 32 个独立 TSP100
+instances；screening 使用 1 个 ACO seed，完整 selection/gate 使用 3 个。
+
+主 fitness 仍为相对 reference label 的绝对 gap：
+
+\[
+g_{i,s}=100\frac{L_{i,s}-L_i^\star}{L_i^\star},\qquad
+F(x)=\frac{1}{|\mathcal I|}\sum_{i\in\mathcal I}
+\frac{1}{|\mathcal S|}\sum_{s\in\mathcal S}g_{i,s}(x).
+\]
+
+相对原始 ACO 的
+\(\Delta_{i,s}=g_{i,s}^{\mathrm{candidate}}-g_{i,s}^{\mathrm{baseline}}\)
+只用于逐代解释、validation gate 和最终 paired 分析，不替代 fitness。
+每代对固定 selection-screening 子集评估当代 train-best，写出 train 与
+validation 的 candidate gap、baseline gap、\(\Delta\)、墙钟时间和 ETA。
+该监控结果不参与 breeding，避免把 validation 反馈泄漏进进化搜索。
+
+## 31.2 单 GPU0 执行与恢复
+
+正式进程必须满足 `CUDA_VISIBLE_DEVICES=0`，且进程内只能发现一张
+RTX 4000 Ada。训练的 `program population × instance batch` 在一个融合
+CUDA 调用中并行；九个独立 run 则串行执行，以避免同卡并发导致显存争用和
+不可解释的代时波动。每代原子保存 checkpoint、曲线和 provenance。
+
+队列顺序采用 replicate-major：
+
+\[
+(\mathrm{AS}_1,\mathrm{ACS}_1,\mathrm{MMAS}_1),
+(\mathrm{AS}_2,\mathrm{ACS}_2,\mathrm{MMAS}_2),
+(\mathrm{AS}_3,\mathrm{ACS}_3,\mathrm{MMAS}_3).
+\]
+
+每个 run 依次生成冻结 schedule、预计算不可变 baseline archive、训练。
+任务完成由 artifact 内容而不是文件存在性判断；中断后从最近完整 generation
+继续。整个队列使用文件锁、PID、原子 state JSON 和逐任务日志，重复启动会被
+拒绝。
+
+## 31.3 锁定后的测试
+
+九个 selected candidates 在
+\(\{\mathrm{TSP50},\mathrm{TSP100},\mathrm{TSP500},
+\mathrm{TSP1000}\}\) uniform partitions 上测试，每个 instance 使用 3 个
+ACO seeds。测试 root seed 固定为 9001，并由
+
+\[
+s_{p,b,r}=H(9001,p,b,r,\texttt{TEST})
+\]
+
+生成，故与 GP root seed 解耦，同一 ACO 变体的三个 champions 使用完全
+相同的随机流。原始 ACO baseline 按
+`variant×partition×batch×ACO-seed` 只计算一次并缓存，随后供三个
+champions 共享；candidate 使用原子 batch shards，从而支持精确续跑。
+
+TSP1000 永远不参与训练、validation、候选选择或 gate，仅作为补充尺度外推。
+它不能被表述为主协议的模型选择结果。
+
+## 31.4 pilot 统计
+
+每个 variant×partition 分别报告 selected candidate、baseline ACO 与 gate
+后 deployed 行为，至少包括 mean/median gap、standard deviation、四分位数、
+win/tie/loss、worst-10% CVaR、reference-hit rate、anytime gap AUC、best
+iteration、墙钟时间和 throughput。Wilcoxon 以 GP-run×instance 为 paired
+block，先在 ACO seeds 内平均，并在每个 ACO 变体的四个测试尺度内作 Holm
+校正；效应量为 paired rank-biserial。置信区间使用 GP run、instance、ACO
+seed 三层 bootstrap，重复 10,000 次。
+
+由于每个 ACO 变体仅有三个 GP runs，本阶段的 \(p\) 值与区间均为探索性描述。
+Residual vs replacement、双树 vs 单树以及 terminal/function set 的因果
+结论必须由上文预注册消融回答，不能从这九个主方法 runs 单独推断。
+
+---
+
 # 参考文献
 
 [1] M. Dorigo, V. Maniezzo, and A. Colorni, “Ant system: Optimization by a colony of cooperating agents,” *IEEE Transactions on Systems, Man, and Cybernetics, Part B*, vol. 26, no. 1, pp. 29–41, 1996.

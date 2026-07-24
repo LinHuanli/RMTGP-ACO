@@ -2,6 +2,18 @@
 
 本项目遵循语义化版本。研究设计的统计结论冻结标签与软件版本标签分开。
 
+## Unreleased — 2026-07-25
+
+- 新增纯 TSP100 的 AS/ACS/MMAS 单 GPU0 三种子完整预算配置与可恢复后台
+  study 队列；九个训练 run 按 replicate-major 顺序独占一张 RTX 4000 Ada；
+- 每代记录 train/validation 的 reference gap%、paired baseline delta、代时和
+  ETA，并保存独立 selected candidate 与 validation gate deployment 决策；
+- 最终测试扩展到 TSP50/100/500/1000；TSP1000 严格限定为 test-only 补充
+  外推，测试 seed 与 GP seed 解耦；
+- 新增跨三个 champion 共享的不可变 baseline test cache、原子 candidate
+  shards、精确续跑、Holm-Wilcoxon、rank-biserial、三层 bootstrap、曲线和
+  中文汇总报告。
+
 ## 0.5.0 — 2026-07-24
 
 - 新增 CuPy Raw CUDA 融合后端：一个 block 完成一个

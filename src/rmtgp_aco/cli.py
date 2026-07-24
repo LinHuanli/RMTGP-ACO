@@ -1857,6 +1857,7 @@ def _command_train(args: argparse.Namespace) -> int:
             validation_cases,
             validation_screening_cases=validation_screening_cases,
             validation_gate_cases=validation_gate_cases,
+            validation_monitor_cases=validation_screening_cases,
             baseline_archive=baseline_archive,
             output_directory=output,
             resume_from=args.resume,
@@ -1870,7 +1871,8 @@ def _command_train(args: argparse.Namespace) -> int:
                     f"nodes={record.best_nodes} "
                     f"time={record.generation_wall_time:.2f}s "
                     f"eta={record.eta_seconds / 60.0:.1f}min "
-                    f"delta={record.best_mean_delta_by_scale}"
+                    f"train_delta={record.best_mean_delta_by_scale} "
+                    f"val_delta={record.validation_monitor_delta_by_scale}"
                 ),
                 flush=True,
             ),
@@ -2017,6 +2019,55 @@ def _command_summarize(args: argparse.Namespace) -> int:
             ensure_ascii=False,
         )
     )
+    return 0
+
+
+def _command_evaluate_study(args: argparse.Namespace) -> int:
+    """执行一个可恢复的 variant×partition 正式测试任务。"""
+
+    from .study import evaluate_study_partition, load_study_spec
+
+    study = load_study_spec(args.study_config)
+    target = evaluate_study_partition(
+        study,
+        variant_name=args.variant,
+        partition=args.partition,
+        skip_manifest_check=args.skip_manifest_check,
+    )
+    print(f"study 测试完成：{target}")
+    return 0
+
+
+def _command_report_study(args: argparse.Namespace) -> int:
+    """汇总九个训练 run 和十二个 test partitions。"""
+
+    from .study import load_study_spec
+    from .study_report import generate_study_report
+
+    study = load_study_spec(args.study_config)
+    target = generate_study_report(study)
+    print(f"study 报告完成：{target}")
+    return 0
+
+
+def _command_run_study(args: argparse.Namespace) -> int:
+    """持有唯一锁并串行运行单 GPU0 study。"""
+
+    from .study import load_study_spec, run_study_queue
+
+    study = load_study_spec(args.study_config)
+    run_study_queue(study)
+    print(f"study 队列完成：{study.output_root}")
+    return 0
+
+
+def _command_study_status(args: argparse.Namespace) -> int:
+    """打印后台 study 的机器可读状态。"""
+
+    from .study import load_study_spec, study_status
+
+    study = load_study_spec(args.study_config)
+    print(json.dumps(study_status(study), ensure_ascii=False, indent=2))
     return 0
 
 
@@ -2303,6 +2354,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     summarize.add_argument("--output", required=True)
     summarize.set_defaults(handler=_command_summarize)
+
+    evaluate_study = subparsers.add_parser(
+        "evaluate-study",
+        help="共享 baseline cache 的三 GP-seed 正式测试",
+    )
+    evaluate_study.add_argument("--study-config", required=True)
+    evaluate_study.add_argument("--variant", choices=["as", "acs", "mmas"], required=True)
+    evaluate_study.add_argument("--partition", required=True)
+    evaluate_study.add_argument("--skip-manifest-check", action="store_true")
+    evaluate_study.set_defaults(handler=_command_evaluate_study)
+
+    report_study = subparsers.add_parser(
+        "report-study",
+        help="生成 train/validation 曲线、paired 统计与中文报告",
+    )
+    report_study.add_argument("--study-config", required=True)
+    report_study.set_defaults(handler=_command_report_study)
+
+    run_study = subparsers.add_parser(
+        "run-study",
+        help="在唯一可见 GPU0 上串行执行可恢复 study 队列",
+    )
+    run_study.add_argument("--study-config", required=True)
+    run_study.set_defaults(handler=_command_run_study)
+
+    status_study = subparsers.add_parser(
+        "study-status",
+        help="查看后台 study 当前任务、训练代数与 ETA",
+    )
+    status_study.add_argument("--study-config", required=True)
+    status_study.set_defaults(handler=_command_study_status)
     return parser
 
 

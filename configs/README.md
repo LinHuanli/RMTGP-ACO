@@ -92,3 +92,12 @@ baseline archive，只跳过 validation/checkpoint，因而既保持正式单代
 又不会误把短跑 artifact 当作确认性实验。已有 ACS 短代报告属于旧的
 v0.3（10 ants、100 iterations）历史基准，v0.5 必须重新测量：
 `docs/performance/acs_short_generation_acceleration_20260724.md`。
+
+`as_tsp100_gpu0.yaml`、`acs_tsp100_gpu0.yaml` 和
+`mmas_tsp100_gpu0.yaml` 是当前纯 TSP100 三种子完整预算 pilot 的单卡模板。
+三者均固定每代 32 个 TSP100 instances、population 100、50 generations、
+32 ants、500 iterations，并只允许逻辑 GPU0。统一编排文件为
+`experiments/tsp100_gpu0_3seed/study.yaml`；它使用 GP seeds
+1001–1003、2001–2003、3001–3003，最终 paired test 独立使用 root seed
+9001 和 3 个 ACO seeds。TSP1000 只在该 pilot 中作为 test-only 补充外推，
+不能进入 schedule 或 validation。

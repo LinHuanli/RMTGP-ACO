@@ -76,6 +76,7 @@ def test_tiny_training_run_is_reproducible(tmp_path) -> None:
         experiment,
         lambda _generation: cases,
         cases,
+        validation_monitor_cases=cases,
         output_directory=output,
     )
     assert len(result.history) == 2
@@ -85,9 +86,16 @@ def test_tiny_training_run_is_reproducible(tmp_path) -> None:
     assert (output / "config.yaml").is_file()
     assert (output / "environment.json").is_file()
     assert (output / "champion.pkl").is_file()
+    assert (output / "selected_candidate.pkl").is_file()
+    assert (output / "deployment_decision.json").is_file()
     assert (output / "training_metrics.jsonl").is_file()
+    assert (output / "training_validation_curve.csv").is_file()
     assert (output / "validation_summary.csv").is_file()
     assert (output / "checkpoints").is_dir()
+    assert all(
+        record.validation_monitor_candidate_gap_by_scale
+        for record in result.history
+    )
     loaded_config = yaml.safe_load(
         (output / "config.yaml").read_text(encoding="utf-8")
     )

@@ -1,0 +1,28 @@
+# 完整预算三算法三种子 pilot。所有任务由一个后台队列串行占用物理 GPU0。
+study_id: tsp100-gpu0-3seed-v1
+output_root: runs/tsp100-gpu0-3seed
+phase: pilot
+method_profile: rmtgp-full-f1
+
+# 最终测试随机流与九个 GP root seed 解耦，并在所有 champion 间共享。
+test_root_seed: 9001
+test_seeds: 3
+partitions:
+  - tsp50_uniform
+  - tsp100_uniform
+  - tsp500_uniform
+  - tsp1000_uniform
+
+variants:
+  as:
+    config: configs/as_tsp100_gpu0.yaml
+    seeds: [1001, 1002, 1003]
+  acs:
+    config: configs/acs_tsp100_gpu0.yaml
+    seeds: [2001, 2002, 2003]
+  mmas:
+    config: configs/mmas_tsp100_gpu0.yaml
+    seeds: [3001, 3002, 3003]
+
+manifest: Datasets/manifest.json
+bootstrap_replicates: 10000
