@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import csv
+import pickle
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-import pickle
-from typing import Iterable, Iterator, Sequence
 
 import numpy as np
 
@@ -46,6 +46,8 @@ class EvaluationRecord:
     candidate_fallback_count: int
     uniform_fallback_count: int
     bound_clip_count: int
+    gp_run_id: str = ""
+    gp_root_seed: int = 0
 
 
 def load_champion(path: str | Path) -> RMTGPIndividual:
@@ -92,6 +94,8 @@ def _record_batch(
     baseline: RunResult,
     config: ACOConfig,
     tie_tolerance: float,
+    gp_run_id: str,
+    gp_root_seed: int,
 ) -> Iterator[EvaluationRecord]:
     reference = batch.reference_length
     candidate_gap = 100.0 * (candidate.best_length - reference) / reference
@@ -141,6 +145,8 @@ def _record_batch(
             candidate_fallback_count=candidate.diagnostics.candidate_fallback_count,
             uniform_fallback_count=candidate.diagnostics.uniform_fallback_count,
             bound_clip_count=candidate.diagnostics.bound_clip_count,
+            gp_run_id=gp_run_id,
+            gp_root_seed=gp_root_seed,
         )
 
 
@@ -158,6 +164,7 @@ def evaluate_batches(
     pheromone_program: TensorProgram | None = None,
     backend: ExecutionBackend | str = ExecutionBackend.TORCH,
     tie_tolerance: float = 1e-12,
+    gp_run_id: str | None = None,
 ) -> list[EvaluationRecord]:
     """以完全相同 seed 成对运行 candidate 与原始 ACO。"""
 
@@ -193,6 +200,8 @@ def evaluate_batches(
                     baseline=baseline,
                     config=config,
                     tie_tolerance=tie_tolerance,
+                    gp_run_id=gp_run_id or champion_id,
+                    gp_root_seed=root_seed,
                 )
             )
     return records
@@ -225,6 +234,7 @@ def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
         "candidate_fallback_count",
         "uniform_fallback_count",
         "bound_clip_count",
+        "gp_root_seed",
     }
     float_fields = {
         "best_length",
@@ -244,6 +254,9 @@ def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
         with Path(path).open("r", encoding="utf-8", newline="") as handle:
             for row in csv.DictReader(handle):
                 values: dict[str, object] = dict(row)
+                # 兼容 v0.2 长表；新结果显式保留 GP run 的配对标识。
+                values.setdefault("gp_run_id", str(values["champion_id"]))
+                values.setdefault("gp_root_seed", "0")
                 for name in integer_fields:
                     values[name] = int(values[name])
                 for name in float_fields:

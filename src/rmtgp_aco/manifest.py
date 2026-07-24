@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-import json
 from pathlib import Path
+
 from .data import parse_tsp_line
 
 

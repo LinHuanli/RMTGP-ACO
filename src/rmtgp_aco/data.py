@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
 
 import numpy as np
 import torch
@@ -243,4 +243,5 @@ def make_problem_batch(
             device=device,
         ),
         instance_ids=tuple(item.instance_id for item in records),
+        coordinate_hashes=tuple(item.coordinate_hash for item in records),
     )

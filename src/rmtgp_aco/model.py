@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 import torch
 
@@ -20,6 +20,7 @@ class ProblemBatch:
     reference_tour: torch.Tensor
     reference_length: torch.Tensor
     instance_ids: tuple[str, ...]
+    coordinate_hashes: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.coords.ndim != 3 or self.coords.shape[-1] != 2:
@@ -35,6 +36,8 @@ class ProblemBatch:
             raise ValueError("reference_length 必须具有 [B] shape")
         if len(self.instance_ids) != batch:
             raise ValueError("instance_ids 数量必须等于 batch size")
+        if len(self.coordinate_hashes) != batch:
+            raise ValueError("coordinate_hashes 数量必须等于 batch size")
 
     @property
     def batch_size(self) -> int:
@@ -48,7 +51,7 @@ class ProblemBatch:
     def device(self) -> torch.device:
         return self.coords.device
 
-    def to(self, device: str | torch.device) -> "ProblemBatch":
+    def to(self, device: str | torch.device) -> ProblemBatch:
         """把全部 tensor 移到同一 device。"""
 
         return ProblemBatch(
@@ -60,6 +63,7 @@ class ProblemBatch:
             reference_tour=self.reference_tour.to(device),
             reference_length=self.reference_length.to(device),
             instance_ids=self.instance_ids,
+            coordinate_hashes=self.coordinate_hashes,
         )
 
 
@@ -109,3 +113,26 @@ class RunResult:
     wall_time_sec: float
     constructed_tours: int
     diagnostics: RunDiagnostics = field(default_factory=RunDiagnostics)
+
+
+@dataclass(slots=True)
+class PopulationQualityResult:
+    """population-batched 训练内核的轻量输出。
+
+    第一维为唯一 GP genotype，第二维为 instance；训练不复制 tour 与
+    anytime curve，从而把内存和 Python object 数量保持在最低。
+    """
+
+    best_length: torch.Tensor
+    best_iteration: torch.Tensor
+    diagnostics: torch.Tensor
+    wall_time_sec: float
+    constructed_tours: int
+
+    def __post_init__(self) -> None:
+        if self.best_length.ndim != 2:
+            raise ValueError("population best_length 必须具有 [P,B] shape")
+        if self.best_iteration.shape != self.best_length.shape:
+            raise ValueError("population best_iteration shape 不一致")
+        if self.diagnostics.shape != (self.best_length.shape[0], 3):
+            raise ValueError("population diagnostics 必须具有 [P,3] shape")

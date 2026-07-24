@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from dataclasses import replace
 import json
-from pathlib import Path
+import random
 import sys
 import traceback
+from collections import Counter
+from dataclasses import replace
+from pathlib import Path
+
+import torch
 
 from .artifacts import (
     finalise_run_artifacts,
     initialise_run_artifacts,
     resume_run_artifacts,
+)
+from .baseline import (
+    BaselineArchive,
+    precompute_baseline_cases,
+    write_baseline_shard,
 )
 from .config import (
     ExecutionBackend,
@@ -27,6 +35,11 @@ from .evaluation import (
     read_records,
     write_records,
 )
+from .experiment_plan import (
+    build_protocol_a_v03_pilot_plan,
+    write_experiment_plan,
+)
+from .genetic import initialise_population
 from .manifest import (
     build_manifest,
     load_manifest,
@@ -34,22 +47,33 @@ from .manifest import (
     verify_manifest,
     write_manifest,
 )
+from .program import (
+    CORE_PHEROMONE_TERMINALS,
+    CORE_TRANSITION_TERMINALS,
+)
 from .runtime import configure_runtime
 from .sampling import (
-    ScaleStratifiedSampler,
-    fixed_cases_from_pools,
     iter_problem_batches,
     pools_from_paths,
 )
+from .schedule import (
+    ScheduledTrainingSampler,
+    build_protocol_schedule,
+    load_schedule,
+    validate_schedule_contract,
+    validation_cases_from_schedule,
+    write_schedule,
+)
 from .spec import load_run_spec
 from .stats import (
+    factorial_contrasts,
     friedman_test,
     hierarchical_bootstrap_delta,
     paired_wilcoxon_holm,
     summarize_quality,
     write_statistical_report,
 )
-from .training import train
+from .training import BaselineCache, EvaluationPool, train
 
 
 def _repository_root() -> Path:
@@ -65,9 +89,22 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
         experiment = replace(experiment, root_seed=seed)
     processes = getattr(args, "processes", None)
     if processes is not None:
+        selected_backend = experiment.runtime.aco_backend
+        if processes > 1 and selected_backend is ExecutionBackend.NUMBA_BATCH:
+            selected_backend = ExecutionBackend.NUMBA
         experiment = replace(
             experiment,
-            runtime=replace(experiment.runtime, processes=processes),
+            runtime=replace(
+                experiment.runtime,
+                processes=processes,
+                aco_backend=selected_backend,
+            ),
+        )
+    cpu_threads = getattr(args, "cpu_threads", None)
+    if cpu_threads is not None:
+        experiment = replace(
+            experiment,
+            runtime=replace(experiment.runtime, cpu_threads=cpu_threads),
         )
     backend = getattr(args, "backend", None)
     if backend is not None:
@@ -88,6 +125,8 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
                 train_transition=True,
                 train_pheromone=False,
                 transition_profile="main",
+                function_profile="f1",
+                transition_terminals=None,
             )
             aco = replace(
                 aco,
@@ -100,6 +139,8 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
                 train_transition=False,
                 train_pheromone=True,
                 transition_profile="main",
+                function_profile="f1",
+                pheromone_terminals=None,
             )
             aco = replace(
                 aco,
@@ -112,6 +153,8 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
                 train_transition=True,
                 train_pheromone=False,
                 transition_profile="main",
+                function_profile="f1",
+                transition_terminals=None,
             )
             aco = replace(
                 aco,
@@ -129,6 +172,32 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
             aco = replace(
                 aco,
                 transition_integration=TransitionIntegration.REPLACEMENT,
+                pheromone_integration=PheromoneIntegration.BUDGET_RESIDUAL,
+            )
+        elif method in {
+            "rmtgp-core-f0",
+            "rmtgp-core-f1",
+            "rmtgp-full-f0",
+            "rmtgp-full-f1",
+        }:
+            core = "core" in method
+            function_profile = "f0" if method.endswith("f0") else "f1"
+            gp = replace(
+                gp,
+                train_transition=True,
+                train_pheromone=True,
+                transition_profile="main",
+                function_profile=function_profile,
+                transition_terminals=(
+                    CORE_TRANSITION_TERMINALS if core else None
+                ),
+                pheromone_terminals=(
+                    CORE_PHEROMONE_TERMINALS if core else None
+                ),
+            )
+            aco = replace(
+                aco,
+                transition_integration=TransitionIntegration.RESIDUAL,
                 pheromone_integration=PheromoneIntegration.BUDGET_RESIDUAL,
             )
         experiment = replace(
@@ -219,6 +288,329 @@ def _command_verify_data(args: argparse.Namespace) -> int:
     return 0
 
 
+def _protocol_schedule(
+    spec,
+    training_pools,
+    validation_pools,
+    *,
+    path: str | Path | None,
+    phase: str,
+    replicate_id: int,
+):
+    """加载冻结 schedule；未配置路径时为开发运行生成内存 schedule。"""
+
+    selected_path = (
+        Path(path).resolve()
+        if path is not None
+        else spec.data.schedule_path
+    )
+    if phase == "formal" and selected_path is None:
+        raise ValueError(
+            "formal 训练禁止临时生成 schedule；请先运行 prepare-schedules，"
+            "再通过 --schedule 或 data.schedule_manifest 指定冻结文件"
+        )
+    if selected_path is not None:
+        if not selected_path.is_file():
+            raise FileNotFoundError(
+                f"schedule 不存在，请先运行 prepare-schedules: {selected_path}"
+            )
+        schedule = load_schedule(selected_path)
+    else:
+        schedule = build_protocol_schedule(
+            training_pools,
+            validation_pools,
+            protocol_id="protocol-a-v0.3",
+            phase=phase,
+            root_seed=spec.experiment.root_seed,
+            replicate_id=replicate_id,
+            generations=spec.experiment.gp.generations,
+            train_instances_per_scale=spec.data.train_instances_per_scale,
+            validation_selection_instances_per_scale=(
+                spec.data.validation_selection_instances_per_scale
+            ),
+            validation_gate_instances_per_scale=(
+                spec.data.validation_gate_instances_per_scale
+            ),
+            validation_seeds=spec.experiment.validation_seeds,
+        )
+    validate_schedule_contract(
+        schedule,
+        protocol_id="protocol-a-v0.3",
+        phase=phase,
+        root_seed=spec.experiment.root_seed,
+        replicate_id=replicate_id,
+        generations=spec.experiment.gp.generations,
+        train_scales=spec.experiment.train_scales,
+        validation_scales=spec.experiment.validation_scales,
+        train_instances_per_scale=spec.data.train_instances_per_scale,
+        validation_selection_instances_per_scale=(
+            spec.data.validation_selection_instances_per_scale
+        ),
+        validation_gate_instances_per_scale=(
+            spec.data.validation_gate_instances_per_scale
+        ),
+        validation_seeds=spec.experiment.validation_seeds,
+    )
+    return schedule
+
+
+def _command_prepare_schedules(args: argparse.Namespace) -> int:
+    spec = _apply_runtime_overrides(load_run_spec(args.config), args)
+    if not args.skip_manifest_check:
+        _preflight_manifest(
+            spec,
+            args.manifest,
+            [
+                *(
+                    (path, "train")
+                    for paths in spec.data.training_paths().values()
+                    for path in paths
+                ),
+                *(
+                    (path, "validation")
+                    for paths in spec.data.validation_paths().values()
+                    for path in paths
+                ),
+            ],
+        )
+    training_pools = pools_from_paths(spec.data.training_paths())
+    validation_pools = pools_from_paths(spec.data.validation_paths())
+    schedule = build_protocol_schedule(
+        training_pools,
+        validation_pools,
+        protocol_id=args.protocol_id,
+        phase=args.phase,
+        root_seed=spec.experiment.root_seed,
+        replicate_id=args.replicate_id,
+        generations=spec.experiment.gp.generations,
+        train_instances_per_scale=spec.data.train_instances_per_scale,
+        validation_selection_instances_per_scale=(
+            spec.data.validation_selection_instances_per_scale
+        ),
+        validation_gate_instances_per_scale=(
+            spec.data.validation_gate_instances_per_scale
+        ),
+        validation_seeds=spec.experiment.validation_seeds,
+    )
+    target = write_schedule(schedule, args.output)
+    print(
+        json.dumps(
+            {
+                "output": str(target),
+                "manifest_hash": schedule.manifest_hash,
+                "records": len(schedule.records),
+                "phase": schedule.phase,
+                "replicate_id": args.replicate_id,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _command_precompute_baselines(args: argparse.Namespace) -> int:
+    spec = _apply_runtime_overrides(load_run_spec(args.config), args)
+    configure_runtime(spec.experiment.runtime)
+    training_pools = pools_from_paths(spec.data.training_paths())
+    validation_pools = pools_from_paths(spec.data.validation_paths())
+    schedule = load_schedule(args.schedule)
+    validate_schedule_contract(
+        schedule,
+        protocol_id="protocol-a-v0.3",
+        phase=schedule.phase,
+        root_seed=spec.experiment.root_seed,
+        replicate_id=args.replicate_id,
+        generations=spec.experiment.gp.generations,
+        train_scales=spec.experiment.train_scales,
+        validation_scales=spec.experiment.validation_scales,
+        train_instances_per_scale=spec.data.train_instances_per_scale,
+        validation_selection_instances_per_scale=(
+            spec.data.validation_selection_instances_per_scale
+        ),
+        validation_gate_instances_per_scale=(
+            spec.data.validation_gate_instances_per_scale
+        ),
+        validation_seeds=spec.experiment.validation_seeds,
+    )
+
+    selected_splits = set(args.splits)
+    cases = []
+    if "train" in selected_splits:
+        sampler = ScheduledTrainingSampler(
+            schedule,
+            training_pools,
+            replicate_id=args.replicate_id,
+            candidate_size=spec.experiment.aco.candidate_size,
+            dtype=spec.experiment.aco.dtype,
+            device=spec.experiment.aco.device,
+        )
+        for generation in range(1, spec.experiment.gp.generations + 1):
+            cases.extend(sampler.cases_for_generation(generation))
+    for role in ("selection", "gate"):
+        if role in selected_splits:
+            cases.extend(
+                validation_cases_from_schedule(
+                    schedule,
+                    validation_pools,
+                    role=role,
+                    replicate_id=args.replicate_id,
+                    batch_size=spec.data.evaluation_batch_size,
+                    candidate_size=spec.experiment.aco.candidate_size,
+                    dtype=spec.experiment.aco.dtype,
+                    device=spec.experiment.aco.device,
+                )
+            )
+    records = precompute_baseline_cases(
+        cases,
+        spec.experiment.aco,
+        spec.experiment.runtime.aco_backend,
+        threads=spec.experiment.runtime.cpu_threads,
+    )
+    target = write_baseline_shard(
+        records,
+        args.output,
+        metadata={
+            "protocol_id": schedule.protocol_id,
+            "phase": schedule.phase,
+            "schedule_hash": schedule.manifest_hash,
+            "replicate_id": args.replicate_id,
+            "variant": spec.experiment.aco.variant.value,
+            "aco_config_hash": spec.experiment.aco.config_hash,
+            "splits": sorted(selected_splits),
+        },
+    )
+    print(
+        f"baseline 预计算完成：{len(records)} instance×seed records -> {target}"
+    )
+    return 0
+
+
+def _command_benchmark_backends(args: argparse.Namespace) -> int:
+    """比较旧 8-process 标量 Numba 与 16-thread population batching。"""
+
+    spec = _apply_runtime_overrides(load_run_spec(args.config), args)
+    training_pools = pools_from_paths(spec.data.training_paths())
+    validation_pools = pools_from_paths(spec.data.validation_paths())
+    schedule = _protocol_schedule(
+        spec,
+        training_pools,
+        validation_pools,
+        path=args.schedule,
+        phase=args.phase,
+        replicate_id=args.replicate_id,
+    )
+    sampler = ScheduledTrainingSampler(
+        schedule,
+        training_pools,
+        replicate_id=args.replicate_id,
+        candidate_size=spec.experiment.aco.candidate_size,
+        dtype=spec.experiment.aco.dtype,
+        device=spec.experiment.aco.device,
+    )
+    cases = sampler.cases_for_generation(1)
+
+    random.seed(spec.experiment.root_seed)
+    torch.manual_seed(spec.experiment.root_seed)
+    population, _, _ = initialise_population(spec.experiment.gp)
+    population = population[: args.max_individuals]
+
+    reference_experiment = replace(
+        spec.experiment,
+        runtime=replace(
+            spec.experiment.runtime,
+            aco_backend=ExecutionBackend.NUMBA,
+            processes=args.reference_processes,
+            cpu_threads=1,
+        ),
+    )
+    reference_population = [individual.clone() for individual in population]
+    with EvaluationPool(reference_experiment) as evaluator:
+        evaluator.warm(cases[0])
+        reference = evaluator.evaluate_population(
+            reference_population,
+            cases,
+            BaselineCache(),
+        )
+
+    batch_experiment = replace(
+        spec.experiment,
+        runtime=replace(
+            spec.experiment.runtime,
+            aco_backend=ExecutionBackend.NUMBA_BATCH,
+            processes=1,
+            cpu_threads=args.cpu_threads or spec.experiment.runtime.cpu_threads,
+        ),
+    )
+    configure_runtime(batch_experiment.runtime)
+    batch_population = [individual.clone() for individual in population]
+    with EvaluationPool(batch_experiment) as evaluator:
+        evaluator.warm(cases[0])
+        batched = evaluator.evaluate_population(
+            batch_population,
+            cases,
+            BaselineCache(),
+        )
+
+    reference_by_hash = {
+        individual.structural_hash: individual.fitness.values[0]
+        for individual in reference_population
+    }
+    for individual in batch_population:
+        expected = reference_by_hash[individual.structural_hash]
+        observed = individual.fitness.values[0]
+        if abs(expected - observed) > 1e-12:
+            raise RuntimeError(
+                f"backend fitness 不一致：{expected:.17g} != {observed:.17g}"
+            )
+    speedup = reference.evaluation_wall_time / max(
+        batched.evaluation_wall_time,
+        1e-12,
+    )
+    payload = {
+        "variant": spec.experiment.aco.variant.value,
+        "individuals": len(population),
+        "instances": sum(case.batch.batch_size for case in cases),
+        "iterations": spec.experiment.aco.iterations,
+        "reference_processes": args.reference_processes,
+        "batch_threads": batch_experiment.runtime.cpu_threads,
+        "reference_seconds": reference.evaluation_wall_time,
+        "batch_seconds": batched.evaluation_wall_time,
+        "speedup": speedup,
+        "batch_tours_per_second": (
+            batched.constructed_tours
+            / max(batched.evaluation_wall_time, 1e-12)
+        ),
+        "meets_1_5x_gate": speedup >= 1.5,
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    print(rendered)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered + "\n", encoding="utf-8")
+    return 0
+
+
+def _command_prepare_pilot_plan(args: argparse.Namespace) -> int:
+    plan = build_protocol_a_v03_pilot_plan(
+        runs_root=args.runs_root,
+        python=args.python,
+    )
+    target, shell_target = write_experiment_plan(plan, args.output)
+    print(
+        json.dumps(
+            {
+                "output": str(target),
+                "shell": str(shell_target),
+                "setup_tasks": plan["setup_task_count"],
+                "training_tasks": plan["training_task_count"],
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def _command_train(args: argparse.Namespace) -> int:
     spec = _apply_runtime_overrides(load_run_spec(args.config), args)
     training_paths = spec.data.training_paths()
@@ -239,24 +631,72 @@ def _command_train(args: argparse.Namespace) -> int:
     configure_runtime(spec.experiment.runtime)
     training_pools = pools_from_paths(training_paths)
     validation_pools = pools_from_paths(validation_paths)
-    sampler = ScaleStratifiedSampler(
+    schedule = _protocol_schedule(
+        spec,
         training_pools,
-        root_seed=spec.experiment.root_seed,
-        candidate_size=spec.experiment.aco.candidate_size,
-        dtype=spec.experiment.aco.dtype,
-        device=spec.experiment.aco.device,
-        instances_per_scale=spec.data.train_instances_per_scale,
-    )
-    validation_cases = fixed_cases_from_pools(
         validation_pools,
-        root_seed=spec.experiment.root_seed,
-        instances_per_scale=spec.data.validation_instances_per_scale,
-        aco_seeds=spec.experiment.validation_seeds,
-        batch_size=spec.data.evaluation_batch_size,
+        path=args.schedule,
+        phase=args.phase,
+        replicate_id=args.replicate_id,
+    )
+    sampler = ScheduledTrainingSampler(
+        schedule,
+        training_pools,
+        replicate_id=args.replicate_id,
         candidate_size=spec.experiment.aco.candidate_size,
         dtype=spec.experiment.aco.dtype,
         device=spec.experiment.aco.device,
     )
+    validation_screening_cases = validation_cases_from_schedule(
+        schedule,
+        validation_pools,
+        role="selection",
+        replicate_id=args.replicate_id,
+        batch_size=spec.data.evaluation_batch_size,
+        seeds=spec.experiment.validation_screening_seeds,
+        candidate_size=spec.experiment.aco.candidate_size,
+        dtype=spec.experiment.aco.dtype,
+        device=spec.experiment.aco.device,
+    )
+    validation_cases = validation_cases_from_schedule(
+        schedule,
+        validation_pools,
+        role="selection",
+        replicate_id=args.replicate_id,
+        batch_size=spec.data.evaluation_batch_size,
+        seeds=spec.experiment.validation_seeds,
+        candidate_size=spec.experiment.aco.candidate_size,
+        dtype=spec.experiment.aco.dtype,
+        device=spec.experiment.aco.device,
+    )
+    validation_gate_cases = validation_cases_from_schedule(
+        schedule,
+        validation_pools,
+        role="gate",
+        replicate_id=args.replicate_id,
+        batch_size=spec.data.evaluation_batch_size,
+        seeds=spec.experiment.validation_seeds,
+        candidate_size=spec.experiment.aco.candidate_size,
+        dtype=spec.experiment.aco.dtype,
+        device=spec.experiment.aco.device,
+    )
+    baseline_path = (
+        Path(args.baseline_archive).resolve()
+        if args.baseline_archive
+        else spec.data.baseline_path
+    )
+    baseline_archive = (
+        BaselineArchive(
+            baseline_path,
+            spec.experiment.aco,
+            spec.experiment.runtime.aco_backend,
+            require=(spec.data.baseline_policy == "require"),
+        )
+        if baseline_path is not None
+        else None
+    )
+    if spec.data.baseline_policy == "require" and baseline_archive is None:
+        raise ValueError("baseline_policy=require 但未配置 baseline archive")
     if args.resume and not args.output:
         resume_path = Path(args.resume)
         output = resume_path if resume_path.is_dir() else resume_path.parent
@@ -278,11 +718,16 @@ def _command_train(args: argparse.Namespace) -> int:
             data_manifest=args.manifest,
         )
     )
+    if not args.resume:
+        write_schedule(schedule, output / "schedule.json")
     try:
         result = train(
             spec.experiment,
             sampler.cases_for_generation,
             validation_cases,
+            validation_screening_cases=validation_screening_cases,
+            validation_gate_cases=validation_gate_cases,
+            baseline_archive=baseline_archive,
             output_directory=output,
             resume_from=args.resume,
             progress_callback=lambda record: print(
@@ -355,6 +800,7 @@ def _command_evaluate(args: argparse.Namespace) -> int:
         transition_program=transition,
         pheromone_program=pheromone,
         backend=spec.experiment.runtime.aco_backend,
+        gp_run_id=args.gp_run_id,
     )
     target = write_records(records, args.output)
     print(f"评测完成：{len(records)} 条记录 -> {target}")
@@ -388,6 +834,19 @@ def _command_summarize(args: argparse.Namespace) -> int:
         replicates=args.bootstrap_replicates,
         seed=args.seed,
     )
+    factorial = (
+        factorial_contrasts(
+            records,
+            core_f0=args.factorial_methods[0],
+            core_f1=args.factorial_methods[1],
+            full_f0=args.factorial_methods[2],
+            full_f1=args.factorial_methods[3],
+            replicates=args.bootstrap_replicates,
+            seed=args.seed,
+        )
+        if args.factorial_methods
+        else []
+    )
     context = next(iter(contexts))
     target = write_statistical_report(
         args.output,
@@ -395,6 +854,7 @@ def _command_summarize(args: argparse.Namespace) -> int:
         friedman=friedman,
         pairwise=pairwise,
         bootstrap=bootstrap,
+        factorial=factorial,
         metadata={
             "variant": context[0],
             "partition": context[1],
@@ -437,6 +897,77 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--leakage-samples", type=int, default=1)
     verify.set_defaults(handler=_command_verify_data)
 
+    schedule_parser = subparsers.add_parser(
+        "prepare-schedules",
+        help="生成紧凑 train/selection/gate schedule",
+    )
+    schedule_parser.add_argument("--config", required=True)
+    schedule_parser.add_argument("--output", required=True)
+    schedule_parser.add_argument("--phase", choices=["pilot", "formal"], required=True)
+    schedule_parser.add_argument("--protocol-id", default="protocol-a-v0.3")
+    schedule_parser.add_argument("--replicate-id", type=int, default=0)
+    schedule_parser.add_argument("--root-seed", type=int)
+    schedule_parser.add_argument("--cpu-threads", type=int)
+    schedule_parser.add_argument("--manifest", default="Datasets/manifest.json")
+    schedule_parser.add_argument("--skip-manifest-check", action="store_true")
+    schedule_parser.set_defaults(handler=_command_prepare_schedules)
+
+    baseline_parser = subparsers.add_parser(
+        "precompute-baselines",
+        help="按冻结 schedule 提前计算不可变原始 ACO baseline",
+    )
+    baseline_parser.add_argument("--config", required=True)
+    baseline_parser.add_argument("--schedule", required=True)
+    baseline_parser.add_argument("--output", required=True)
+    baseline_parser.add_argument("--replicate-id", type=int, default=0)
+    baseline_parser.add_argument(
+        "--splits",
+        nargs="+",
+        choices=["train", "selection", "gate"],
+        default=["train", "selection", "gate"],
+    )
+    baseline_parser.add_argument("--root-seed", type=int)
+    baseline_parser.add_argument("--cpu-threads", type=int)
+    baseline_parser.add_argument(
+        "--backend",
+        choices=[backend.value for backend in ExecutionBackend],
+    )
+    baseline_parser.set_defaults(handler=_command_precompute_baselines)
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark-backends",
+        help="比较旧 process Numba 与 population-batched Numba",
+    )
+    benchmark_parser.add_argument("--config", required=True)
+    benchmark_parser.add_argument("--schedule")
+    benchmark_parser.add_argument(
+        "--phase",
+        choices=["pilot", "formal", "development"],
+        default="pilot",
+    )
+    benchmark_parser.add_argument("--replicate-id", type=int, default=0)
+    benchmark_parser.add_argument("--root-seed", type=int)
+    benchmark_parser.add_argument("--cpu-threads", type=int, default=16)
+    benchmark_parser.add_argument("--reference-processes", type=int, default=8)
+    benchmark_parser.add_argument("--max-individuals", type=int, default=100)
+    benchmark_parser.add_argument("--output")
+    benchmark_parser.set_defaults(handler=_command_benchmark_backends)
+
+    plan_parser = subparsers.add_parser(
+        "prepare-pilot-plan",
+        help="生成 Protocol A v0.3 的 78-run pilot 任务图",
+    )
+    plan_parser.add_argument(
+        "--output",
+        default="runs/protocol-a-v0.3/pilot-plan.json",
+    )
+    plan_parser.add_argument(
+        "--runs-root",
+        default="runs/protocol-a-v0.3",
+    )
+    plan_parser.add_argument("--python")
+    plan_parser.set_defaults(handler=_command_prepare_pilot_plan)
+
     train_parser = subparsers.add_parser("train", help="训练一个独立 GP run")
     train_parser.add_argument("--config", required=True)
     train_parser.add_argument("--output")
@@ -444,6 +975,15 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--skip-manifest-check", action="store_true")
     train_parser.add_argument("--root-seed", type=int)
     train_parser.add_argument("--processes", type=int)
+    train_parser.add_argument("--cpu-threads", type=int)
+    train_parser.add_argument("--schedule")
+    train_parser.add_argument("--baseline-archive")
+    train_parser.add_argument("--replicate-id", type=int, default=0)
+    train_parser.add_argument(
+        "--phase",
+        choices=["pilot", "formal", "development"],
+        default="pilot",
+    )
     train_parser.add_argument(
         "--backend",
         choices=[backend.value for backend in ExecutionBackend],
@@ -454,7 +994,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_parser.add_argument(
         "--method-profile",
-        choices=["rmtgp", "tr-rgp", "ph-rgp", "matched-replace", "legacy"],
+        choices=[
+            "rmtgp",
+            "tr-rgp",
+            "ph-rgp",
+            "matched-replace",
+            "legacy",
+            "rmtgp-core-f0",
+            "rmtgp-core-f1",
+            "rmtgp-full-f0",
+            "rmtgp-full-f1",
+        ],
         default="rmtgp",
         help="E1 组件/上一篇研究对照；默认训练双 residual",
     )
@@ -467,6 +1017,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--champion", help="省略时评测原始 ACO")
     evaluate.add_argument("--method", required=True)
     evaluate.add_argument("--champion-id", default="baseline")
+    evaluate.add_argument(
+        "--gp-run-id",
+        help="跨方法配对的 GP replicate 标识；默认使用 champion-id",
+    )
     evaluate.add_argument("--seeds", type=int, required=True)
     evaluate.add_argument("--max-instances", type=int)
     evaluate.add_argument("--batch-size", type=int)
@@ -486,6 +1040,12 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--reference-method", required=True)
     summarize.add_argument("--bootstrap-replicates", type=int, default=10_000)
     summarize.add_argument("--seed", type=int, default=0)
+    summarize.add_argument(
+        "--factorial-methods",
+        nargs=4,
+        metavar="METHOD",
+        help="依次给出 Core-F0 Core-F1 Full-F0 Full-F1 的方法名",
+    )
     summarize.add_argument("--output", required=True)
     summarize.set_defaults(handler=_command_summarize)
     return parser

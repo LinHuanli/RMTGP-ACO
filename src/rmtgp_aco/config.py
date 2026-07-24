@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from hashlib import sha256
-import json
 from typing import Any
 
 import torch
@@ -22,11 +22,13 @@ class ACOVariant(StrEnum):
 class ExecutionBackend(StrEnum):
     """ACO 数值内核后端。
 
-    ``torch`` 保留为易审计的参考实现；``numba`` 用于正式 CPU 训练。
+    ``torch`` 保留为易审计的参考实现；``numba`` 是标量/进程级参考；
+    ``numba_batch`` 在一个进程内以 population×instance 任务矩阵并行。
     """
 
     TORCH = "torch"
     NUMBA = "numba"
+    NUMBA_BATCH = "numba_batch"
 
 
 class TransitionIntegration(StrEnum):
@@ -85,7 +87,7 @@ class ACOConfig:
         device: str = "cpu",
         dtype: torch.dtype = torch.float64,
         acs_synchronous: bool = True,
-    ) -> "ACOConfig":
+    ) -> ACOConfig:
         """建立主实验使用的 ACOTSP 无局部搜索默认配置。"""
 
         selected = ACOVariant(variant)
@@ -189,9 +191,12 @@ class GPConfig:
     initial_max_depth: int = 4
     max_depth: int = 5
     max_nodes_per_tree: int = 31
+    max_total_nodes: int = 31
     checkpoint_interval: int = 5
     checkpoint_top_k: int = 5
-    degradation_penalty: float = 1.0
+    # v0.3 的主 fitness 不再使用 baseline-relative penalty。保留字段只为
+    # 读取 v0.2 checkpoint/config，非零值不会进入新的 fitness。
+    degradation_penalty: float = 0.0
     train_transition: bool = True
     train_pheromone: bool = True
     transition_profile: str = "main"
@@ -211,6 +216,10 @@ class GPConfig:
             raise ValueError("elite_size 必须位于 (0, population_size)")
         if self.initial_max_depth > self.max_depth:
             raise ValueError("初始最大深度不能超过 max_depth")
+        if self.max_nodes_per_tree < 1 or self.max_total_nodes < 1:
+            raise ValueError("GP 节点上限必须为正整数")
+        if self.max_total_nodes > 2 * self.max_nodes_per_tree:
+            raise ValueError("max_total_nodes 不得超过两棵树节点上限之和")
         if not self.train_transition and not self.train_pheromone:
             raise ValueError("至少必须训练 transition 或 pheromone 中的一棵树")
         if self.population_size < 2:
@@ -253,6 +262,7 @@ class RuntimeConfig:
     """
 
     processes: int = 1
+    cpu_threads: int = 16
     torch_threads: int = 1
     torch_interop_threads: int = 1
     multiprocessing_start_method: str = "spawn"
@@ -267,10 +277,14 @@ class RuntimeConfig:
         )
         if self.processes < 1:
             raise ValueError("processes 必须为正整数")
+        if self.cpu_threads < 1:
+            raise ValueError("cpu_threads 必须为正整数")
         if self.torch_threads < 1 or self.torch_interop_threads < 1:
             raise ValueError("PyTorch thread 数必须为正整数")
         if self.multiprocessing_start_method not in {"spawn", "forkserver", "fork"}:
             raise ValueError("multiprocessing_start_method 必须为 spawn/forkserver/fork")
+        if self.aco_backend is ExecutionBackend.NUMBA_BATCH and self.processes != 1:
+            raise ValueError("numba_batch 使用单进程内部线程，processes 必须为 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,8 +299,23 @@ class ExperimentConfig:
     train_scales: tuple[int, ...] = (50, 100)
     validation_scales: tuple[int, ...] = (50, 100)
     test_scales: tuple[int, ...] = (500,)
-    validation_seeds: int = 5
+    validation_seeds: int = 3
+    validation_screening_seeds: int = 1
+    validation_top_k: int = 5
     noninferiority_tolerance: float = 0.1
+
+    def __post_init__(self) -> None:
+        for name in ("train_scales", "validation_scales", "test_scales"):
+            values = tuple(int(value) for value in getattr(self, name))
+            if not values:
+                raise ValueError(f"{name} 不得为空")
+            object.__setattr__(self, name, values)
+        if self.validation_seeds < 1 or self.validation_screening_seeds < 1:
+            raise ValueError("validation seed 数必须为正整数")
+        if self.validation_screening_seeds > self.validation_seeds:
+            raise ValueError("screening seeds 不得多于完整 validation seeds")
+        if self.validation_top_k < 1:
+            raise ValueError("validation_top_k 必须为正整数")
 
     def stable_dict(self) -> dict[str, Any]:
         """递归转换为 YAML/JSON 友好的字典。"""
@@ -307,5 +336,7 @@ class ExperimentConfig:
             "validation_scales": list(self.validation_scales),
             "test_scales": list(self.test_scales),
             "validation_seeds": self.validation_seeds,
+            "validation_screening_seeds": self.validation_screening_seeds,
+            "validation_top_k": self.validation_top_k,
             "noninferiority_tolerance": self.noninferiority_tolerance,
         }

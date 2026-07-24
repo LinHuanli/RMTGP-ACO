@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rmtgp-aco"
-version = "0.2.0"
+version = "0.3.0"
 description = "面向 Euclidean TSP 的 Strongly Typed Multi-Tree GP–ACO 研究实现"
 readme = "README.md"
 requires-python = ">=3.11"

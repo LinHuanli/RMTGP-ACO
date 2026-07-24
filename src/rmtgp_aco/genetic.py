@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import random
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from functools import partial
 from hashlib import sha256
-import random
-from typing import Callable, Iterable
 
 from deap import base, gp, tools
 
@@ -57,6 +57,22 @@ class RMTGPIndividual(list):
     def pheromone_tree(self, tree: gp.PrimitiveTree) -> None:
         self[1] = tree
 
+    @staticmethod
+    def _effective_nodes(tree: gp.PrimitiveTree) -> int:
+        """零残差哨兵不占表达能力预算，其余节点按语法树原样计数。"""
+
+        if len(tree) == 1 and str(tree) in {"ZERO_TR", "ZERO_PH"}:
+            return 0
+        return len(tree)
+
+    @property
+    def transition_nodes(self) -> int:
+        return self._effective_nodes(self.transition_tree)
+
+    @property
+    def pheromone_nodes(self) -> int:
+        return self._effective_nodes(self.pheromone_tree)
+
     @property
     def structural_hash(self) -> str:
         """对两棵树表达式计算可用于 memoization 的哈希。"""
@@ -67,9 +83,9 @@ class RMTGPIndividual(list):
 
     @property
     def total_nodes(self) -> int:
-        return len(self.transition_tree) + len(self.pheromone_tree)
+        return self.transition_nodes + self.pheromone_nodes
 
-    def clone(self) -> "RMTGPIndividual":
+    def clone(self) -> RMTGPIndividual:
         return deepcopy(self)
 
 
@@ -98,20 +114,31 @@ def make_individual(
 
     zero_tr = constant_zero_tree(transition_pset, "ZERO_TR")
     zero_ph = constant_zero_tree(pheromone_pset, "ZERO_PH")
-    random_tr = lambda: _random_tree(transition_pset, TrField, config)
-    random_ph = lambda: _random_tree(pheromone_pset, PhField, config)
+
+    def random_tr() -> gp.PrimitiveTree:
+        return _random_tree(transition_pset, TrField, config)
+
+    def random_ph() -> gp.PrimitiveTree:
+        return _random_tree(pheromone_pset, PhField, config)
 
     if mode == "baseline":
         individual = RMTGPIndividual(zero_tr, zero_ph)
         individual.metadata["baseline_passthrough"] = True
         return individual
-    if mode == "transition":
-        return RMTGPIndividual(random_tr(), zero_ph)
-    if mode == "pheromone":
-        return RMTGPIndividual(zero_tr, random_ph())
-    if mode == "joint":
-        return RMTGPIndividual(random_tr(), random_ph())
-    raise ValueError(f"未知个体初始化模式: {mode}")
+    # 初始生成也必须满足全局容量约束，不能只依赖后续 crossover/mutation
+    # 的回退。深度上限很小，正常配置下会很快接受。
+    for _ in range(10_000):
+        if mode == "transition":
+            individual = RMTGPIndividual(random_tr(), zero_ph)
+        elif mode == "pheromone":
+            individual = RMTGPIndividual(zero_tr, random_ph())
+        elif mode == "joint":
+            individual = RMTGPIndividual(random_tr(), random_ph())
+        else:
+            raise ValueError(f"未知个体初始化模式: {mode}")
+        if valid_size(individual, config):
+            return individual
+    raise RuntimeError("无法在 GP 深度/节点约束内初始化合法个体")
 
 
 def initialise_population(
@@ -167,7 +194,7 @@ def initialise_population(
 def valid_size(individual: RMTGPIndividual, config: GPConfig) -> bool:
     """检查双树的深度、节点数和常数有限性。"""
 
-    return all(
+    return individual.total_nodes <= config.max_total_nodes and all(
         tree.height <= config.max_depth
         and len(tree) <= config.max_nodes_per_tree
         and expression_is_finite(tree)

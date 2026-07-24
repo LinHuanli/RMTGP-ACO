@@ -1203,7 +1203,7 @@ def solve(
     """
 
     selected = ExecutionBackend(backend)
-    if selected is ExecutionBackend.NUMBA:
+    if selected in {ExecutionBackend.NUMBA, ExecutionBackend.NUMBA_BATCH}:
         from .aco_numba import solve_numba
 
         return solve_numba(

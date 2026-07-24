@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 from time import perf_counter
 
-from numba import njit
 import numpy as np
 import torch
+from numba import njit, prange, set_num_threads
 
 from .config import (
     ACOConfig,
@@ -21,9 +21,13 @@ from .config import (
     PheromoneIntegration,
     TransitionIntegration,
 )
-from .model import ProblemBatch, RunDiagnostics, RunResult
+from .model import (
+    PopulationQualityResult,
+    ProblemBatch,
+    RunDiagnostics,
+    RunResult,
+)
 from .program import TensorProgram
-
 
 # Postfix opcode。整数编码既减少 pickle 体积，也让 Numba 避免字符串分支。
 _CONST = np.int8(0)
@@ -90,6 +94,19 @@ class EncodedProgram:
     exact_zero: bool
 
 
+@dataclass(frozen=True, slots=True)
+class PackedPrograms:
+    """一组变长 postfix programs 的定长二维传输表示。"""
+
+    opcodes: np.ndarray
+    float_arguments: np.ndarray
+    integer_arguments: np.ndarray
+    lengths: np.ndarray
+    required_masks: np.ndarray
+    active: np.ndarray
+    exact_zero: np.ndarray
+
+
 def _encode_program(
     program: TensorProgram | None,
     *,
@@ -145,6 +162,46 @@ def _encode_program(
         required_mask=np.uint64(required_mask),
         active=True,
         exact_zero=program.is_exact_zero,
+    )
+
+
+def _pack_programs(
+    programs: list[TensorProgram | None],
+    *,
+    role: str,
+) -> PackedPrograms:
+    """把 population programs 打包为 Numba 可并行索引的二维数组。"""
+
+    if not programs:
+        raise ValueError("population programs 不得为空")
+    encoded = [_encode_program(program, role=role) for program in programs]
+    width = max(1, *(item.opcodes.size for item in encoded))
+    count = len(encoded)
+    opcodes = np.zeros((count, width), dtype=np.int8)
+    floats = np.zeros((count, width), dtype=np.float64)
+    integers = np.full((count, width), -1, dtype=np.int16)
+    lengths = np.zeros(count, dtype=np.int16)
+    masks = np.zeros(count, dtype=np.uint64)
+    active = np.zeros(count, dtype=np.uint8)
+    exact_zero = np.zeros(count, dtype=np.uint8)
+    for index, item in enumerate(encoded):
+        length = item.opcodes.size
+        lengths[index] = length
+        if length:
+            opcodes[index, :length] = item.opcodes
+            floats[index, :length] = item.float_arguments
+            integers[index, :length] = item.integer_arguments
+        masks[index] = item.required_mask
+        active[index] = item.active
+        exact_zero[index] = item.exact_zero
+    return PackedPrograms(
+        opcodes=opcodes,
+        float_arguments=floats,
+        integer_arguments=integers,
+        lengths=lengths,
+        required_masks=masks,
+        active=active,
+        exact_zero=exact_zero,
     )
 
 
@@ -1274,6 +1331,225 @@ def _solve_instance(
 def _instance_key(instance_id: str) -> np.uint64:
     digest = sha256(instance_id.encode("utf-8")).digest()
     return np.uint64(int.from_bytes(digest[:8], byteorder="little", signed=False))
+
+
+@njit(cache=True, nogil=True, parallel=True)
+def _solve_population_quality_kernel(
+    distances: np.ndarray,
+    heuristic: np.ndarray,
+    nearest: np.ndarray,
+    full_nn_rank: np.ndarray,
+    variant: int,
+    ants: int,
+    iterations: int,
+    alpha: float,
+    beta: float,
+    rho: float,
+    q0: float,
+    xi: float,
+    gamma_transition: float,
+    gamma_pheromone: float,
+    transition_mode: int,
+    pheromone_mode: int,
+    synchronous_acs: bool,
+    epsilon_numeric: float,
+    mmas_update_period: int,
+    mmas_p_best: float,
+    tr_opcodes: np.ndarray,
+    tr_float_arguments: np.ndarray,
+    tr_integer_arguments: np.ndarray,
+    tr_lengths: np.ndarray,
+    tr_required_masks: np.ndarray,
+    tr_active: np.ndarray,
+    ph_opcodes: np.ndarray,
+    ph_float_arguments: np.ndarray,
+    ph_integer_arguments: np.ndarray,
+    ph_lengths: np.ndarray,
+    ph_required_masks: np.ndarray,
+    ph_active: np.ndarray,
+    seeds: np.ndarray,
+    instance_keys: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """在一个 native 边界内并行全部 genotype×instance 任务。"""
+
+    population = tr_opcodes.shape[0]
+    batch = distances.shape[0]
+    best_lengths = np.empty((population, batch), dtype=np.float64)
+    best_iterations = np.empty((population, batch), dtype=np.int64)
+    diagnostics = np.empty((population, batch, 3), dtype=np.int64)
+    tasks = population * batch
+    for task in prange(tasks):
+        individual = task // batch
+        batch_index = task - individual * batch
+        tr_length = int(tr_lengths[individual])
+        ph_length = int(ph_lengths[individual])
+        (
+            _,
+            best_length,
+            best_iteration,
+            _,
+            task_diagnostics,
+        ) = _solve_instance(
+            distances[batch_index],
+            heuristic[batch_index],
+            nearest[batch_index],
+            full_nn_rank[batch_index],
+            variant,
+            ants,
+            iterations,
+            alpha,
+            beta,
+            rho,
+            q0,
+            xi,
+            gamma_transition,
+            gamma_pheromone,
+            transition_mode,
+            pheromone_mode,
+            synchronous_acs,
+            epsilon_numeric,
+            mmas_update_period,
+            mmas_p_best,
+            bool(tr_active[individual]),
+            tr_opcodes[individual, :tr_length],
+            tr_float_arguments[individual, :tr_length],
+            tr_integer_arguments[individual, :tr_length],
+            tr_required_masks[individual],
+            bool(ph_active[individual]),
+            ph_opcodes[individual, :ph_length],
+            ph_float_arguments[individual, :ph_length],
+            ph_integer_arguments[individual, :ph_length],
+            ph_required_masks[individual],
+            seeds[batch_index],
+            instance_keys[batch_index],
+        )
+        best_lengths[individual, batch_index] = best_length
+        best_iterations[individual, batch_index] = best_iteration
+        diagnostics[individual, batch_index] = task_diagnostics
+    return best_lengths, best_iterations, diagnostics
+
+
+def solve_population_numba(
+    problem: ProblemBatch,
+    config: ACOConfig,
+    programs: list[tuple[TensorProgram | None, TensorProgram | None]],
+    *,
+    seed: int,
+    threads: int = 16,
+) -> PopulationQualityResult:
+    """以 16-thread task matrix 评估一组唯一 GP genotypes。"""
+
+    if config.device != "cpu" or problem.device.type != "cpu":
+        raise ValueError("Numba population 后端仅支持 CPU ProblemBatch")
+    if config.dtype != torch.float64 or problem.coords.dtype != torch.float64:
+        raise ValueError("正式 Numba population 后端仅支持 float64")
+    if threads < 1:
+        raise ValueError("threads 必须为正整数")
+    if not programs:
+        raise ValueError("program population 不得为空")
+
+    transition = _pack_programs(
+        [pair[0] for pair in programs],
+        role="transition",
+    )
+    pheromone = _pack_programs(
+        [pair[1] for pair in programs],
+        role="pheromone",
+    )
+    transition_mode = (
+        1
+        if config.transition_integration is TransitionIntegration.REPLACEMENT
+        else 0
+    )
+    pheromone_mode = {
+        PheromoneIntegration.BUDGET_RESIDUAL: 0,
+        PheromoneIntegration.UNNORMALIZED_MULTIPLICATIVE: 1,
+        PheromoneIntegration.ADDITIVE: 2,
+        PheromoneIntegration.REPLACEMENT: 3,
+    }[config.pheromone_integration]
+    variant = {
+        ACOVariant.AS: 0,
+        ACOVariant.ACS: 1,
+        ACOVariant.MMAS: 2,
+    }[config.variant]
+
+    tr_active = transition.active.copy()
+    if transition_mode == 0:
+        tr_active[
+            (transition.exact_zero.astype(bool))
+            | (config.gamma_transition == 0.0)
+        ] = 0
+    ph_active = pheromone.active.copy()
+    if pheromone_mode != 3:
+        ph_active[
+            (pheromone.exact_zero.astype(bool))
+            | (config.gamma_pheromone == 0.0)
+        ] = 0
+
+    distances = np.ascontiguousarray(problem.distances.detach().numpy())
+    heuristic = np.ascontiguousarray(problem.heuristic.detach().numpy())
+    nearest = np.ascontiguousarray(problem.nn_indices.detach().numpy())
+    ranks = np.ascontiguousarray(problem.full_nn_rank.detach().numpy())
+    batch = problem.batch_size
+    seeds = np.full(batch, np.uint64(int(seed) % (2**64)), dtype=np.uint64)
+    instance_keys = np.asarray(
+        [_instance_key(instance_id) for instance_id in problem.instance_ids],
+        dtype=np.uint64,
+    )
+
+    set_num_threads(threads)
+    started = perf_counter()
+    best_lengths, best_iterations, diagnostics = (
+        _solve_population_quality_kernel(
+            distances,
+            heuristic,
+            nearest,
+            ranks,
+            variant,
+            config.resolve_ants(problem.n),
+            config.iterations,
+            config.alpha,
+            config.beta,
+            config.rho,
+            config.q0,
+            config.xi,
+            config.gamma_transition,
+            config.gamma_pheromone,
+            transition_mode,
+            pheromone_mode,
+            config.acs_synchronous,
+            config.epsilon_numeric,
+            config.mmas_update_period,
+            config.mmas_p_best,
+            transition.opcodes,
+            transition.float_arguments,
+            transition.integer_arguments,
+            transition.lengths,
+            transition.required_masks,
+            tr_active,
+            pheromone.opcodes,
+            pheromone.float_arguments,
+            pheromone.integer_arguments,
+            pheromone.lengths,
+            pheromone.required_masks,
+            ph_active,
+            seeds,
+            instance_keys,
+        )
+    )
+    elapsed = perf_counter() - started
+    return PopulationQualityResult(
+        best_length=torch.from_numpy(best_lengths),
+        best_iteration=torch.from_numpy(best_iterations),
+        diagnostics=torch.from_numpy(diagnostics.sum(axis=1)),
+        wall_time_sec=elapsed,
+        constructed_tours=(
+            len(programs)
+            * batch
+            * config.resolve_ants(problem.n)
+            * config.iterations
+        ),
+    )
 
 
 def solve_numba(

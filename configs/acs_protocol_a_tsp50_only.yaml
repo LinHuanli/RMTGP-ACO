@@ -1,9 +1,9 @@
 experiment:
-  experiment_id: protocol-a-acs-rmtgp
+  experiment_id: protocol-a-acs-rmtgp-tsp50-only
   root_seed: 2001
-  train_scales: [50, 100]
+  train_scales: [50]
   validation_scales: [50, 100]
-  test_scales: [500]
+  test_scales: [50, 100, 500]
   validation_seeds: 3
   validation_screening_seeds: 1
   validation_top_k: 5
@@ -51,7 +51,6 @@ data:
   root: Datasets/TSP
   train:
     50: [train_dataset/tsp/tsp_50/tsp50_uniform_128k_*.txt]
-    100: [train_dataset/tsp/tsp_100/tsp100_uniform_128k_*.txt]
   validation:
     50: [val_dataset/tsp/tsp50_uniform_val.txt]
     100: [val_dataset/tsp/tsp100_uniform_val.txt]
@@ -86,7 +85,8 @@ data:
       distribution: tsplib-extra
       files: [test_dataset/tsp/tsplib/*.txt]
       min_scale: 501
-  train_instances_per_scale: 16
+  # 与 mixed 的 16+16 保持每代总共 32 个 instance evaluations。
+  train_instances_per_scale: 32
   validation_selection_instances_per_scale: 32
   validation_gate_instances_per_scale: 32
   evaluation_batch_size: 32

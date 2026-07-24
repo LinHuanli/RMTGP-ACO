@@ -47,5 +47,6 @@ data:
       distribution: uniform
       files: [test_dataset/tsp/tsp50_concorde_5.688.txt]
   train_instances_per_scale: 1
-  validation_instances_per_scale: 1
+  validation_selection_instances_per_scale: 1
+  validation_gate_instances_per_scale: 1
   evaluation_batch_size: 1

@@ -2,28 +2,30 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor
-from copy import deepcopy
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
-from hashlib import sha256
 import json
 import multiprocessing as mp
 import os
-from pathlib import Path
 import pickle
 import platform
 import random
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
 from statistics import fmean
 from time import perf_counter, sleep
-from typing import Callable, Iterable, Sequence, TypeVar
+from typing import TypeVar
 
-from deap import tools
 import numpy as np
 import torch
 import yaml
+from deap import tools
 
 from .aco import solve
+from .baseline import BaselineArchive
 from .config import ExecutionBackend, ExperimentConfig
 from .genetic import (
     RMTGPIndividual,
@@ -35,9 +37,8 @@ from .genetic import (
 from .program import create_primitive_sets
 from .sampling import EvaluationCase
 
-
 _WORKER_EXPERIMENT: ExperimentConfig | None = None
-_CHECKPOINT_SCHEMA_VERSION = 1
+_CHECKPOINT_SCHEMA_VERSION = 2
 _T = TypeVar("_T")
 
 
@@ -46,8 +47,21 @@ class FitnessBreakdown:
     """一个个体在当前 mini-batch 上的可审计 fitness 组成。"""
 
     fitness: float
+    mean_gap_by_scale: dict[int, float]
+    median_gap_by_scale: dict[int, float]
+    baseline_gap_by_scale: dict[int, float]
     mean_delta_by_scale: dict[int, float]
-    degradation_by_scale: dict[int, float]
+    degradation_by_scale: dict[int, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationData:
+    """候选在 validation 上的 absolute/baseline/paired gap 长表数组。"""
+
+    candidate_gap_by_scale: dict[int, np.ndarray]
+    baseline_gap_by_scale: dict[int, np.ndarray]
+    delta_by_scale: dict[int, np.ndarray]
+    instance_ids_by_scale: dict[int, np.ndarray]
 
 
 @dataclass(slots=True)
@@ -58,6 +72,7 @@ class PopulationEvaluationResult:
     breakdowns: dict[str, FitnessBreakdown]
     baseline_wall_time: float
     evaluation_wall_time: float
+    constructed_tours: int = 0
 
 
 @dataclass(slots=True)
@@ -79,8 +94,10 @@ class GenerationRecord:
     best_hash: str
     best_transition_expression: str
     best_pheromone_expression: str
+    best_mean_gap_by_scale: dict[int, float]
+    best_median_gap_by_scale: dict[int, float]
+    baseline_mean_gap_by_scale: dict[int, float]
     best_mean_delta_by_scale: dict[int, float]
-    best_degradation_by_scale: dict[int, float]
     baseline_wall_time: float
     evaluation_wall_time: float
     breeding_wall_time: float
@@ -88,6 +105,8 @@ class GenerationRecord:
     generation_wall_time: float
     cumulative_wall_time: float
     unique_individuals_per_second: float
+    constructed_tours: int
+    tours_per_second: float
     eta_seconds: float
 
 
@@ -97,6 +116,7 @@ class ValidationScaleSummary:
 
     scale: int
     observations: int
+    instances: int
     mean_delta_pp: float
     median_delta_pp: float
     bootstrap_ci_low: float
@@ -114,7 +134,10 @@ class ValidationSelection:
     champion: RMTGPIndividual
     passed_noninferiority: bool
     selected_candidate_hash: str
+    selected_macro_gap_percent: float
     selected_macro_delta_pp: float
+    screened_candidates: int
+    finalist_candidates: int
     unique_candidates: int
     wall_time_sec: float
     scales: list[ValidationScaleSummary]
@@ -135,8 +158,9 @@ class TrainingResult:
 class BaselineCache:
     """按配置、后端、实例 IDs 和 seed 缓存原始 ACO 结果。"""
 
-    def __init__(self) -> None:
+    def __init__(self, archive: BaselineArchive | None = None) -> None:
         self._values: dict[tuple[object, ...], torch.Tensor] = {}
+        self.archive = archive
 
     @staticmethod
     def key(
@@ -155,7 +179,15 @@ class BaselineCache:
         case: EvaluationCase,
         experiment: ExperimentConfig,
     ) -> torch.Tensor | None:
-        return self._values.get(self.key(case, experiment))
+        cached = self._values.get(self.key(case, experiment))
+        if cached is not None:
+            return cached
+        if self.archive is not None:
+            archived = self.archive.lookup(case)
+            if archived is not None:
+                self._values[self.key(case, experiment)] = archived.detach().cpu()
+                return self._values[self.key(case, experiment)]
+        return None
 
     def put(
         self,
@@ -184,15 +216,16 @@ class BaselineCache:
         return value.to(case.batch.device)
 
 
-def baseline_relative_fitness(
+def reference_gap_fitness(
     candidate_lengths: dict[int, list[torch.Tensor]],
     baseline_lengths: dict[int, list[torch.Tensor]],
     references: dict[int, list[torch.Tensor]],
-    *,
-    degradation_penalty: float,
 ) -> FitnessBreakdown:
-    """实现 scale-balanced、退化惩罚 fitness。"""
+    """实现 v0.3 的 scale-balanced absolute reference-gap fitness。"""
 
+    mean_gap: dict[int, float] = {}
+    median_gap: dict[int, float] = {}
+    baseline_gap: dict[int, float] = {}
     mean_delta: dict[int, float] = {}
     degradation: dict[int, float] = {}
     terms: list[float] = []
@@ -200,16 +233,51 @@ def baseline_relative_fitness(
         candidate = torch.cat(candidate_lengths[scale])
         baseline = torch.cat(baseline_lengths[scale])
         reference = torch.cat(references[scale])
-        delta = 100.0 * (candidate - baseline) / reference
-        scale_mean = float(delta.mean().item())
-        scale_degradation = float(torch.clamp_min(delta, 0.0).mean().item())
-        mean_delta[scale] = scale_mean
-        degradation[scale] = scale_degradation
-        terms.append(scale_mean + degradation_penalty * scale_degradation)
+        candidate_gap = 100.0 * (candidate - reference) / reference
+        baseline_scale_gap = 100.0 * (baseline - reference) / reference
+        delta = candidate_gap - baseline_scale_gap
+        mean_gap[scale] = float(candidate_gap.mean().item())
+        median_gap[scale] = float(candidate_gap.median().item())
+        baseline_gap[scale] = float(baseline_scale_gap.mean().item())
+        mean_delta[scale] = float(delta.mean().item())
+        degradation[scale] = float(torch.clamp_min(delta, 0.0).mean().item())
+        terms.append(mean_gap[scale])
     return FitnessBreakdown(
         fitness=fmean(terms),
+        mean_gap_by_scale=mean_gap,
+        median_gap_by_scale=median_gap,
+        baseline_gap_by_scale=baseline_gap,
         mean_delta_by_scale=mean_delta,
         degradation_by_scale=degradation,
+    )
+
+
+def baseline_relative_fitness(
+    candidate_lengths: dict[int, list[torch.Tensor]],
+    baseline_lengths: dict[int, list[torch.Tensor]],
+    references: dict[int, list[torch.Tensor]],
+    *,
+    degradation_penalty: float = 0.0,
+) -> FitnessBreakdown:
+    """v0.2 API 兼容别名；v0.3 忽略 degradation_penalty。"""
+
+    current = reference_gap_fitness(
+        candidate_lengths,
+        baseline_lengths,
+        references,
+    )
+    legacy_terms = [
+        current.mean_delta_by_scale[scale]
+        + degradation_penalty * current.degradation_by_scale[scale]
+        for scale in sorted(current.mean_delta_by_scale)
+    ]
+    return FitnessBreakdown(
+        fitness=fmean(legacy_terms),
+        mean_gap_by_scale=current.mean_gap_by_scale,
+        median_gap_by_scale=current.median_gap_by_scale,
+        baseline_gap_by_scale=current.baseline_gap_by_scale,
+        mean_delta_by_scale=current.mean_delta_by_scale,
+        degradation_by_scale=current.degradation_by_scale,
     )
 
 
@@ -268,22 +336,24 @@ def _score_with_explicit_baselines(
             baseline_length.to(case.batch.device)
         )
         references.setdefault(case.scale, []).append(case.batch.reference_length)
-    return baseline_relative_fitness(
+    return reference_gap_fitness(
         candidate,
         baseline,
         references,
-        degradation_penalty=experiment.gp.degradation_penalty,
     )
 
 
-def _validation_arrays_with_explicit_baselines(
+def _validation_data_with_explicit_baselines(
     individual: RMTGPIndividual,
     experiment: ExperimentConfig,
     cases: Sequence[EvaluationCase],
     baseline_values: Sequence[torch.Tensor],
-) -> dict[int, np.ndarray]:
+) -> ValidationData:
     transition, pheromone = compile_individual(individual)
+    candidate_gaps: dict[int, list[np.ndarray]] = {}
+    baseline_gaps: dict[int, list[np.ndarray]] = {}
     deltas: dict[int, list[np.ndarray]] = {}
+    instance_ids: dict[int, list[np.ndarray]] = {}
     for case, baseline in zip(cases, baseline_values, strict=True):
         result = solve(
             case.batch,
@@ -293,15 +363,185 @@ def _validation_arrays_with_explicit_baselines(
             seed=case.seed,
             backend=experiment.runtime.aco_backend,
         )
-        delta = (
+        reference = case.batch.reference_length
+        candidate_gap = 100.0 * (result.best_length - reference) / reference
+        baseline_gap = (
             100.0
-            * (result.best_length - baseline.to(case.batch.device))
-            / case.batch.reference_length
+            * (baseline.to(case.batch.device) - reference)
+            / reference
+        )
+        delta = candidate_gap - baseline_gap
+        candidate_gaps.setdefault(case.scale, []).append(
+            candidate_gap.detach().cpu().numpy()
+        )
+        baseline_gaps.setdefault(case.scale, []).append(
+            baseline_gap.detach().cpu().numpy()
         )
         deltas.setdefault(case.scale, []).append(delta.detach().cpu().numpy())
+        instance_ids.setdefault(case.scale, []).append(
+            np.asarray(case.batch.instance_ids, dtype=str)
+        )
+    return ValidationData(
+        candidate_gap_by_scale={
+            scale: np.concatenate(values)
+            for scale, values in candidate_gaps.items()
+        },
+        baseline_gap_by_scale={
+            scale: np.concatenate(values)
+            for scale, values in baseline_gaps.items()
+        },
+        delta_by_scale={
+            scale: np.concatenate(values)
+            for scale, values in deltas.items()
+        },
+        instance_ids_by_scale={
+            scale: np.concatenate(values)
+            for scale, values in instance_ids.items()
+        },
+    )
+
+
+def _batched_population_breakdowns(
+    individuals: Sequence[RMTGPIndividual],
+    experiment: ExperimentConfig,
+    cases: Sequence[EvaluationCase],
+    baseline_values: Sequence[torch.Tensor],
+) -> tuple[list[FitnessBreakdown], int]:
+    """用一个 population×instance Numba 边界计算全部训练 fitness。"""
+
+    from .aco_numba import solve_population_numba
+
+    programs = [compile_individual(individual) for individual in individuals]
+    candidate: dict[int, list[torch.Tensor]] = {}
+    baseline: dict[int, list[torch.Tensor]] = {}
+    references: dict[int, list[torch.Tensor]] = {}
+    constructed_tours = 0
+    for case, baseline_length in zip(cases, baseline_values, strict=True):
+        result = solve_population_numba(
+            case.batch,
+            experiment.aco,
+            programs,
+            seed=case.seed,
+            threads=experiment.runtime.cpu_threads,
+        )
+        candidate.setdefault(case.scale, []).append(result.best_length)
+        baseline.setdefault(case.scale, []).append(baseline_length.detach().cpu())
+        references.setdefault(case.scale, []).append(
+            case.batch.reference_length.detach().cpu()
+        )
+        constructed_tours += result.constructed_tours
+
+    scale_values: dict[
+        int,
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    ] = {}
+    for scale in sorted(candidate):
+        candidate_length = torch.cat(candidate[scale], dim=1)
+        baseline_length = torch.cat(baseline[scale]).unsqueeze(0)
+        reference = torch.cat(references[scale]).unsqueeze(0)
+        candidate_gap = 100.0 * (candidate_length - reference) / reference
+        baseline_gap = 100.0 * (baseline_length - reference) / reference
+        delta = candidate_gap - baseline_gap
+        scale_values[scale] = (
+            candidate_gap.mean(dim=1),
+            candidate_gap.median(dim=1).values,
+            baseline_gap.mean(dim=1).expand(len(individuals)),
+            delta.mean(dim=1),
+        )
+
+    breakdowns: list[FitnessBreakdown] = []
+    for index in range(len(individuals)):
+        mean_gap = {
+            scale: float(values[0][index].item())
+            for scale, values in scale_values.items()
+        }
+        breakdowns.append(
+            FitnessBreakdown(
+                fitness=fmean(mean_gap.values()),
+                mean_gap_by_scale=mean_gap,
+                median_gap_by_scale={
+                    scale: float(values[1][index].item())
+                    for scale, values in scale_values.items()
+                },
+                baseline_gap_by_scale={
+                    scale: float(values[2][index].item())
+                    for scale, values in scale_values.items()
+                },
+                mean_delta_by_scale={
+                    scale: float(values[3][index].item())
+                    for scale, values in scale_values.items()
+                },
+            )
+        )
+    return breakdowns, constructed_tours
+
+
+def _batched_validation_data(
+    individuals: Sequence[RMTGPIndividual],
+    experiment: ExperimentConfig,
+    cases: Sequence[EvaluationCase],
+    baseline_values: Sequence[torch.Tensor],
+) -> dict[str, ValidationData]:
+    """批量计算 validation absolute/baseline/delta gaps。"""
+
+    from .aco_numba import solve_population_numba
+
+    programs = [compile_individual(individual) for individual in individuals]
+    candidates: dict[int, list[torch.Tensor]] = {}
+    baselines: dict[int, list[torch.Tensor]] = {}
+    references: dict[int, list[torch.Tensor]] = {}
+    ids: dict[int, list[np.ndarray]] = {}
+    for case, baseline_length in zip(cases, baseline_values, strict=True):
+        result = solve_population_numba(
+            case.batch,
+            experiment.aco,
+            programs,
+            seed=case.seed,
+            threads=experiment.runtime.cpu_threads,
+        )
+        candidates.setdefault(case.scale, []).append(result.best_length)
+        baselines.setdefault(case.scale, []).append(baseline_length.detach().cpu())
+        references.setdefault(case.scale, []).append(
+            case.batch.reference_length.detach().cpu()
+        )
+        ids.setdefault(case.scale, []).append(
+            np.asarray(case.batch.instance_ids, dtype=str)
+        )
+
+    scale_values: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+    for scale in sorted(candidates):
+        candidate_length = torch.cat(candidates[scale], dim=1)
+        baseline_length = torch.cat(baselines[scale]).unsqueeze(0)
+        reference = torch.cat(references[scale]).unsqueeze(0)
+        candidate_gap = 100.0 * (candidate_length - reference) / reference
+        baseline_gap = 100.0 * (baseline_length - reference) / reference
+        scale_values[scale] = (
+            candidate_gap.numpy(),
+            baseline_gap.expand_as(candidate_gap).numpy(),
+            (candidate_gap - baseline_gap).numpy(),
+            np.concatenate(ids[scale]),
+        )
+
     return {
-        scale: np.concatenate(values)
-        for scale, values in deltas.items()
+        individual.structural_hash: ValidationData(
+            candidate_gap_by_scale={
+                scale: values[0][index].copy()
+                for scale, values in scale_values.items()
+            },
+            baseline_gap_by_scale={
+                scale: values[1][index].copy()
+                for scale, values in scale_values.items()
+            },
+            delta_by_scale={
+                scale: values[2][index].copy()
+                for scale, values in scale_values.items()
+            },
+            instance_ids_by_scale={
+                scale: values[3].copy()
+                for scale, values in scale_values.items()
+            },
+        )
+        for index, individual in enumerate(individuals)
     }
 
 
@@ -362,14 +602,14 @@ def _validation_chunk_in_worker(
         tuple[EvaluationCase, ...],
         tuple[torch.Tensor, ...],
     ],
-) -> list[tuple[str, dict[int, np.ndarray]]]:
+) -> list[tuple[str, ValidationData]]:
     if _WORKER_EXPERIMENT is None:
         raise RuntimeError("评估 worker 尚未初始化")
     individuals, cases, baseline_values = payload
     return [
         (
             individual.structural_hash,
-            _validation_arrays_with_explicit_baselines(
+            _validation_data_with_explicit_baselines(
                 individual,
                 _WORKER_EXPERIMENT,
                 cases,
@@ -417,7 +657,7 @@ class EvaluationPool:
         self.experiment = experiment
         self.executor: ProcessPoolExecutor | None = None
 
-    def __enter__(self) -> "EvaluationPool":
+    def __enter__(self) -> EvaluationPool:
         if self.experiment.runtime.processes > 1:
             if self.experiment.aco.device != "cpu":
                 raise ValueError("多进程评估仅支持 CPU ACO")
@@ -440,6 +680,20 @@ class EvaluationPool:
     def warm(self, case: EvaluationCase) -> set[int]:
         """在正式计时前加载每个 worker 的已编译 Numba cache。"""
 
+        if (
+            self.experiment.runtime.aco_backend
+            is ExecutionBackend.NUMBA_BATCH
+        ):
+            from .aco_numba import solve_population_numba
+
+            solve_population_numba(
+                case.batch,
+                self.experiment.aco,
+                [(None, None)],
+                seed=case.seed,
+                threads=self.experiment.runtime.cpu_threads,
+            )
+            return {os.getpid()}
         if (
             self.executor is None
             or self.experiment.runtime.aco_backend is not ExecutionBackend.NUMBA
@@ -534,7 +788,18 @@ class EvaluationPool:
         individuals = [representatives[key] for key in ordered_keys]
 
         evaluation_started = perf_counter()
-        if self.executor is None:
+        constructed_tours = 0
+        if (
+            self.experiment.runtime.aco_backend
+            is ExecutionBackend.NUMBA_BATCH
+        ):
+            breakdowns, constructed_tours = _batched_population_breakdowns(
+                individuals,
+                self.experiment,
+                cases,
+                baseline_values,
+            )
+        elif self.executor is None:
             breakdowns = [
                 _score_with_explicit_baselines(
                     individual,
@@ -565,6 +830,13 @@ class EvaluationPool:
                 for chunk in chunk_results
                 for breakdown in chunk
             ]
+        if constructed_tours == 0:
+            constructed_tours = len(individuals) * sum(
+                case.batch.batch_size
+                * self.experiment.aco.resolve_ants(case.batch.n)
+                * self.experiment.aco.iterations
+                for case in cases
+            )
         evaluation_elapsed = perf_counter() - evaluation_started
 
         by_hash: dict[str, FitnessBreakdown] = {}
@@ -578,22 +850,33 @@ class EvaluationPool:
             breakdowns=by_hash,
             baseline_wall_time=baseline_elapsed,
             evaluation_wall_time=evaluation_elapsed,
+            constructed_tours=constructed_tours,
         )
 
-    def validation_arrays(
+    def validation_data(
         self,
         candidates: Sequence[RMTGPIndividual],
         cases: Sequence[EvaluationCase],
         baseline_cache: BaselineCache,
-    ) -> dict[str, dict[int, np.ndarray]]:
+    ) -> dict[str, ValidationData]:
         baseline_values = self.baseline_values(
             cases,
             baseline_cache,
             parallel=True,
         )
+        if (
+            self.experiment.runtime.aco_backend
+            is ExecutionBackend.NUMBA_BATCH
+        ):
+            return _batched_validation_data(
+                candidates,
+                self.experiment,
+                cases,
+                baseline_values,
+            )
         if self.executor is None:
             return {
-                individual.structural_hash: _validation_arrays_with_explicit_baselines(
+                individual.structural_hash: _validation_data_with_explicit_baselines(
                     individual,
                     self.experiment,
                     cases,
@@ -661,15 +944,34 @@ def _bootstrap_mean_ci(
     return float(low), float(high)
 
 
+def _aggregate_by_instance(
+    values: np.ndarray,
+    instance_ids: np.ndarray,
+) -> np.ndarray:
+    """先聚合同一 TSP instance 的 ACO seeds，避免伪重复。"""
+
+    if values.shape != instance_ids.shape:
+        raise ValueError("validation values 与 instance IDs shape 不一致")
+    grouped: dict[str, list[float]] = {}
+    for value, instance_id in zip(values, instance_ids, strict=True):
+        grouped.setdefault(str(instance_id), []).append(float(value))
+    return np.asarray(
+        [fmean(grouped[key]) for key in sorted(grouped)],
+        dtype=np.float64,
+    )
+
+
 def validate_candidates(
     candidates: Iterable[RMTGPIndividual],
     experiment: ExperimentConfig,
     validation_cases: Sequence[EvaluationCase],
     baseline_cache: BaselineCache,
     *,
+    screening_cases: Sequence[EvaluationCase] | None = None,
+    gate_cases: Sequence[EvaluationCase] | None = None,
     evaluator_pool: EvaluationPool | None = None,
 ) -> ValidationSelection:
-    """在固定 validation 上选 champion，并执行逐规模 non-inferiority gate。"""
+    """两阶段选 champion，再在独立 gate 上执行 non-inferiority。"""
 
     unique = {
         individual.structural_hash: individual
@@ -677,42 +979,94 @@ def validate_candidates(
     }
     if not unique:
         raise ValueError("validation candidates 不能为空")
-    started = perf_counter()
     if evaluator_pool is None:
         with EvaluationPool(experiment) as temporary:
-            arrays_by_hash = temporary.validation_arrays(
-                list(unique.values()),
+            return validate_candidates(
+                unique.values(),
+                experiment,
                 validation_cases,
                 baseline_cache,
+                screening_cases=screening_cases,
+                gate_cases=gate_cases,
+                evaluator_pool=temporary,
             )
+
+    screening_cases = (
+        validation_cases if screening_cases is None else screening_cases
+    )
+    gate_cases = validation_cases if gate_cases is None else gate_cases
+    started = perf_counter()
+    all_candidates = list(unique.values())
+    screening_data = evaluator_pool.validation_data(
+        all_candidates,
+        screening_cases,
+        baseline_cache,
+    )
+    screening_scored: list[tuple[float, int, RMTGPIndividual]] = []
+    for key, individual in unique.items():
+        data = screening_data[key]
+        macro = fmean(
+            float(values.mean())
+            for values in data.candidate_gap_by_scale.values()
+        )
+        screening_scored.append((macro, individual.total_nodes, individual))
+    screening_scored.sort(key=lambda item: (item[0], item[1]))
+    finalists = [
+        item[2]
+        for item in screening_scored[: min(experiment.validation_top_k, len(unique))]
+    ]
+
+    if screening_cases is validation_cases:
+        selection_data = {
+            individual.structural_hash: screening_data[individual.structural_hash]
+            for individual in finalists
+        }
     else:
-        arrays_by_hash = evaluator_pool.validation_arrays(
-            list(unique.values()),
+        selection_data = evaluator_pool.validation_data(
+            finalists,
             validation_cases,
             baseline_cache,
         )
 
-    scored: list[
-        tuple[float, int, RMTGPIndividual, dict[int, np.ndarray]]
-    ] = []
-    for key, individual in unique.items():
-        arrays = arrays_by_hash[key]
-        macro = fmean(float(values.mean()) for values in arrays.values())
-        scored.append((macro, individual.total_nodes, individual, arrays))
+    scored: list[tuple[float, int, RMTGPIndividual, ValidationData]] = []
+    for individual in finalists:
+        data = selection_data[individual.structural_hash]
+        macro = fmean(
+            float(values.mean())
+            for values in data.candidate_gap_by_scale.values()
+        )
+        scored.append((macro, individual.total_nodes, individual, data))
     scored.sort(key=lambda item: (item[0], item[1]))
     best_macro = scored[0][0]
     near_ties = [item for item in scored if item[0] <= best_macro + 0.01]
-    macro, _, selected, arrays = min(
+    macro_gap, _, selected, selected_data = min(
         near_ties,
         key=lambda item: (item[1], item[0]),
     )
+
+    if gate_cases is validation_cases:
+        gate_data = selected_data
+    else:
+        gate_data = evaluator_pool.validation_data(
+            [selected],
+            gate_cases,
+            baseline_cache,
+        )[selected.structural_hash]
+
+    instance_deltas = {
+        scale: _aggregate_by_instance(
+            values,
+            gate_data.instance_ids_by_scale[scale],
+        )
+        for scale, values in gate_data.delta_by_scale.items()
+    }
     passed = all(
         _normal_upper_bound(values) <= experiment.noninferiority_tolerance
-        for values in arrays.values()
+        for values in instance_deltas.values()
     )
 
     scale_summaries: list[ValidationScaleSummary] = []
-    for scale, values in sorted(arrays.items()):
+    for scale, values in sorted(instance_deltas.items()):
         ci_low, ci_high = _bootstrap_mean_ci(
             values,
             seed=int(
@@ -726,7 +1080,8 @@ def validate_candidates(
         scale_summaries.append(
             ValidationScaleSummary(
                 scale=scale,
-                observations=int(values.size),
+                observations=int(gate_data.delta_by_scale[scale].size),
+                instances=int(values.size),
                 mean_delta_pp=float(values.mean()),
                 median_delta_pp=float(np.median(values)),
                 bootstrap_ci_low=ci_low,
@@ -758,7 +1113,13 @@ def validate_candidates(
         champion=champion,
         passed_noninferiority=passed,
         selected_candidate_hash=selected.structural_hash,
-        selected_macro_delta_pp=float(macro),
+        selected_macro_gap_percent=float(macro_gap),
+        selected_macro_delta_pp=fmean(
+            float(values.mean())
+            for values in selected_data.delta_by_scale.values()
+        ),
+        screened_candidates=len(unique),
+        finalist_candidates=len(finalists),
         unique_candidates=len(unique),
         wall_time_sec=perf_counter() - started,
         scales=scale_summaries,
@@ -799,16 +1160,22 @@ def _generation_record(
         third_quartile=float(np.quantile(values, 0.75)),
         standard_deviation=float(values.std()),
         best_nodes=best.total_nodes,
-        best_transition_nodes=len(best.transition_tree),
-        best_pheromone_nodes=len(best.pheromone_tree),
+        best_transition_nodes=best.transition_nodes,
+        best_pheromone_nodes=best.pheromone_nodes,
         best_hash=best.structural_hash,
         best_transition_expression=str(best.transition_tree),
         best_pheromone_expression=str(best.pheromone_tree),
+        best_mean_gap_by_scale=(
+            {} if breakdown is None else dict(breakdown.mean_gap_by_scale)
+        ),
+        best_median_gap_by_scale=(
+            {} if breakdown is None else dict(breakdown.median_gap_by_scale)
+        ),
+        baseline_mean_gap_by_scale=(
+            {} if breakdown is None else dict(breakdown.baseline_gap_by_scale)
+        ),
         best_mean_delta_by_scale=(
             {} if breakdown is None else dict(breakdown.mean_delta_by_scale)
-        ),
-        best_degradation_by_scale=(
-            {} if breakdown is None else dict(breakdown.degradation_by_scale)
         ),
         baseline_wall_time=evaluation.baseline_wall_time,
         evaluation_wall_time=evaluation.evaluation_wall_time,
@@ -818,6 +1185,11 @@ def _generation_record(
         cumulative_wall_time=cumulative_wall_time,
         unique_individuals_per_second=(
             evaluation.evaluated_unique
+            / max(evaluation.evaluation_wall_time, 1e-12)
+        ),
+        constructed_tours=evaluation.constructed_tours,
+        tours_per_second=(
+            evaluation.constructed_tours
             / max(evaluation.evaluation_wall_time, 1e-12)
         ),
         eta_seconds=eta_seconds,
@@ -970,12 +1342,17 @@ def _evolution_summary(result: TrainingResult) -> str:
     lines = [
         "# 训练进化摘要",
         "",
-        "| 代 | 用时(s) | 累计(s) | 最优 fitness | 均值 | 中位数 | 节点 | 分规模 Δ(pp) |",
+        "| 代 | 用时(s) | 累计(s) | 最优 gap% | 均值 | 中位数 | 节点 | candidate/base/Δ(pp) |",
         "|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for record in result.history:
         scale_delta = ", ".join(
-            f"TSP{scale}={value:+.4f}"
+            (
+                f"TSP{scale}="
+                f"{record.best_mean_gap_by_scale[scale]:.4f}/"
+                f"{record.baseline_mean_gap_by_scale[scale]:.4f}/"
+                f"{value:+.4f}"
+            )
             for scale, value in sorted(record.best_mean_delta_by_scale.items())
         )
         lines.append(
@@ -990,6 +1367,11 @@ def _evolution_summary(result: TrainingResult) -> str:
             "## Validation",
             "",
             f"- 唯一候选数：{result.validation.unique_candidates}",
+            f"- Finalists：{result.validation.finalist_candidates}",
+            (
+                "- 选中候选 macro reference gap："
+                f"{result.validation.selected_macro_gap_percent:.6f}%"
+            ),
             f"- 选中候选 macro Δ：{result.validation.selected_macro_delta_pp:+.6f} pp",
             (
                 "- Non-inferiority："
@@ -1044,14 +1426,14 @@ def save_training_result(
 
     validation_lines = [
         (
-            "scale,observations,mean_delta_pp,median_delta_pp,"
+            "scale,observations,instances,mean_delta_pp,median_delta_pp,"
             "bootstrap_ci_low,bootstrap_ci_high,normal_upper_bound_95,"
             "wins,ties,losses,passed_noninferiority\n"
         )
     ]
     for summary in result.validation.scales:
         validation_lines.append(
-            f"{summary.scale},{summary.observations},"
+            f"{summary.scale},{summary.observations},{summary.instances},"
             f"{summary.mean_delta_pp:.17g},{summary.median_delta_pp:.17g},"
             f"{summary.bootstrap_ci_low:.17g},{summary.bootstrap_ci_high:.17g},"
             f"{summary.normal_upper_bound_95:.17g},{summary.wins},"
@@ -1083,6 +1465,9 @@ def train(
     training_cases_for_generation: Callable[[int], Sequence[EvaluationCase]],
     validation_cases: Sequence[EvaluationCase],
     *,
+    validation_screening_cases: Sequence[EvaluationCase] | None = None,
+    validation_gate_cases: Sequence[EvaluationCase] | None = None,
+    baseline_archive: BaselineArchive | None = None,
     output_directory: str | Path | None = None,
     progress_callback: Callable[[GenerationRecord], None] | None = None,
     resume_from: str | Path | None = None,
@@ -1123,7 +1508,7 @@ def train(
         history = list(state["history"])
         completed_generation = int(state["completed_generation"])
 
-    baseline_cache = BaselineCache()
+    baseline_cache = BaselineCache(baseline_archive)
     first_generation = completed_generation + 1
     pending_cases: Sequence[EvaluationCase] | None = None
     if first_generation <= experiment.gp.generations:
@@ -1135,7 +1520,10 @@ def train(
         raise ValueError("training 与 validation cases 不能同时为空")
 
     # 主进程先生成 Numba disk cache；随后 worker 只需加载，不计入每代时间。
-    if experiment.runtime.aco_backend is ExecutionBackend.NUMBA:
+    if experiment.runtime.aco_backend in {
+        ExecutionBackend.NUMBA,
+        ExecutionBackend.NUMBA_BATCH,
+    }:
         baseline_cache.best_length(warm_case, experiment)
 
     cumulative = history[-1].cumulative_wall_time if history else 0.0
@@ -1254,6 +1642,8 @@ def train(
             experiment,
             validation_cases,
             baseline_cache,
+            screening_cases=validation_screening_cases,
+            gate_cases=validation_gate_cases,
             evaluator_pool=evaluator,
         )
 

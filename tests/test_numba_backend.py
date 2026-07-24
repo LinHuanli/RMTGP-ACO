@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from deap import gp
 import numpy as np
 import pytest
 import torch
+from deap import gp
 
 from rmtgp_aco.aco import solve
 from rmtgp_aco.aco_numba import (

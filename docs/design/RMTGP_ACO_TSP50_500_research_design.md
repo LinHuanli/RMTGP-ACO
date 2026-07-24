@@ -1,16 +1,136 @@
 # RMTGP-ACO：面向 TSP50、TSP100 与 TSP500 的 Multi-Tree GP–ACO 研究设计
 
-> **文档状态**：Design v1.0
+> **文档状态**：Design v1.1 / Protocol A v0.3（2026-07-24 冻结）
 >
 > **研究对象**：对称二维 Euclidean TSP；Ant System（AS）、Ant Colony System（ACS）和 MAX–MIN Ant System（MMAS）
 >
 > **核心方法**：使用两棵 Strongly Typed GP 树分别学习状态转移残差和全局信息素强化残差
 >
-> **实现技术**：DEAP、PyTorch、NumPy、Numba；CPU 多进程与 GPU micro-batching
+> **实现技术**：DEAP、PyTorch、NumPy、Numba；16-thread CPU population batching
 >
 > **范围约束**：本文档只定义研究、算法、接口、伪代码与实验协议，不包含实现代码
 
 ---
+
+## v1.1 协议修订（实现时优先于下文旧参数）
+
+本节冻结 Protocol A v0.3。下文保留的早期候选参数仅用于解释设计演化；如与
+本节冲突，以本节为准。
+
+### 数据量与模型单位
+
+- AS、ACS、MMAS 分别训练一套 GP；每套 GP 同时学习 TSP50 与 TSP100；
+- 每代每规模无放回抽取 16 个实例，50 代共使用每规模 800 个不同实例；
+- 所有 GP 个体在同一代共享相同的 instance/ACO-seed；
+- 同一 replicate 的全部消融方法共享 schedule，pilot 与 formal schedule
+  互不重叠；
+- validation 每规模 64 个实例，固定拆为 32 个 selection 实例和 32 个
+  holdout gate 实例。全部 checkpoint 先在 selection 上以 1 seed 筛选，
+  前 5 名以 3 seeds 重评；最终只把选中的一名送入 3-seed gate；
+- ACS 追加一个等计算预算的数据协议对照：TSP50-only、TSP100-only 每代
+  各用 32 个本规模实例，mixed 使用 \(16+16\)。
+
+训练 schedule 必须预先生成紧凑 manifest，内容至少包括 protocol、phase、
+replicate、generation、scale、源文件、行号、coordinate hash 与 ACO seed。
+禁止再把 128 万长度的完整随机排列写入 checkpoint。
+
+### 统一质量指标
+
+数据中的合法 reference tour 未全部附带全局最优性证明，因此统一使用
+`reference gap`：
+
+\[
+g_i(\theta)
+=
+100
+\frac{L_i(\theta)-L_i^{\mathrm{ref}}}
+{L_i^{\mathrm{ref}}}.
+\]
+
+训练采用单目标、分规模宏平均 fitness：
+
+\[
+F(\theta)
+=
+\frac12
+\left(
+\overline g_{50}(\theta)+
+\overline g_{100}(\theta)
+\right),
+\qquad \min F.
+\]
+
+原始 ACO 不进入训练 fitness，而作为预计算的 paired baseline。每代同时记录：
+
+\[
+\Delta_i
+=
+g_i(\theta)-g_i^{\mathrm{ACO}},
+\]
+
+其中 \(\Delta_i<0\) 表示学习规则优于对应原始 ACO，单位为 percentage
+points。原先的 baseline-relative degradation penalty 不再属于主协议。
+
+### 公平的 GP 容量与核心消融
+
+所有单树、双树统一满足：
+
+\[
+N_{\mathrm{tr}}+N_{\mathrm{ph}}\le 31.
+\]
+
+其中未启用角色的精确零残差哨兵按 0 个有效节点计数，避免单树方法因实现用
+的占位节点而平白少一个节点预算。
+
+主方法为 `RMTGP-Full-F1`。确认性消融固定为：
+
+| 方法 | 状态转移 | 信息素 | 表示 |
+|---|---|---|---|
+| Legacy-GP | replacement | 无 | 上一研究的 terminals/functions |
+| Matched-Replace | replacement | 无 | Full/F1 |
+| TR-RGP | residual | 无 | Full/F1 |
+| PH-RGP | 无 | residual | Full/F1 |
+| RMTGP-Core-F0 | residual | residual | Core/F0 |
+| RMTGP-Core-F1 | residual | residual | Core/F1 |
+| RMTGP-Full-F0 | residual | residual | Full/F0 |
+| RMTGP-Full-F1 | residual | residual | Full/F1 |
+
+Transition Core 为 `RTau, REta, BaseConf, DistRank`；Full 再加入
+`Entropy, ConstructProg, ACOProg, Stagnation`。Pheromone Core 为
+`EdgeEta, EdgeTau, NNRank, SourceQuality`；Full 再加入
+`ColonyFreq, ACOProg, Stagnation`。F0 为
+`ADD, SUB, MUL, PDIV, NEG`；F1 再加入 `MIN, MAX, ABS`。
+
+Residual 优势由 `TR-RGP - Matched-Replace` 识别；双树优势要求主方法同时
+优于 TR-RGP 与 PH-RGP；terminal/function 贡献使用 Core/Full × F0/F1
+的 \(2\times2\) factorial contrasts。
+
+### CPU 批量执行与 baseline archive
+
+正式后端优先使用单进程、16 个 Numba threads，把独立任务组织为：
+
+\[
+\text{individual}\times\text{instance}\times\text{ACO seed}.
+\]
+
+ACO iteration 与 tour construction step 的因果顺序不做伪并行。GP programs
+使用连续 packed opcode/argument buffers；训练和 validation 只返回质量与
+诊断量。PyTorch 保留为语义参考。只有端到端 float64 GPU 吞吐达到最佳 CPU
+后端的 5 倍且质量无漂移，GPU 才可进入正式路径。
+
+原始 ACO 必须在训练前生成不可变 baseline archive。cache key 至少包含
+coordinate hash、完整 ACO config hash、seed、dtype 与 kernel semantic
+version。正式训练遇到 cache miss 或 hash 不一致必须失败，不允许静默重算。
+
+### 推断边界
+
+当前 pilot 对每个 ACO × trainable method 使用 3 个 GP seeds；它只用于验证
+实现、耗时和方差，不产生显著性结论。正式论文实验在配置冻结后使用 30 个
+独立 GP runs，并以 run→instance→ACO-seed 的层次 bootstrap、paired test
+和 Holm 校正进行推断。
+
+因此完整 pilot 为 \(3\times8\times3=72\) 个主消融 runs，另加
+ACS 的 \(2\times3=6\) 个单尺度数据协议 runs，总计 78 个训练 runs。
 
 ## 0. 执行摘要
 
@@ -2167,9 +2287,14 @@ Algorithm GlobalUpdate(variant, tau, events, T_ph)
 | Matched-Replace-GP | matched full replacement | baseline |
 | TR-RGP | residual | baseline |
 | PH-RGP | baseline | residual |
-| RMTGP-ACO | residual | residual |
+| RMTGP-Core-F0 | residual | residual |
+| RMTGP-Core-F1 | residual | residual |
+| RMTGP-Full-F0 | residual | residual |
+| RMTGP-Full-F1 | residual | residual |
 
-主回答 RQ1–RQ4。
+前五个 trainable 对照回答 residual 与双树增益；四个 RMTGP 组合给出
+Core/Full × F0/F1 的预注册 \(2\times2\) factorial contrasts。主方法是
+RMTGP-Full-F1。
 
 ## 22.3 E2：规模外推
 
@@ -2204,20 +2329,29 @@ TSP500\text{-uniform}.
 
 ## 22.5 E4：Mixed-scale 与 single-scale transfer
 
-- mixed train：50+100+500；
-- Train-50；
-- Train-100；
-- Train-500。
+- 仅在 ACS 上执行，避免把次要数据协议扩成三变体的巨大笛卡尔积；
+- mixed train：每代 TSP50 16 个 + TSP100 16 个；
+- Train-50：每代 TSP50 32 个；
+- Train-100：每代 TSP100 32 个；
+- 三者每代均为 32 个 instance evaluations，并使用相同 population、
+  generations 与 ACO 预算；
+- 分别测试 TSP50、TSP100 与 TSP500。
 
 形成：
 
 \[
-4\times3
+3\times3
 \]
 
 的 train protocol × test scale heatmap。
 
+不设置 Train-500，因为它既破坏“从 50/100 外推到 500”的核心问题，又会
+显著增加训练成本。
+
 ## 22.6 E5：Terminal ablation
+
+确认性分析只使用 Core/Full × F0/F1 四组合。下列更细阶梯仅在该 factorial
+结果显示 terminal 主效应后作为探索性 follow-up，不参与主假设的多重检验。
 
 ### Transition
 
@@ -2251,6 +2385,9 @@ Residual radius：
 \[
 \gamma\in\{0.1,1/3,0.5\}.
 \]
+
+F0/F1 属于确认性 factorial；\(\gamma\) 扫描属于后续敏感性分析，不与主
+78-run pilot 同时展开。
 
 ## 22.8 E7：Budget preservation
 
@@ -2570,7 +2707,7 @@ AS/MMAS 使用 \(M=n\)，TSP500 每轮构造 500 条 tours。
 - 减小 \(\gamma\)；
 - 保留 budget normalization；
 - non-inferiority gate；
-- degradation penalty。
+- 在独立 holdout gate 报告 worse-than-baseline rate。
 
 ## 27.4 Pheromone tree 信号不足
 

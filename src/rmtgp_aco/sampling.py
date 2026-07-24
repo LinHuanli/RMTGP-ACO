@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import os
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 import torch
@@ -32,7 +32,7 @@ class IndexedShard:
         path: str | Path,
         *,
         use_cache: bool = True,
-    ) -> "IndexedShard":
+    ) -> IndexedShard:
         """建立随机访问索引，并以文件大小和 mtime 校验磁盘缓存。"""
 
         source = Path(path)
@@ -144,28 +144,46 @@ class ScaleStratifiedSampler:
             )
             for scale in self.pools
         }
-        self._orders = {
-            scale: rng.permutation(len(self.pools[scale]))
-            for scale, rng in self._rngs.items()
-        }
-        self._positions = {scale: 0 for scale in self.pools}
+        # 旧实现为每个 scale 保存 128 万长度的完整 permutation，导致每个
+        # checkpoint 约 20 MB。正式 run 每规模只抽 800 个索引，因此只保存
+        # 已使用集合；在池接近耗尽时才构造剩余候选。
+        self._used = {scale: set() for scale in self.pools}
+        self._cycles = {scale: 0 for scale in self.pools}
+        self._legacy_orders: dict[int, np.ndarray] | None = None
+        self._legacy_positions: dict[int, int] | None = None
         self._next_generation = 1
 
     def state_dict(self) -> dict[str, object]:
         """返回可 pickle 的精确采样状态，用于逐代断点恢复。"""
 
+        if self._legacy_orders is not None and self._legacy_positions is not None:
+            return {
+                "root_seed": self.root_seed,
+                "scales": tuple(self.pools),
+                "rng_states": {
+                    scale: rng.bit_generator.state
+                    for scale, rng in self._rngs.items()
+                },
+                "orders": {
+                    scale: order.copy()
+                    for scale, order in self._legacy_orders.items()
+                },
+                "positions": dict(self._legacy_positions),
+                "next_generation": self._next_generation,
+            }
         return {
+            "schema_version": 2,
             "root_seed": self.root_seed,
             "scales": tuple(self.pools),
             "rng_states": {
                 scale: rng.bit_generator.state
                 for scale, rng in self._rngs.items()
             },
-            "orders": {
-                scale: order.copy()
-                for scale, order in self._orders.items()
+            "used_indices": {
+                scale: np.asarray(sorted(values), dtype=np.int64)
+                for scale, values in self._used.items()
             },
-            "positions": dict(self._positions),
+            "cycles": dict(self._cycles),
             "next_generation": self._next_generation,
         }
 
@@ -177,19 +195,37 @@ class ScaleStratifiedSampler:
         if tuple(state["scales"]) != tuple(self.pools):
             raise ValueError("sampler checkpoint 的 scales 与当前数据池不一致")
         rng_states = state["rng_states"]
-        orders = state["orders"]
-        positions = state["positions"]
         if not isinstance(rng_states, Mapping):
             raise TypeError("sampler rng_states 必须为 mapping")
-        if not isinstance(orders, Mapping) or not isinstance(positions, Mapping):
-            raise TypeError("sampler orders/positions 必须为 mapping")
         for scale in self.pools:
             self._rngs[scale].bit_generator.state = rng_states[scale]
-            restored = np.asarray(orders[scale], dtype=np.int64)
-            if restored.shape != self._orders[scale].shape:
-                raise ValueError(f"scale={scale} sampler order shape 不一致")
-            self._orders[scale] = restored.copy()
-            self._positions[scale] = int(positions[scale])
+        if "used_indices" in state:
+            used = state["used_indices"]
+            cycles = state["cycles"]
+            if not isinstance(used, Mapping) or not isinstance(cycles, Mapping):
+                raise TypeError("sampler used_indices/cycles 必须为 mapping")
+            for scale in self.pools:
+                restored = np.asarray(used[scale], dtype=np.int64)
+                if np.any(restored < 0) or np.any(restored >= len(self.pools[scale])):
+                    raise ValueError(f"scale={scale} sampler used index 越界")
+                self._used[scale] = set(int(item) for item in restored)
+                self._cycles[scale] = int(cycles[scale])
+            self._legacy_orders = None
+            self._legacy_positions = None
+        else:
+            # 兼容 v0.2 已存在的恢复点；新 checkpoint 不再产生大 permutation。
+            orders = state["orders"]
+            positions = state["positions"]
+            if not isinstance(orders, Mapping) or not isinstance(positions, Mapping):
+                raise TypeError("旧 sampler orders/positions 必须为 mapping")
+            self._legacy_orders = {}
+            self._legacy_positions = {}
+            for scale in self.pools:
+                restored = np.asarray(orders[scale], dtype=np.int64)
+                if restored.shape != (len(self.pools[scale]),):
+                    raise ValueError(f"scale={scale} sampler order shape 不一致")
+                self._legacy_orders[scale] = restored.copy()
+                self._legacy_positions[scale] = int(positions[scale])
         self._next_generation = int(state["next_generation"])
 
     def _draw_without_replacement(self, scale: int, count: int) -> np.ndarray:
@@ -200,22 +236,52 @@ class ScaleStratifiedSampler:
             raise ValueError(
                 f"instances_per_scale={count} 大于 scale={scale} pool={pool_size}"
             )
-        pieces: list[np.ndarray] = []
-        remaining = count
-        while remaining:
-            position = self._positions[scale]
-            available = pool_size - position
-            take = min(remaining, available)
-            pieces.append(self._orders[scale][position : position + take])
-            self._positions[scale] += take
-            remaining -= take
-            if self._positions[scale] == pool_size:
-                self._orders[scale] = self._rngs[scale].permutation(pool_size)
-                self._positions[scale] = 0
-        return np.concatenate(pieces)
+        if self._legacy_orders is not None and self._legacy_positions is not None:
+            position = self._legacy_positions[scale]
+            if position + count <= pool_size:
+                result = self._legacy_orders[scale][position : position + count].copy()
+                self._legacy_positions[scale] += count
+                return result
+            # 极少数跨旧 permutation 边界的恢复 run 仍保持精确旧语义。
+            first = self._legacy_orders[scale][position:].copy()
+            remaining = count - first.size
+            self._legacy_orders[scale] = self._rngs[scale].permutation(pool_size)
+            self._legacy_positions[scale] = remaining
+            return np.concatenate((first, self._legacy_orders[scale][:remaining]))
 
-    def cases_for_generation(self, generation: int) -> list[EvaluationCase]:
-        """由 generation 派生确定性、分规模的 mini-batch。"""
+        selected: list[int] = []
+        used = self._used[scale]
+        rng = self._rngs[scale]
+        while len(selected) < count:
+            if len(used) == pool_size:
+                used.clear()
+                self._cycles[scale] += 1
+            available = pool_size - len(used)
+            needed = count - len(selected)
+            take = min(available, needed)
+            if len(used) > pool_size // 2:
+                remaining = np.fromiter(
+                    (index for index in range(pool_size) if index not in used),
+                    dtype=np.int64,
+                    count=available,
+                )
+                draw = rng.choice(remaining, size=take, replace=False)
+                values = [int(item) for item in np.atleast_1d(draw)]
+            else:
+                values = []
+                while len(values) < take:
+                    value = int(rng.integers(0, pool_size))
+                    if value not in used and value not in values:
+                        values.append(value)
+            used.update(values)
+            selected.extend(values)
+        return np.asarray(selected, dtype=np.int64)
+
+    def selection_for_generation(
+        self,
+        generation: int,
+    ) -> list[tuple[int, np.ndarray, int]]:
+        """返回本代逻辑索引和 ACO seed，不触发实例解析或矩阵预计算。"""
 
         if generation != self._next_generation:
             raise ValueError(
@@ -223,18 +289,11 @@ class ScaleStratifiedSampler:
                 f"实际为 {generation}"
             )
         self._next_generation += 1
-        cases: list[EvaluationCase] = []
-        for scale, pool in self.pools.items():
+        selections: list[tuple[int, np.ndarray, int]] = []
+        for scale in self.pools:
             indices = self._draw_without_replacement(
                 scale,
                 self.instances_per_scale,
-            )
-            instances = [pool.get(int(index)) for index in indices]
-            batch = make_problem_batch(
-                instances,
-                candidate_size=self.candidate_size,
-                dtype=self.dtype,
-                device=self.device,
             )
             aco_seed = int(
                 np.random.default_rng(
@@ -242,6 +301,22 @@ class ScaleStratifiedSampler:
                         [self.root_seed, generation, scale, 0x41434F]
                     )
                 ).integers(0, 2**63 - 1)
+            )
+            selections.append((scale, indices, aco_seed))
+        return selections
+
+    def cases_for_generation(self, generation: int) -> list[EvaluationCase]:
+        """由 generation 派生确定性、分规模的 mini-batch。"""
+
+        cases: list[EvaluationCase] = []
+        for scale, indices, aco_seed in self.selection_for_generation(generation):
+            pool = self.pools[scale]
+            instances = [pool.get(int(index)) for index in indices]
+            batch = make_problem_batch(
+                instances,
+                candidate_size=self.candidate_size,
+                dtype=self.dtype,
+                device=self.device,
             )
             cases.append(EvaluationCase(scale=scale, batch=batch, seed=aco_seed))
         return cases

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import torch
+from conftest import make_instance
 
 from rmtgp_aco.aco import solve
 from rmtgp_aco.config import (
@@ -22,8 +23,6 @@ from rmtgp_aco.genetic import (
 )
 from rmtgp_aco.sampling import in_memory_cases
 from rmtgp_aco.training import BaselineCache, evaluate_invalid_population
-
-from conftest import make_instance
 
 
 def test_legacy_typed_tree_runs_as_positive_replacement(small_instances) -> None:
@@ -81,7 +80,10 @@ def test_baseline_sentinel_bypasses_replacement(small_instances) -> None:
         mode="baseline",
     )
     assert compile_individual(baseline) == (None, None)
-    assert baseline.structural_hash != population[0].structural_hash or baseline is not population[0]
+    assert (
+        baseline.structural_hash != population[0].structural_hash
+        or baseline is not population[0]
+    )
 
 
 def test_cpu_process_pool_evaluates_unique_individuals() -> None:

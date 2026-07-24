@@ -7,12 +7,11 @@ from dataclasses import replace
 import pytest
 import torch
 import yaml
+from conftest import make_instance
 
 from rmtgp_aco.config import ACOConfig, ExperimentConfig, GPConfig
 from rmtgp_aco.sampling import in_memory_cases
 from rmtgp_aco.training import baseline_relative_fitness, train
-
-from conftest import make_instance
 
 
 def test_scale_balanced_baseline_relative_fitness() -> None:
@@ -80,7 +79,7 @@ def test_tiny_training_run_is_reproducible(tmp_path) -> None:
         output_directory=output,
     )
     assert len(result.history) == 2
-    assert result.champion.total_nodes >= 2
+    assert result.champion.total_nodes <= gp.max_total_nodes
     assert (output / "config.yaml").is_file()
     assert (output / "environment.json").is_file()
     assert (output / "champion.pkl").is_file()

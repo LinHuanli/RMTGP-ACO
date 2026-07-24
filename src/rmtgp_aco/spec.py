@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 import yaml
@@ -17,7 +18,6 @@ from .config import (
     RuntimeConfig,
     TransitionIntegration,
 )
-
 
 ALLOWED_SCALES = frozenset({50, 100, 500})
 
@@ -41,9 +41,13 @@ class DatasetSpec:
     train: dict[int, tuple[str, ...]]
     validation: dict[int, tuple[str, ...]]
     test: dict[str, TestPartitionSpec]
-    train_instances_per_scale: int = 1
-    validation_instances_per_scale: int = 128
+    train_instances_per_scale: int = 16
+    validation_selection_instances_per_scale: int = 32
+    validation_gate_instances_per_scale: int = 32
     evaluation_batch_size: int = 32
+    schedule_manifest: str | None = None
+    baseline_archive: str | None = None
+    baseline_policy: str = "compute"
 
     def __post_init__(self) -> None:
         for label, mapping in (("train", self.train), ("validation", self.validation)):
@@ -63,10 +67,14 @@ class DatasetSpec:
                 raise ValueError(f"test partition {name!r} 的规模区间为空")
         if self.train_instances_per_scale < 1:
             raise ValueError("train_instances_per_scale 必须为正整数")
-        if self.validation_instances_per_scale < 1:
-            raise ValueError("validation_instances_per_scale 必须为正整数")
+        if self.validation_selection_instances_per_scale < 1:
+            raise ValueError("validation selection 实例数必须为正整数")
+        if self.validation_gate_instances_per_scale < 1:
+            raise ValueError("validation gate 实例数必须为正整数")
         if self.evaluation_batch_size < 1:
             raise ValueError("evaluation_batch_size 必须为正整数")
+        if self.baseline_policy not in {"compute", "require"}:
+            raise ValueError("baseline_policy 仅支持 compute 或 require")
 
     def resolve_patterns(self, patterns: tuple[str, ...]) -> tuple[Path, ...]:
         """相对 root 展开 glob，并显式排除已知重复 copy。"""
@@ -108,6 +116,22 @@ class DatasetSpec:
         except KeyError as exc:
             raise KeyError(f"未知 test partition: {partition}") from exc
         return self.resolve_patterns(selected.files)
+
+    def resolve_auxiliary_path(self, value: str | None) -> Path | None:
+        """按项目工作目录解析 schedule/cache 路径。"""
+
+        if value is None:
+            return None
+        path = Path(value)
+        return path.resolve() if path.is_absolute() else (Path.cwd() / path).resolve()
+
+    @property
+    def schedule_path(self) -> Path | None:
+        return self.resolve_auxiliary_path(self.schedule_manifest)
+
+    @property
+    def baseline_path(self) -> Path | None:
+        return self.resolve_auxiliary_path(self.baseline_archive)
 
 
 @dataclass(frozen=True, slots=True)

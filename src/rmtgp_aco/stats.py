@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import asdict, dataclass
 import json
+from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass
 from math import ceil
 from pathlib import Path
 from statistics import fmean
-from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 from scipy import stats
@@ -82,6 +82,19 @@ class BootstrapInterval:
     replicates: int
 
 
+@dataclass(frozen=True, slots=True)
+class FactorialContrast:
+    """Core/Full × F0/F1 的 paired factorial contrast。"""
+
+    contrast: str
+    estimate_pp: float
+    lower_95: float
+    upper_95: float
+    runs: int
+    run_instance_blocks: int
+    replicates: int
+
+
 def _group_key(record: EvaluationRecord) -> tuple[str, str, str, str, int]:
     return (
         record.method,
@@ -106,7 +119,7 @@ def summarize_quality(
     ] = defaultdict(lambda: defaultdict(list))
     for record in records:
         groups[_group_key(record)][
-            (record.champion_id, record.instance_id)
+            (_paired_run_id(record), record.instance_id)
         ].append(record)
 
     summaries: list[QualitySummary] = []
@@ -304,7 +317,7 @@ def hierarchical_bootstrap_delta(
     replicates: int = 10_000,
     seed: int = 0,
 ) -> list[BootstrapInterval]:
-    """依次重采样 champion、instance 与 ACO seed，估计 mean paired delta。"""
+    """依次重采样 GP run、instance 与 ACO seed，估计 mean paired delta。"""
 
     if replicates < 100:
         raise ValueError("正式 bootstrap replicates 至少为 100")
@@ -313,7 +326,7 @@ def hierarchical_bootstrap_delta(
         dict[str, dict[str, list[float]]],
     ] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     for record in records:
-        methods[record.method][record.champion_id][record.instance_id].append(
+        methods[record.method][_paired_run_id(record)][record.instance_id].append(
             record.delta_pp
         )
 
@@ -371,6 +384,208 @@ def hierarchical_bootstrap_delta(
     return intervals
 
 
+def _paired_run_id(record: EvaluationRecord) -> str:
+    """优先用 root seed 对齐不同方法的同一 GP replicate。"""
+
+    if record.gp_root_seed:
+        return f"seed:{record.gp_root_seed}"
+    return record.gp_run_id or record.champion_id
+
+
+def _factorial_value(
+    values: Mapping[str, float],
+    *,
+    name: str,
+    core_f0: str,
+    core_f1: str,
+    full_f0: str,
+    full_f1: str,
+) -> float:
+    if name == "terminal_full_minus_core":
+        return 0.5 * (
+            values[full_f0]
+            - values[core_f0]
+            + values[full_f1]
+            - values[core_f1]
+        )
+    if name == "function_f1_minus_f0":
+        return 0.5 * (
+            values[core_f1]
+            - values[core_f0]
+            + values[full_f1]
+            - values[full_f0]
+        )
+    if name == "terminal_function_interaction":
+        return (
+            values[full_f1]
+            - values[full_f0]
+            - values[core_f1]
+            + values[core_f0]
+        )
+    raise ValueError(f"未知 factorial contrast: {name}")
+
+
+def factorial_contrasts(
+    records: Sequence[EvaluationRecord],
+    *,
+    core_f0: str,
+    core_f1: str,
+    full_f0: str,
+    full_f1: str,
+    replicates: int = 10_000,
+    seed: int = 0,
+) -> list[FactorialContrast]:
+    """按 run→instance→paired ACO seed 重采样 2×2 factorial effects。
+
+    contrast 小于零表示 Full terminals 或 F1 functions 降低 reference gap。
+    """
+
+    if replicates < 100:
+        raise ValueError("正式 factorial bootstrap replicates 至少为 100")
+    selected_methods = (core_f0, core_f1, full_f0, full_f1)
+    nested: dict[
+        str,
+        dict[str, dict[str, dict[int, list[float]]]],
+    ] = defaultdict(
+        lambda: defaultdict(
+            lambda: defaultdict(lambda: defaultdict(list))
+        )
+    )
+    for record in records:
+        if record.method in selected_methods:
+            nested[record.method][_paired_run_id(record)][record.instance_id][
+                record.seed
+            ].append(record.gap_percent)
+    missing = [method for method in selected_methods if method not in nested]
+    if missing:
+        raise ValueError(f"factorial methods 缺少记录: {missing}")
+
+    common_runs = set(nested[core_f0])
+    for method in selected_methods[1:]:
+        common_runs &= set(nested[method])
+    if not common_runs:
+        raise ValueError("四个 factorial methods 没有共同 GP run")
+    run_instances: dict[str, tuple[str, ...]] = {}
+    for run_id in sorted(common_runs):
+        common_instances = set(nested[core_f0][run_id])
+        for method in selected_methods[1:]:
+            common_instances &= set(nested[method][run_id])
+        if common_instances:
+            run_instances[run_id] = tuple(sorted(common_instances))
+    if not run_instances:
+        raise ValueError("四个 factorial methods 没有共同 run×instance blocks")
+
+    def block_values(
+        run_id: str,
+        instance_id: str,
+        sampled_seeds: np.ndarray | None = None,
+    ) -> dict[str, float]:
+        common_seeds = set(nested[core_f0][run_id][instance_id])
+        for method in selected_methods[1:]:
+            common_seeds &= set(nested[method][run_id][instance_id])
+        if not common_seeds:
+            raise ValueError(
+                f"run={run_id}, instance={instance_id} 没有共同 ACO seeds"
+            )
+        ordered_seeds = np.asarray(sorted(common_seeds), dtype=np.int64)
+        chosen = ordered_seeds if sampled_seeds is None else sampled_seeds
+        return {
+            method: fmean(
+                fmean(nested[method][run_id][instance_id][int(seed_value)])
+                for seed_value in chosen
+            )
+            for method in selected_methods
+        }
+
+    names = (
+        "terminal_full_minus_core",
+        "function_f1_minus_f0",
+        "terminal_function_interaction",
+    )
+    observed: dict[str, float] = {}
+    for name in names:
+        run_means = []
+        for run_id, instance_ids in run_instances.items():
+            run_means.append(
+                fmean(
+                    _factorial_value(
+                        block_values(run_id, instance_id),
+                        name=name,
+                        core_f0=core_f0,
+                        core_f1=core_f1,
+                        full_f0=full_f0,
+                        full_f1=full_f1,
+                    )
+                    for instance_id in instance_ids
+                )
+            )
+        observed[name] = fmean(run_means)
+
+    rng = np.random.default_rng(seed)
+    run_ids = np.asarray(sorted(run_instances), dtype=str)
+    estimates = {
+        name: np.empty(replicates, dtype=np.float64)
+        for name in names
+    }
+    for replicate in range(replicates):
+        sampled_runs = rng.choice(run_ids, size=run_ids.size, replace=True)
+        replicate_values: dict[str, list[float]] = {
+            name: [] for name in names
+        }
+        for sampled_run in sampled_runs:
+            run_id = str(sampled_run)
+            instance_ids = np.asarray(run_instances[run_id], dtype=str)
+            sampled_instances = rng.choice(
+                instance_ids,
+                size=instance_ids.size,
+                replace=True,
+            )
+            run_values: dict[str, list[float]] = {
+                name: [] for name in names
+            }
+            for sampled_instance in sampled_instances:
+                instance_id = str(sampled_instance)
+                common_seeds = set(nested[core_f0][run_id][instance_id])
+                for method in selected_methods[1:]:
+                    common_seeds &= set(nested[method][run_id][instance_id])
+                ordered_seeds = np.asarray(sorted(common_seeds), dtype=np.int64)
+                sampled_seeds = rng.choice(
+                    ordered_seeds,
+                    size=ordered_seeds.size,
+                    replace=True,
+                )
+                values = block_values(run_id, instance_id, sampled_seeds)
+                for name in names:
+                    run_values[name].append(
+                        _factorial_value(
+                            values,
+                            name=name,
+                            core_f0=core_f0,
+                            core_f1=core_f1,
+                            full_f0=full_f0,
+                            full_f1=full_f1,
+                        )
+                    )
+            for name in names:
+                replicate_values[name].append(fmean(run_values[name]))
+        for name in names:
+            estimates[name][replicate] = fmean(replicate_values[name])
+
+    block_count = sum(len(instances) for instances in run_instances.values())
+    return [
+        FactorialContrast(
+            contrast=name,
+            estimate_pp=float(observed[name]),
+            lower_95=float(np.quantile(estimates[name], 0.025)),
+            upper_95=float(np.quantile(estimates[name], 0.975)),
+            runs=len(run_instances),
+            run_instance_blocks=block_count,
+            replicates=replicates,
+        )
+        for name in names
+    ]
+
+
 def write_statistical_report(
     path: str | Path,
     *,
@@ -378,6 +593,7 @@ def write_statistical_report(
     friedman: FriedmanResult | None,
     pairwise: Sequence[PairwiseTest],
     bootstrap: Sequence[BootstrapInterval],
+    factorial: Sequence[FactorialContrast] | None = None,
     metadata: Mapping[str, object] | None = None,
 ) -> Path:
     """保存机器可读、可直接生成论文表格的 JSON。"""
@@ -388,6 +604,9 @@ def write_statistical_report(
         "friedman": asdict(friedman) if friedman is not None else None,
         "pairwise_wilcoxon_holm": [asdict(item) for item in pairwise],
         "hierarchical_bootstrap": [asdict(item) for item in bootstrap],
+        "factorial_contrasts": [
+            asdict(item) for item in (factorial or ())
+        ],
     }
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import partial
 import math
 import random
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from functools import partial
 
-from deap import gp
 import torch
+from deap import gp
 
 
 class TrField:
@@ -89,6 +89,13 @@ TRANSITION_TERMINALS: tuple[str, ...] = (
     "Stagnation",
 )
 
+CORE_TRANSITION_TERMINALS: tuple[str, ...] = (
+    "RTau",
+    "REta",
+    "BaseConf",
+    "DistRank",
+)
+
 PHEROMONE_TERMINALS: tuple[str, ...] = (
     "EdgeEta",
     "EdgeTau",
@@ -97,6 +104,13 @@ PHEROMONE_TERMINALS: tuple[str, ...] = (
     "SourceQuality",
     "ACOProg",
     "Stagnation",
+)
+
+CORE_PHEROMONE_TERMINALS: tuple[str, ...] = (
+    "EdgeEta",
+    "EdgeTau",
+    "NNRank",
+    "SourceQuality",
 )
 
 LEGACY_TRANSITION_TERMINALS: tuple[str, ...] = (

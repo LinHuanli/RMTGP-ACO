@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
-import json
 from pathlib import Path
-import shutil
-import subprocess
 from typing import Any
 
 from .config import ExperimentConfig
@@ -19,7 +19,7 @@ def _project_version() -> str:
     try:
         return version("rmtgp-aco")
     except PackageNotFoundError:
-        return "0.2.0+uninstalled"
+        return "0.3.0+uninstalled"
 
 
 def _git_output(repository: Path, *arguments: str) -> str | None:

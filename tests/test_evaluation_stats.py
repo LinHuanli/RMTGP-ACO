@@ -15,6 +15,7 @@ from rmtgp_aco.evaluation import (
     write_records,
 )
 from rmtgp_aco.stats import (
+    factorial_contrasts,
     friedman_test,
     hierarchical_bootstrap_delta,
     paired_wilcoxon_holm,
@@ -107,3 +108,42 @@ def test_friedman_rejects_two_methods() -> None:
     ]
     with pytest.raises(ValueError, match="三个"):
         friedman_test(records)
+
+
+def test_factorial_contrasts_preserve_run_instance_seed_pairing() -> None:
+    offsets = {
+        "Core-F0": 0.0,
+        "Core-F1": -1.0,
+        "Full-F0": -2.0,
+        "Full-F1": -4.0,
+    }
+    records = [
+        replace(
+            _stat_record(
+                method,
+                instance,
+                aco_seed,
+                5.0 + offset + 0.01 * run_seed,
+            ),
+            gp_run_id=f"run-{run_seed}",
+            gp_root_seed=run_seed,
+        )
+        for method, offset in offsets.items()
+        for run_seed in (11, 12)
+        for instance in range(4)
+        for aco_seed in range(2)
+    ]
+    contrasts = factorial_contrasts(
+        records,
+        core_f0="Core-F0",
+        core_f1="Core-F1",
+        full_f0="Full-F0",
+        full_f1="Full-F1",
+        replicates=100,
+        seed=3,
+    )
+    observed = {item.contrast: item.estimate_pp for item in contrasts}
+    assert observed["terminal_full_minus_core"] == pytest.approx(-2.5)
+    assert observed["function_f1_minus_f0"] == pytest.approx(-1.5)
+    assert observed["terminal_function_interaction"] == pytest.approx(-1.0)
+    assert all(item.runs == 2 for item in contrasts)

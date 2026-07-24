@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
+from rmtgp_aco.cli import _apply_runtime_overrides
+from rmtgp_aco.config import ExecutionBackend, TransitionIntegration
 from rmtgp_aco.manifest import (
     build_manifest,
     verify_manifest,
 )
-from rmtgp_aco.cli import _apply_runtime_overrides
-from rmtgp_aco.config import ExecutionBackend, TransitionIntegration
 from rmtgp_aco.sampling import (
     ScaleStratifiedSampler,
     iter_problem_batches,
     pools_from_paths,
 )
 from rmtgp_aco.spec import load_run_spec
-
 
 SQUARE = "0 0 1 0 1 1 0 1 output 1 2 3 4 1"
 
@@ -25,8 +24,17 @@ def test_repository_protocol_configs_resolve() -> None:
         assert set(spec.data.training_paths()) == {50, 100}
         assert len(spec.data.training_paths()[50]) == 10
         assert spec.data.test["tsplib_le500"].max_scale == 500
-        assert spec.experiment.runtime.aco_backend is ExecutionBackend.NUMBA
-        assert spec.experiment.runtime.processes == 8
+        assert spec.experiment.runtime.aco_backend is ExecutionBackend.NUMBA_BATCH
+        assert spec.experiment.runtime.processes == 1
+        assert spec.experiment.runtime.cpu_threads == 16
+        assert spec.data.train_instances_per_scale == 16
+        assert spec.data.baseline_policy == "require"
+
+    for scale in (50, 100):
+        spec = load_run_spec(f"configs/acs_protocol_a_tsp{scale}_only.yaml")
+        assert set(spec.data.training_paths()) == {scale}
+        assert spec.experiment.train_scales == (scale,)
+        assert spec.data.train_instances_per_scale == 32
 
 
 def test_cli_legacy_profile_keeps_common_budget() -> None:

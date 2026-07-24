@@ -33,8 +33,8 @@ python -m rmtgp_aco --help
 ```
 
 集群正式环境使用 `constraints-py312.txt` 固定 NumPy/Numba/llvmlite
-兼容组合。正式 Protocol A 配置使用 Numba float64 CPU 后端；首次运行会
-预编译内核，JIT warm-up 不计入逐代用时。
+兼容组合。Protocol A v0.3 使用单进程、16-thread Numba population-batch
+float64 CPU 后端；首次运行会预编译内核，JIT warm-up 不计入逐代用时。
 
 仓库中的 `references/ACOTSP-1.03` 是算法语义参考，保留其原始许可证。
 
@@ -50,15 +50,35 @@ python -m rmtgp_aco verify-data \
   --skip-hashes
 ```
 
-三种 ACO 必须分别训练。例如运行 AS 的一个独立 GP run：
+三种 ACO 必须分别训练。正式训练先冻结 schedule，再一次性预计算原始 ACO
+baseline；训练过程中 cache miss 会直接失败。以 AS 的一个 pilot replicate
+为例：
 
 ```bash
+python -m rmtgp_aco prepare-schedules \
+  --config configs/as_protocol_a.yaml \
+  --phase pilot \
+  --root-seed 1001 \
+  --output runs/protocol-a-v0.3/schedules/as-seed-1001.json
+
+python -m rmtgp_aco precompute-baselines \
+  --config configs/as_protocol_a.yaml \
+  --root-seed 1001 \
+  --schedule runs/protocol-a-v0.3/schedules/as-seed-1001.json \
+  --output runs/protocol-a-v0.3/baselines/as/seed-1001.npz
+
 python -m rmtgp_aco train \
   --config configs/as_protocol_a.yaml \
-  --method-profile rmtgp \
+  --phase pilot \
+  --method-profile rmtgp-full-f1 \
   --root-seed 1001 \
-  --processes 8
+  --schedule runs/protocol-a-v0.3/schedules/as-seed-1001.json \
+  --baseline-archive runs/protocol-a-v0.3/baselines/as
 ```
+
+每代使用 TSP50 与 TSP100 各 16 个实例，即 32 个实例；50 代累计使用每规模
+800 个不同实例。Validation 每规模另有 32 个 selection 和 32 个独立 gate
+实例。
 
 训练在每代后原子写入 `training_state.pkl`。中断后使用完全相同配置恢复：
 
@@ -68,8 +88,10 @@ python -m rmtgp_aco train \
   --resume runs/protocol-a-as-rmtgp/seed-1001
 ```
 
-`--method-profile` 也可取 `tr-rgp`、`ph-rgp`、`matched-replace` 或
-`legacy`；它们共享同一 ACO 外壳、GP 预算、数据和模型选择协议。
+`--method-profile` 支持 `legacy`、`matched-replace`、`tr-rgp`、
+`ph-rgp` 以及 Core/Full × F0/F1 四种双树组合；同一 replicate 必须共享
+schedule、baseline archive 和总节点预算。完整 78-run pilot 任务图可用
+`prepare-pilot-plan` 生成。
 
 锁定 champion 后在 TSP500-uniform 上做 paired test：
 
@@ -92,6 +114,7 @@ baseline 的同 seed 配对结果。合并同一
 python -m rmtgp_aco summarize \
   --inputs results/as_*_tsp500_uniform.csv \
   --reference-method RMTGP-ACO \
+  --factorial-methods Core-F0 Core-F1 Full-F0 Full-F1 \
   --bootstrap-replicates 10000 \
   --output results/as_tsp500_uniform_statistics.json
 ```
@@ -102,13 +125,14 @@ bootstrap 置信区间。
 
 ## 实现结构
 
-- `data.py` / `sampling.py`：严格数据解析、连续距离、candidate list、
-  offset cache 与跨代无放回采样；
+- `data.py` / `sampling.py` / `schedule.py`：严格数据解析、连续距离、
+  candidate list、offset cache、phase 隔离的冻结 schedule；
 - `aco.py`：AS、同步 ACS、MMAS 的 PyTorch batch 实现；
+- `aco_numba.py`：确定性标量 oracle 与 population×instance 并行内核；
 - `program.py` / `genetic.py`：DEAP Strongly Typed 双树、postfix tensor
   interpreter 和角色保持遗传算子；
-- `training.py`：common random numbers、baseline cache、CPU 多进程个体
-  评估、validation champion selection 与 non-inferiority fallback；
+- `baseline.py` / `training.py`：不可变 baseline archive、absolute reference
+  gap fitness、staged validation 与 non-inferiority fallback；
 - `evaluation.py` / `stats.py`：锁定模型后的 paired test 和论文统计；
 - `manifest.py` / `artifacts.py`：数据哈希、Git/环境/seed provenance。
 
