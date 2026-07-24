@@ -71,3 +71,9 @@ GP 是否存在可学习信号；它只训练 TSP50，不能替代 Protocol A �
 后端：一个进程、16 个 Numba threads，按 genotype×instance 批量调度。
 PyTorch 与标量 Numba 保留为语义参考。可先运行 `benchmark-backends`
 生成旧 8-process 与新 16-thread 后端的数值一致性和吞吐报告。
+
+性能方案探索时不要修改正式 YAML 中的 `generations: 50`，而应使用
+`benchmark-training --generations 1|2|3`。该命令读取同一冻结 schedule 和
+baseline archive，只跳过 validation/checkpoint，因而既保持正式单代计算量，
+又不会误把短跑 artifact 当作确认性实验。当前 ACS 短代基准见
+`docs/performance/acs_short_generation_acceleration_20260724.md`。

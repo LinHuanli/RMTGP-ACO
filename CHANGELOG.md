@@ -2,6 +2,18 @@
 
 本项目遵循语义化版本。研究设计的统计结论冻结标签与软件版本标签分开。
 
+## 0.3.0 — 2026-07-24
+
+- 冻结 Protocol A v0.3 的 train/selection/gate schedule 与 baseline archive；
+- fitness 统一为对 reference optimum 的 scale-balanced absolute gap%，同时
+  逐代记录相对原始 ACO baseline 的 paired delta；
+- 新增 16-thread population-batch 后端、行为等价 GP 去重、instance-major
+  工作区复用、ACS 稀疏信息素更新和 candidate-level 内存流量优化；
+- 新增 `benchmark-training`，以完整单代负载执行 1--3 代加速短跑而不运行
+  validation/checkpoint；
+- ACS 同一 seed 的前三代端到端时间由 97.09 s 降为 40.52 s，逐代 fitness
+  与优化前记录一致。
+
 ## 0.2.0 — 2026-07-23
 
 - 新增 float64 Numba CPU 后端，覆盖 AS、同步/顺序 ACS、MMAS 与双树

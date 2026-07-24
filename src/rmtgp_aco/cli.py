@@ -10,7 +10,9 @@ import traceback
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+from time import perf_counter
 
+import numpy as np
 import torch
 
 from .artifacts import (
@@ -39,7 +41,7 @@ from .experiment_plan import (
     build_protocol_a_v03_pilot_plan,
     write_experiment_plan,
 )
-from .genetic import initialise_population
+from .genetic import evolve_generation, initialise_population
 from .manifest import (
     build_manifest,
     load_manifest,
@@ -591,6 +593,190 @@ def _command_benchmark_backends(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_benchmark_training(args: argparse.Namespace) -> int:
+    """用正式每代计算规模执行 1--3 代、但不做 validation/checkpoint。"""
+
+    if not 1 <= args.generations <= 3:
+        raise ValueError("benchmark-training 的 --generations 仅允许 1--3")
+    spec = _apply_runtime_overrides(load_run_spec(args.config), args)
+    training_paths = spec.data.training_paths()
+    validation_paths = spec.data.validation_paths()
+    if not args.skip_manifest_check:
+        _preflight_manifest(
+            spec,
+            args.manifest,
+            [
+                *((path, "train") for paths in training_paths.values() for path in paths),
+                *(
+                    (path, "validation")
+                    for paths in validation_paths.values()
+                    for path in paths
+                ),
+            ],
+        )
+    configure_runtime(spec.experiment.runtime)
+    training_pools = pools_from_paths(training_paths)
+    validation_pools = pools_from_paths(validation_paths)
+    schedule = _protocol_schedule(
+        spec,
+        training_pools,
+        validation_pools,
+        path=args.schedule,
+        phase=args.phase,
+        replicate_id=args.replicate_id,
+    )
+    sampler = ScheduledTrainingSampler(
+        schedule,
+        training_pools,
+        replicate_id=args.replicate_id,
+        candidate_size=spec.experiment.aco.candidate_size,
+        dtype=spec.experiment.aco.dtype,
+        device=spec.experiment.aco.device,
+    )
+    baseline_path = (
+        Path(args.baseline_archive).resolve()
+        if args.baseline_archive
+        else spec.data.baseline_path
+    )
+    baseline_archive = (
+        BaselineArchive(
+            baseline_path,
+            spec.experiment.aco,
+            spec.experiment.runtime.aco_backend,
+            require=(spec.data.baseline_policy == "require"),
+        )
+        if baseline_path is not None
+        else None
+    )
+    if spec.data.baseline_policy == "require" and baseline_archive is None:
+        raise ValueError("baseline_policy=require 但未配置 baseline archive")
+
+    random.seed(spec.experiment.root_seed)
+    np.random.seed(spec.experiment.root_seed % (2**32))
+    torch.manual_seed(spec.experiment.root_seed)
+    population, transition_pset, pheromone_pset = initialise_population(
+        spec.experiment.gp
+    )
+    cache = BaselineCache(baseline_archive)
+    pending_cases = sampler.cases_for_generation(1)
+    records: list[dict[str, object]] = []
+    benchmark_started = perf_counter()
+
+    with EvaluationPool(spec.experiment) as evaluator:
+        evaluator.warm(pending_cases[0])
+        for generation in range(1, args.generations + 1):
+            generation_started = perf_counter()
+            cases = (
+                pending_cases
+                if generation == 1
+                else sampler.cases_for_generation(generation)
+            )
+            for individual in population:
+                if individual.fitness.valid:
+                    del individual.fitness.values
+            evaluation = evaluator.evaluate_population(
+                population,
+                cases,
+                cache,
+            )
+            evaluated_population = population
+            fitness = np.asarray(
+                [
+                    individual.fitness.values[0]
+                    for individual in evaluated_population
+                ],
+                dtype=np.float64,
+            )
+            best = min(
+                evaluated_population,
+                key=lambda item: (item.fitness.values[0], item.total_nodes),
+            )
+            breakdown = best.metadata["fitness_breakdown"]
+            per_program_tours = sum(
+                case.batch.batch_size
+                * spec.experiment.aco.resolve_ants(case.batch.n)
+                * spec.experiment.aco.iterations
+                for case in cases
+            )
+            semantic_unique = (
+                evaluation.constructed_tours // per_program_tours
+                if per_program_tours
+                else 0
+            )
+
+            breeding_started = perf_counter()
+            if generation < args.generations:
+                population = evolve_generation(
+                    evaluated_population,
+                    transition_pset,
+                    pheromone_pset,
+                    spec.experiment.gp,
+                )
+            breeding_seconds = perf_counter() - breeding_started
+            generation_seconds = perf_counter() - generation_started
+            record = {
+                "generation": generation,
+                "instances": sum(
+                    case.batch.batch_size for case in cases
+                ),
+                "structural_unique": evaluation.evaluated_unique,
+                "semantic_unique": semantic_unique,
+                "fitness_min_gap_percent": float(fitness.min()),
+                "fitness_median_gap_percent": float(np.median(fitness)),
+                "fitness_mean_gap_percent": float(fitness.mean()),
+                "best_nodes": best.total_nodes,
+                "best_hash": best.structural_hash,
+                "best_gap_percent_by_scale": breakdown.mean_gap_by_scale,
+                "baseline_gap_percent_by_scale": (
+                    breakdown.baseline_gap_by_scale
+                ),
+                "best_delta_pp_by_scale": breakdown.mean_delta_by_scale,
+                "baseline_lookup_seconds": evaluation.baseline_wall_time,
+                "evaluation_seconds": evaluation.evaluation_wall_time,
+                "breeding_seconds": breeding_seconds,
+                "generation_seconds": generation_seconds,
+                "constructed_tours": evaluation.constructed_tours,
+                "tours_per_second": (
+                    evaluation.constructed_tours
+                    / max(evaluation.evaluation_wall_time, 1e-12)
+                ),
+            }
+            records.append(record)
+            print(
+                f"benchmark_generation={generation} "
+                f"structural={evaluation.evaluated_unique} "
+                f"semantic={semantic_unique} "
+                f"fitness={fitness.min():.6f}% "
+                f"evaluation={evaluation.evaluation_wall_time:.3f}s "
+                f"generation={generation_seconds:.3f}s "
+                f"delta={breakdown.mean_delta_by_scale}",
+                flush=True,
+            )
+
+    payload = {
+        "schema_version": 1,
+        "purpose": "1--3 generation acceleration benchmark; not a final run",
+        "config": str(Path(args.config).resolve()),
+        "schedule_hash": schedule.manifest_hash,
+        "variant": spec.experiment.aco.variant.value,
+        "method_profile": args.method_profile,
+        "root_seed": spec.experiment.root_seed,
+        "population_size": spec.experiment.gp.population_size,
+        "requested_generations": args.generations,
+        "cpu_threads": spec.experiment.runtime.cpu_threads,
+        "backend": spec.experiment.runtime.aco_backend.value,
+        "total_seconds": perf_counter() - benchmark_started,
+        "records": records,
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    print(rendered)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered + "\n", encoding="utf-8")
+    return 0
+
+
 def _command_prepare_pilot_plan(args: argparse.Namespace) -> int:
     plan = build_protocol_a_v03_pilot_plan(
         runs_root=args.runs_root,
@@ -952,6 +1138,46 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--max-individuals", type=int, default=100)
     benchmark_parser.add_argument("--output")
     benchmark_parser.set_defaults(handler=_command_benchmark_backends)
+
+    training_benchmark = subparsers.add_parser(
+        "benchmark-training",
+        help="按正式每代规模短跑 1--3 代，不执行 validation/checkpoint",
+    )
+    training_benchmark.add_argument("--config", required=True)
+    training_benchmark.add_argument("--schedule")
+    training_benchmark.add_argument("--baseline-archive")
+    training_benchmark.add_argument("--generations", type=int, default=3)
+    training_benchmark.add_argument("--output")
+    training_benchmark.add_argument("--manifest", default="Datasets/manifest.json")
+    training_benchmark.add_argument("--skip-manifest-check", action="store_true")
+    training_benchmark.add_argument("--root-seed", type=int)
+    training_benchmark.add_argument("--cpu-threads", type=int, default=16)
+    training_benchmark.add_argument("--replicate-id", type=int, default=0)
+    training_benchmark.add_argument(
+        "--phase",
+        choices=["pilot", "formal", "development"],
+        default="pilot",
+    )
+    training_benchmark.add_argument(
+        "--backend",
+        choices=[backend.value for backend in ExecutionBackend],
+    )
+    training_benchmark.add_argument(
+        "--method-profile",
+        choices=[
+            "rmtgp",
+            "tr-rgp",
+            "ph-rgp",
+            "matched-replace",
+            "legacy",
+            "rmtgp-core-f0",
+            "rmtgp-core-f1",
+            "rmtgp-full-f0",
+            "rmtgp-full-f1",
+        ],
+        default="rmtgp-full-f1",
+    )
+    training_benchmark.set_defaults(handler=_command_benchmark_training)
 
     plan_parser = subparsers.add_parser(
         "prepare-pilot-plan",

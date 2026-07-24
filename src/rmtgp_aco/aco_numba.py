@@ -1,8 +1,9 @@
 """AS、ACS 与 MMAS 的确定性 Numba CPU 内核。
 
-该模块把 tour construction、GP postfix 解释、信息素更新和随机数生成放在
-同一个 ``njit`` 边界内。正式训练在个体层使用多进程；每个内核保持单线程，
-从而避免嵌套并行和小张量 PyTorch kernel 的调度开销。
+该模块把 tour construction、GP postfix 解释、信息素更新和 counter-based
+随机数生成放在同一个 ``njit`` 边界内。正式训练以 instance 为外层并行单元，
+每个线程连续评估同一实例上的行为唯一 GP programs，以复用几何数据和工作区，
+同时避免小张量 PyTorch kernel 的调度开销。
 """
 
 from __future__ import annotations
@@ -81,6 +82,33 @@ _PHEROMONE_TERMINAL_INDEX = {
     "Stagnation": 6,
 }
 
+# 这些 terminal 对同一次 candidate/edge vector 的全部列取值相同。只存一次，
+# interpreter 再广播到工作栈，以内存换掉热循环中的重复写入。
+_TRANSITION_SCALAR_TERMINAL_MASK = np.uint64(
+    (1 << 4)
+    | (1 << 5)
+    | (1 << 6)
+    | (1 << 7)
+    | (1 << 10)
+    | (1 << 11)
+    | (1 << 12)
+    | (1 << 13)
+)
+_TRANSITION_VECTOR_TERMINAL_MASK = np.uint64(
+    (1 << 0)
+    | (1 << 1)
+    | (1 << 2)
+    | (1 << 3)
+    | (1 << 8)
+    | (1 << 9)
+)
+_PHEROMONE_SCALAR_TERMINAL_MASK = np.uint64(
+    (1 << 4) | (1 << 5) | (1 << 6)
+)
+_PHEROMONE_VECTOR_TERMINAL_MASK = np.uint64(
+    (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3)
+)
+
 
 @dataclass(frozen=True, slots=True)
 class EncodedProgram:
@@ -90,6 +118,7 @@ class EncodedProgram:
     float_arguments: np.ndarray
     integer_arguments: np.ndarray
     required_mask: np.uint64
+    stack_size: int
     active: bool
     exact_zero: bool
 
@@ -103,6 +132,7 @@ class PackedPrograms:
     integer_arguments: np.ndarray
     lengths: np.ndarray
     required_masks: np.ndarray
+    stack_size: int
     active: np.ndarray
     exact_zero: np.ndarray
 
@@ -120,6 +150,7 @@ def _encode_program(
             float_arguments=np.empty(0, dtype=np.float64),
             integer_arguments=np.empty(0, dtype=np.int16),
             required_mask=np.uint64(0),
+            stack_size=1,
             active=False,
             exact_zero=False,
         )
@@ -133,10 +164,13 @@ def _encode_program(
     float_arguments = np.zeros(count, dtype=np.float64)
     integer_arguments = np.full(count, -1, dtype=np.int16)
     required_mask = 0
+    stack_top = 0
+    stack_size = 1
     for index, instruction in enumerate(program.instructions):
         if instruction.opcode == "CONST":
             opcodes[index] = _CONST
             float_arguments[index] = float(instruction.argument)
+            stack_top += 1
         elif instruction.opcode == "TERMINAL":
             name = str(instruction.argument)
             try:
@@ -148,6 +182,7 @@ def _encode_program(
             opcodes[index] = _TERMINAL
             integer_arguments[index] = terminal
             required_mask |= 1 << terminal
+            stack_top += 1
         else:
             try:
                 opcodes[index] = _OPCODE_BY_NAME[instruction.opcode]
@@ -155,11 +190,15 @@ def _encode_program(
                 raise ValueError(
                     f"Numba 后端不支持 GP opcode {instruction.opcode!r}"
                 ) from exc
+            if instruction.opcode not in {"ABS", "NEG"}:
+                stack_top -= 1
+        stack_size = max(stack_size, stack_top)
     return EncodedProgram(
         opcodes=opcodes,
         float_arguments=float_arguments,
         integer_arguments=integer_arguments,
         required_mask=np.uint64(required_mask),
+        stack_size=stack_size,
         active=True,
         exact_zero=program.is_exact_zero,
     )
@@ -200,9 +239,50 @@ def _pack_programs(
         integer_arguments=integers,
         lengths=lengths,
         required_masks=masks,
+        stack_size=max(item.stack_size for item in encoded),
         active=active,
         exact_zero=exact_zero,
     )
+
+
+def _semantic_representatives(
+    transition: PackedPrograms,
+    pheromone: PackedPrograms,
+    transition_active: np.ndarray,
+    pheromone_active: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """合并只相差无效/intron 子树的等价 program pairs。"""
+
+    representatives: list[int] = []
+    inverse = np.empty(transition.lengths.size, dtype=np.int64)
+    key_to_position: dict[tuple[object, object], int] = {}
+
+    def program_key(
+        packed: PackedPrograms,
+        index: int,
+        active: np.ndarray,
+    ) -> object:
+        if not active[index]:
+            return None
+        length = int(packed.lengths[index])
+        return (
+            packed.opcodes[index, :length].tobytes(),
+            packed.float_arguments[index, :length].tobytes(),
+            packed.integer_arguments[index, :length].tobytes(),
+        )
+
+    for index in range(transition.lengths.size):
+        key = (
+            program_key(transition, index, transition_active),
+            program_key(pheromone, index, pheromone_active),
+        )
+        position = key_to_position.get(key)
+        if position is None:
+            position = len(representatives)
+            key_to_position[key] = position
+            representatives.append(index)
+        inverse[index] = position
+    return np.asarray(representatives, dtype=np.int64), inverse
 
 
 @njit(cache=True, inline="always")
@@ -280,6 +360,96 @@ def _evaluate_program(
     return _sanitize(stack[0])
 
 
+@njit(cache=True)
+def _evaluate_program_columns(
+    opcodes: np.ndarray,
+    float_arguments: np.ndarray,
+    integer_arguments: np.ndarray,
+    terminals: np.ndarray,
+    scalar_terminal_mask: np.uint64,
+    count: int,
+    stack: np.ndarray,
+    output: np.ndarray,
+) -> None:
+    """按列解释 program；标量 terminal 只存一次再广播。"""
+
+    top = 0
+    for instruction_index in range(opcodes.shape[0]):
+        opcode = opcodes[instruction_index]
+        if opcode == _CONST:
+            value = float_arguments[instruction_index]
+            for column in range(count):
+                stack[top, column] = value
+            top += 1
+            continue
+        if opcode == _TERMINAL:
+            terminal = integer_arguments[instruction_index]
+            if _mask_has(scalar_terminal_mask, terminal):
+                value = terminals[terminal, 0]
+                for column in range(count):
+                    stack[top, column] = value
+            else:
+                for column in range(count):
+                    stack[top, column] = terminals[terminal, column]
+            top += 1
+            continue
+        if opcode == _ABS or opcode == _NEG:
+            for column in range(count):
+                value = stack[top - 1, column]
+                if opcode == _ABS:
+                    stack[top - 1, column] = _sanitize(abs(value))
+                else:
+                    stack[top - 1, column] = _sanitize(-value)
+            continue
+
+        # opcode 分支放在列循环外，避免对每个 candidate 重复 dispatch。
+        if opcode == _ADD:
+            for column in range(count):
+                result = (
+                    stack[top - 2, column] + stack[top - 1, column]
+                )
+                stack[top - 2, column] = _sanitize(result)
+        elif opcode == _SUB:
+            for column in range(count):
+                result = (
+                    stack[top - 2, column] - stack[top - 1, column]
+                )
+                stack[top - 2, column] = _sanitize(result)
+        elif opcode == _MUL:
+            for column in range(count):
+                result = (
+                    stack[top - 2, column] * stack[top - 1, column]
+                )
+                stack[top - 2, column] = _sanitize(result)
+        elif opcode == _PDIV:
+            for column in range(count):
+                left = stack[top - 2, column]
+                right = stack[top - 1, column]
+                result = left * right / (right * right + 1e-6)
+                stack[top - 2, column] = _sanitize(result)
+        elif opcode == _PDIV1:
+            for column in range(count):
+                left = stack[top - 2, column]
+                right = stack[top - 1, column]
+                result = left / right if abs(right) > 1e-6 else 1.0
+                stack[top - 2, column] = _sanitize(result)
+        elif opcode == _MIN:
+            for column in range(count):
+                left = stack[top - 2, column]
+                right = stack[top - 1, column]
+                result = min(left, right)
+                stack[top - 2, column] = _sanitize(result)
+        else:
+            for column in range(count):
+                left = stack[top - 2, column]
+                right = stack[top - 1, column]
+                result = max(left, right)
+                stack[top - 2, column] = _sanitize(result)
+        top -= 1
+    for column in range(count):
+        output[column] = _sanitize(stack[0, column])
+
+
 @njit(cache=True, inline="always")
 def _mix64(value: np.uint64) -> np.uint64:
     """SplitMix64 finalizer；所有溢出均为定义良好的 uint64 回绕。"""
@@ -339,6 +509,80 @@ def _nearest_neighbour_length(
 
 
 @njit(cache=True)
+def _prepare_static_geometry(
+    heuristic: np.ndarray,
+    nearest: np.ndarray,
+    epsilon_numeric: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """每个 instance 只计算一次静态 log-eta 与节点局部均值。"""
+
+    batch, n, _ = heuristic.shape
+    log_heuristic = np.empty_like(heuristic)
+    node_log_eta_mean = np.empty((batch, n), dtype=np.float64)
+    for batch_index in range(batch):
+        for first in range(n):
+            for second in range(n):
+                log_heuristic[batch_index, first, second] = np.log(
+                    max(
+                        heuristic[batch_index, first, second],
+                        epsilon_numeric,
+                    )
+                )
+            value = 0.0
+            for candidate_index in range(nearest.shape[2]):
+                candidate = nearest[batch_index, first, candidate_index]
+                value += log_heuristic[batch_index, first, candidate]
+            node_log_eta_mean[batch_index, first] = (
+                value / nearest.shape[2]
+            )
+    return log_heuristic, node_log_eta_mean
+
+
+@njit(cache=True)
+def _prepare_initial_pheromone_parameters(
+    distances: np.ndarray,
+    seeds: np.ndarray,
+    instance_keys: np.ndarray,
+    variant: int,
+    rho: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """把与 GP genotype 无关的 nearest-neighbour 初始化移出 task matrix。"""
+
+    batch = distances.shape[0]
+    tau0 = np.empty(batch, dtype=np.float64)
+    tau_min = np.empty(batch, dtype=np.float64)
+    tau_max = np.empty(batch, dtype=np.float64)
+    for batch_index in range(batch):
+        n = distances.shape[1]
+        nn_uniform = _counter_uniform(
+            seeds[batch_index],
+            instance_keys[batch_index],
+            0,
+            0,
+            0,
+            0,
+        )
+        nn_start = min(int(nn_uniform * n), n - 1)
+        nn_length = _nearest_neighbour_length(
+            distances[batch_index],
+            nn_start,
+        )
+        if variant == 0:
+            tau0[batch_index] = 1.0 / (rho * nn_length)
+            tau_min[batch_index] = 0.0
+            tau_max[batch_index] = np.inf
+        elif variant == 1:
+            tau0[batch_index] = 1.0 / (n * nn_length)
+            tau_min[batch_index] = 0.0
+            tau_max[batch_index] = np.inf
+        else:
+            tau_max[batch_index] = 1.0 / (rho * nn_length)
+            tau_min[batch_index] = tau_max[batch_index] / (2.0 * n)
+            tau0[batch_index] = tau_max[batch_index]
+    return tau0, tau_min, tau_max
+
+
+@njit(cache=True)
 def _masked_stdrel_values(
     raw_values: np.ndarray,
     count: int,
@@ -362,10 +606,12 @@ def _masked_stdrel_values(
 def _prepare_transition_scores(
     distances: np.ndarray,
     heuristic: np.ndarray,
+    log_heuristic: np.ndarray,
     pheromone: np.ndarray,
     current_city: int,
     candidates: np.ndarray,
     count: int,
+    candidate_fallback: bool,
     alpha: float,
     beta: float,
     epsilon_numeric: float,
@@ -381,11 +627,6 @@ def _prepare_transition_scores(
     stagnation: int,
     total_iterations: int,
     terminals: np.ndarray,
-    tau_values: np.ndarray,
-    eta_values: np.ndarray,
-    distance_values: np.ndarray,
-    base_scores: np.ndarray,
-    probabilities: np.ndarray,
     scores: np.ndarray,
     scratch: np.ndarray,
     stack: np.ndarray,
@@ -393,134 +634,162 @@ def _prepare_transition_scores(
     """构造所需 terminals 和 residual score，返回 baseline uniform 标志。"""
 
     base_total = 0.0
-    for index in range(count):
-        city = candidates[index]
-        tau = pheromone[current_city, city]
-        eta = heuristic[current_city, city]
-        tau_values[index] = tau
-        eta_values[index] = eta
-        distance_values[index] = distances[current_city, city]
-        score = tau**alpha * eta**beta
-        base_scores[index] = score
-        base_total += score
+    if alpha == 1.0 and beta == 2.0:
+        # ACOTSP 三个正式变体的共同默认值；把参数分支移出最热循环。
+        for index in range(count):
+            city = candidates[index]
+            tau = pheromone[current_city, city]
+            eta = heuristic[current_city, city]
+            score = tau * (eta * eta)
+            scores[index] = score
+            base_total += score
+    else:
+        for index in range(count):
+            city = candidates[index]
+            tau = pheromone[current_city, city]
+            eta = heuristic[current_city, city]
+            tau_component = tau if alpha == 1.0 else tau**alpha
+            if beta == 2.0:
+                eta_component = eta * eta
+            elif beta == 1.0:
+                eta_component = eta
+            else:
+                eta_component = eta**beta
+            score = tau_component * eta_component
+            scores[index] = score
+            base_total += score
 
     uniform_fallback = base_total <= epsilon_numeric
-    if uniform_fallback:
-        probability = 1.0 / count
-        for index in range(count):
-            probabilities[index] = probability
-    else:
-        inverse = 1.0 / base_total
-        for index in range(count):
-            probabilities[index] = base_scores[index] * inverse
-
     if not program_active:
-        for index in range(count):
-            scores[index] = base_scores[index]
         return uniform_fallback
+
+    if _mask_has(required_mask, 2) or _mask_has(required_mask, 4):
+        if uniform_fallback:
+            probability = 1.0 / count
+            for index in range(count):
+                scratch[index] = probability
+        else:
+            inverse = 1.0 / base_total
+            for index in range(count):
+                scratch[index] = scores[index] * inverse
+        if _mask_has(required_mask, 2):
+            log_count = np.log(float(count))
+            for index in range(count):
+                terminals[2, index] = np.tanh(
+                    np.log(max(scratch[index], epsilon_numeric)) + log_count
+                )
+        if _mask_has(required_mask, 4):
+            if count == 1:
+                entropy = -1.0
+            else:
+                entropy_value = 0.0
+                for index in range(count):
+                    probability = scratch[index]
+                    entropy_value -= probability * np.log(
+                        max(probability, epsilon_numeric)
+                    )
+                entropy = (
+                    2.0
+                    * entropy_value
+                    / max(np.log(float(count)), epsilon_numeric)
+                    - 1.0
+                )
+            terminals[4, 0] = entropy
 
     if _mask_has(required_mask, 0):
         for index in range(count):
-            scratch[index] = np.log(max(tau_values[index], epsilon_numeric))
+            scratch[index] = np.log(
+                max(
+                    pheromone[current_city, candidates[index]],
+                    epsilon_numeric,
+                )
+            )
         _masked_stdrel_values(scratch, count, terminals[0])
     if _mask_has(required_mask, 1):
         for index in range(count):
-            scratch[index] = np.log(max(eta_values[index], epsilon_numeric))
+            scratch[index] = log_heuristic[
+                current_city,
+                candidates[index],
+            ]
         _masked_stdrel_values(scratch, count, terminals[1])
-    if _mask_has(required_mask, 2):
-        log_count = np.log(float(count))
-        for index in range(count):
-            terminals[2, index] = np.tanh(
-                np.log(max(probabilities[index], epsilon_numeric)) + log_count
-            )
     if _mask_has(required_mask, 3):
         if count == 1:
             terminals[3, 0] = 0.0
+        elif not candidate_fallback:
+            # candidate list 本身已按 (distance, city-id) 稳定排序；过滤
+            # visited 后相对顺序不变，因此位置就是精确的 feasible rank。
+            denominator = float(count - 1)
+            for index in range(count):
+                terminals[3, index] = 1.0 - 2.0 * index / denominator
         else:
             denominator = float(count - 1)
             for index in range(count):
                 rank = 0
-                value = distance_values[index]
+                value = distances[current_city, candidates[index]]
                 for other in range(count):
                     if (
-                        distance_values[other] < value
+                        distances[current_city, candidates[other]] < value
                         or (
-                            distance_values[other] == value
+                            distances[current_city, candidates[other]] == value
                             and other < index
                         )
                     ):
                         rank += 1
                 terminals[3, index] = 1.0 - 2.0 * rank / denominator
-    if _mask_has(required_mask, 4):
-        if count == 1:
-            entropy = -1.0
-        else:
-            entropy_value = 0.0
-            for index in range(count):
-                probability = probabilities[index]
-                entropy_value -= probability * np.log(
-                    max(probability, epsilon_numeric)
-                )
-            entropy = (
-                2.0
-                * entropy_value
-                / max(np.log(float(count)), epsilon_numeric)
-                - 1.0
-            )
-        for index in range(count):
-            terminals[4, index] = entropy
     if _mask_has(required_mask, 5):
         value = 2.0 * construction_step / max(distances.shape[0] - 1, 1) - 1.0
-        for index in range(count):
-            terminals[5, index] = value
+        terminals[5, 0] = value
     if _mask_has(required_mask, 6):
         value = 2.0 * (iteration - 1) / max(total_iterations - 1, 1) - 1.0
-        for index in range(count):
-            terminals[6, index] = value
+        terminals[6, 0] = value
     if _mask_has(required_mask, 7):
         value = 2.0 * min(stagnation / total_iterations, 1.0) - 1.0
-        for index in range(count):
-            terminals[7, index] = value
+        terminals[7, 0] = value
     if _mask_has(required_mask, 8):
         for index in range(count):
-            terminals[8, index] = tau_values[index]
+            terminals[8, index] = pheromone[
+                current_city,
+                candidates[index],
+            ]
     if _mask_has(required_mask, 9):
         for index in range(count):
-            terminals[9, index] = distance_values[index]
+            terminals[9, index] = distances[
+                current_city,
+                candidates[index],
+            ]
     if _mask_has(required_mask, 10):
         mean_tau = 0.0
         for index in range(count):
-            mean_tau += tau_values[index]
+            mean_tau += pheromone[current_city, candidates[index]]
         mean_tau /= count
-        for index in range(count):
-            terminals[10, index] = mean_tau
+        terminals[10, 0] = mean_tau
     if _mask_has(required_mask, 11):
         mean_distance = 0.0
         for index in range(count):
-            mean_distance += distance_values[index]
+            mean_distance += distances[current_city, candidates[index]]
         mean_distance /= count
-        for index in range(count):
-            terminals[11, index] = mean_distance
+        terminals[11, 0] = mean_distance
     if _mask_has(required_mask, 12):
-        for index in range(count):
-            terminals[12, index] = float(distances.shape[0])
+        terminals[12, 0] = float(distances.shape[0])
     if _mask_has(required_mask, 13):
-        for index in range(count):
-            terminals[13, index] = float(count)
+        terminals[13, 0] = float(count)
 
+    _evaluate_program_columns(
+        opcodes,
+        float_arguments,
+        integer_arguments,
+        terminals,
+        _TRANSITION_SCALAR_TERMINAL_MASK,
+    count,
+    stack,
+    scratch,
+    )
     for index in range(count):
-        raw = _evaluate_program(
-            opcodes,
-            float_arguments,
-            integer_arguments,
-            terminals,
-            index,
-            stack,
-        )
+        raw = scratch[index]
         if transition_mode == 1:
             scores[index] = _softplus_clipped(raw) + epsilon_numeric
         else:
-            scores[index] = base_scores[index] * (
+            scores[index] *= (
                 1.0 + gamma_transition * np.tanh(raw)
             )
     return uniform_fallback
@@ -530,6 +799,7 @@ def _prepare_transition_scores(
 def _choose_city(
     distances: np.ndarray,
     heuristic: np.ndarray,
+    log_heuristic: np.ndarray,
     nearest: np.ndarray,
     pheromone: np.ndarray,
     visited: np.ndarray,
@@ -555,11 +825,6 @@ def _choose_city(
     total_iterations: int,
     candidates: np.ndarray,
     terminals: np.ndarray,
-    tau_values: np.ndarray,
-    eta_values: np.ndarray,
-    distance_values: np.ndarray,
-    base_scores: np.ndarray,
-    probabilities: np.ndarray,
     scores: np.ndarray,
     scratch: np.ndarray,
     stack: np.ndarray,
@@ -585,10 +850,12 @@ def _choose_city(
     base_uniform = _prepare_transition_scores(
         distances,
         heuristic,
+        log_heuristic,
         pheromone,
         current_city,
         candidates,
         count,
+        candidate_fallback,
         alpha,
         beta,
         epsilon_numeric,
@@ -604,11 +871,6 @@ def _choose_city(
         stagnation,
         total_iterations,
         terminals,
-        tau_values,
-        eta_values,
-        distance_values,
-        base_scores,
-        probabilities,
         scores,
         scratch,
         stack,
@@ -624,6 +886,22 @@ def _choose_city(
     # candidate-list fallback 在参考实现中固定使用 argmax。
     if candidate_fallback:
         return candidates[greedy_index]
+
+    # Counter-based RNG 没有可变状态，因此 ACS 可先判断 q0 exploitation。
+    # 90% 的默认 greedy steps 不再无谓计算 roulette 累积和。
+    if variant == 1:
+        greedy_uniform = _counter_uniform(
+            seed,
+            instance_key,
+            iteration,
+            ant,
+            construction_step,
+            2,
+        )
+        if greedy_uniform <= q0:
+            if base_uniform:
+                diagnostics[1] += 1
+            return candidates[greedy_index]
 
     total = 0.0
     for index in range(count):
@@ -652,17 +930,6 @@ def _choose_city(
                 roulette_index = index
                 break
 
-    if variant == 1:
-        greedy_uniform = _counter_uniform(
-            seed,
-            instance_key,
-            iteration,
-            ant,
-            construction_step,
-            2,
-        )
-        if greedy_uniform <= q0:
-            return candidates[greedy_index]
     return candidates[roulette_index]
 
 
@@ -673,7 +940,7 @@ def _apply_acs_edges(
     edge_v: np.ndarray,
     count: int,
     tau0: float,
-    xi: float,
+    local_factors: np.ndarray,
     edge_counts: np.ndarray,
     active_edges: np.ndarray,
 ) -> None:
@@ -696,7 +963,7 @@ def _apply_acs_edges(
         u = edge_id // n
         v = edge_id % n
         multiplicity = edge_counts[edge_id]
-        factor = (1.0 - xi) ** multiplicity
+        factor = local_factors[multiplicity]
         updated = factor * pheromone[u, v] + (1.0 - factor) * tau0
         pheromone[u, v] = updated
         pheromone[v, u] = updated
@@ -707,6 +974,7 @@ def _apply_acs_edges(
 def _construct_tours(
     distances: np.ndarray,
     heuristic: np.ndarray,
+    log_heuristic: np.ndarray,
     nearest: np.ndarray,
     pheromone: np.ndarray,
     tours: np.ndarray,
@@ -716,7 +984,7 @@ def _construct_tours(
     alpha: float,
     beta: float,
     q0: float,
-    xi: float,
+    local_factors: np.ndarray,
     tau0: float,
     epsilon_numeric: float,
     transition_mode: int,
@@ -733,11 +1001,6 @@ def _construct_tours(
     total_iterations: int,
     candidates: np.ndarray,
     tr_terminals: np.ndarray,
-    tau_values: np.ndarray,
-    eta_values: np.ndarray,
-    distance_values: np.ndarray,
-    base_scores: np.ndarray,
-    probabilities: np.ndarray,
     scores: np.ndarray,
     scratch: np.ndarray,
     stack: np.ndarray,
@@ -770,6 +1033,7 @@ def _construct_tours(
             chosen = _choose_city(
                 distances,
                 heuristic,
+                log_heuristic,
                 nearest,
                 pheromone,
                 visited,
@@ -795,11 +1059,6 @@ def _construct_tours(
                 total_iterations,
                 candidates,
                 tr_terminals,
-                tau_values,
-                eta_values,
-                distance_values,
-                base_scores,
-                probabilities,
                 scores,
                 scratch,
                 stack,
@@ -815,7 +1074,7 @@ def _construct_tours(
                     edge_v[ant : ant + 1],
                     1,
                     tau0,
-                    xi,
+                    local_factors,
                     edge_counts,
                     active_edges,
                 )
@@ -826,7 +1085,7 @@ def _construct_tours(
                 edge_v,
                 ants,
                 tau0,
-                xi,
+                local_factors,
                 edge_counts,
                 active_edges,
             )
@@ -844,7 +1103,7 @@ def _construct_tours(
             edge_v,
             ants,
             tau0,
-            xi,
+            local_factors,
             edge_counts,
             active_edges,
         )
@@ -866,6 +1125,7 @@ def _tour_lengths(
 @njit(cache=True)
 def _prepare_pheromone_terminals(
     heuristic: np.ndarray,
+    log_heuristic: np.ndarray,
     pheromone: np.ndarray,
     full_nn_rank: np.ndarray,
     node_log_eta_mean: np.ndarray,
@@ -893,7 +1153,7 @@ def _prepare_pheromone_terminals(
             u = edge_u[edge]
             v = edge_v[edge]
             scratch[edge] = (
-                np.log(max(heuristic[u, v], epsilon_numeric))
+                log_heuristic[u, v]
                 - 0.5 * (node_log_eta_mean[u] + node_log_eta_mean[v])
             )
         _masked_stdrel_values(scratch, n, terminals[0])
@@ -938,21 +1198,19 @@ def _prepare_pheromone_terminals(
             (mean - source_length)
             / (np.sqrt(variance) + epsilon_numeric)
         )
-        for edge in range(n):
-            terminals[4, edge] = quality
+        terminals[4, 0] = quality
     if _mask_has(required_mask, 5):
         progress = 2.0 * (iteration - 1) / max(total_iterations - 1, 1) - 1.0
-        for edge in range(n):
-            terminals[5, edge] = progress
+        terminals[5, 0] = progress
     if _mask_has(required_mask, 6):
         value = 2.0 * min(stagnation / total_iterations, 1.0) - 1.0
-        for edge in range(n):
-            terminals[6, edge] = value
+        terminals[6, 0] = value
 
 
 @njit(cache=True)
 def _global_pheromone_update(
     heuristic: np.ndarray,
+    log_heuristic: np.ndarray,
     full_nn_rank: np.ndarray,
     pheromone: np.ndarray,
     tours: np.ndarray,
@@ -982,6 +1240,7 @@ def _global_pheromone_update(
     ph_terminals: np.ndarray,
     dense: np.ndarray,
     edge_frequency: np.ndarray,
+    frequency_active_edges: np.ndarray,
     source_edge_u: np.ndarray,
     source_edge_v: np.ndarray,
     scratch: np.ndarray,
@@ -990,18 +1249,18 @@ def _global_pheromone_update(
     diagnostics: np.ndarray,
 ) -> None:
     n = pheromone.shape[0]
-    for i in range(n):
-        for j in range(n):
-            dense[i, j] = 0.0
 
+    frequency_active_count = 0
     if _mask_has(ph_required_mask, 3):
-        for index in range(n * n):
-            edge_frequency[index] = 0
         for ant in range(tours.shape[0]):
             for edge in range(n):
                 u = min(tours[ant, edge], tours[ant, edge + 1])
                 v = max(tours[ant, edge], tours[ant, edge + 1])
-                edge_frequency[u * n + v] += 1
+                edge_id = u * n + v
+                if edge_frequency[edge_id] == 0:
+                    frequency_active_edges[frequency_active_count] = edge_id
+                    frequency_active_count += 1
+                edge_frequency[edge_id] += 1
 
     source_count = tours.shape[0] if variant == 0 else 1
     for source in range(source_count):
@@ -1020,6 +1279,7 @@ def _global_pheromone_update(
 
         _prepare_pheromone_terminals(
             heuristic,
+            log_heuristic,
             pheromone,
             full_nn_rank,
             node_log_eta_mean,
@@ -1044,15 +1304,18 @@ def _global_pheromone_update(
             for edge in range(n):
                 deposits[edge] = base_deposit
         else:
+            _evaluate_program_columns(
+                ph_opcodes,
+                ph_float_arguments,
+                ph_integer_arguments,
+                ph_terminals,
+                _PHEROMONE_SCALAR_TERMINAL_MASK,
+                n,
+                stack,
+                scratch,
+            )
             for edge in range(n):
-                raw = _evaluate_program(
-                    ph_opcodes,
-                    ph_float_arguments,
-                    ph_integer_arguments,
-                    ph_terminals,
-                    edge,
-                    stack,
-                )
+                raw = scratch[edge]
                 if pheromone_mode == 3:
                     deposits[edge] = base_deposit * (
                         _softplus_clipped(raw) + epsilon_numeric
@@ -1075,11 +1338,29 @@ def _global_pheromone_update(
                 for edge in range(n):
                     deposits[edge] *= scale
 
-        for edge in range(n):
-            u = source_edge_u[edge]
-            v = source_edge_v[edge]
-            dense[u, v] += deposits[edge]
-            dense[v, u] += deposits[edge]
+        if variant == 1:
+            # ACS 只蒸发并强化 global-best tour 上的 n 条边，无需构造和扫描
+            # n×n dense deposit 矩阵。各 tour edge 相互独立，数值语义不变。
+            for edge in range(n):
+                u = source_edge_u[edge]
+                v = source_edge_v[edge]
+                updated = (
+                    (1.0 - rho) * pheromone[u, v]
+                    + rho * deposits[edge]
+                )
+                pheromone[u, v] = updated
+                pheromone[v, u] = updated
+        else:
+            for edge in range(n):
+                u = source_edge_u[edge]
+                v = source_edge_v[edge]
+                dense[u, v] += deposits[edge]
+                dense[v, u] += deposits[edge]
+
+    if variant == 1:
+        for index in range(frequency_active_count):
+            edge_frequency[frequency_active_edges[index]] = 0
+        return
 
     for i in range(n):
         pheromone[i, i] = 0.0
@@ -1102,14 +1383,65 @@ def _global_pheromone_update(
                     diagnostics[2] += 2
             pheromone[i, j] = updated
             pheromone[j, i] = updated
+            # dense 在 solver 生命周期内复用，只清理本轮已经消费的单元。
+            dense[i, j] = 0.0
+            dense[j, i] = 0.0
+    for index in range(frequency_active_count):
+        edge_frequency[frequency_active_edges[index]] = 0
+
+
+@njit(cache=True)
+def _allocate_solver_workspace(
+    n: int,
+    ants: int,
+    iterations: int,
+    stack_size: int,
+    xi: float,
+) -> tuple:
+    """为一个并行 instance 分配可跨全部 GP programs 复用的工作区。"""
+
+    edge_capacity = max(ants, n)
+    local_factors = np.empty(ants + 1, dtype=np.float64)
+    for multiplicity in range(ants + 1):
+        local_factors[multiplicity] = (1.0 - xi) ** multiplicity
+    return (
+        np.empty((n, n), dtype=np.float64),  # pheromone
+        np.empty(n + 1, dtype=np.int64),  # global best tour
+        np.empty(n + 1, dtype=np.int64),  # restart best tour
+        np.empty(iterations, dtype=np.float64),  # anytime
+        np.empty(3, dtype=np.int64),  # diagnostics
+        np.empty((ants, n + 1), dtype=np.int64),  # tours
+        np.empty((ants, n), dtype=np.uint8),  # visited
+        np.empty(ants, dtype=np.float64),  # lengths
+        np.empty(n, dtype=np.int64),  # candidates
+        np.empty((14, n), dtype=np.float64),  # transition terminals
+        np.empty(n, dtype=np.float64),  # scores
+        np.empty(n, dtype=np.float64),  # scratch
+        np.empty((stack_size, n), dtype=np.float64),  # GP stack
+        np.empty(edge_capacity, dtype=np.int64),  # edge u
+        np.empty(edge_capacity, dtype=np.int64),  # edge v
+        np.zeros(n * n, dtype=np.int64),  # ACS edge counts
+        np.empty(edge_capacity, dtype=np.int64),  # active edges
+        local_factors,
+        np.empty((7, n), dtype=np.float64),  # pheromone terminals
+        np.zeros((n, n), dtype=np.float64),  # dense deposits
+        np.zeros(n * n, dtype=np.int64),  # edge frequency
+        np.empty(n * n, dtype=np.int64),  # active frequency edges
+        np.empty(n, dtype=np.float64),  # deposits
+    )
 
 
 @njit(cache=True, nogil=True)
-def _solve_instance(
+def _solve_instance_inplace(
     distances: np.ndarray,
     heuristic: np.ndarray,
+    log_heuristic: np.ndarray,
     nearest: np.ndarray,
     full_nn_rank: np.ndarray,
+    node_log_eta_mean: np.ndarray,
+    tau0: float,
+    tau_min: float,
+    tau_max: float,
     variant: int,
     ants: int,
     iterations: int,
@@ -1138,77 +1470,53 @@ def _solve_instance(
     ph_required_mask: np.uint64,
     seed: np.uint64,
     instance_key: np.uint64,
+    workspace: tuple,
 ) -> tuple[np.ndarray, float, int, np.ndarray, np.ndarray]:
-    """求解一个 TSP 实例；返回 best、anytime 和诊断计数。"""
+    """在调用方提供的可复用工作区内求解一个 TSP 实例。"""
 
     n = distances.shape[0]
-    nn_uniform = _counter_uniform(seed, instance_key, 0, 0, 0, 0)
-    nn_start = min(int(nn_uniform * n), n - 1)
-    nn_length = _nearest_neighbour_length(distances, nn_start)
-    if variant == 0:
-        tau0 = 1.0 / (rho * nn_length)
-        tau_min = 0.0
-        tau_max = np.inf
-    elif variant == 1:
-        tau0 = 1.0 / (n * nn_length)
-        tau_min = 0.0
-        tau_max = np.inf
-    else:
-        tau_max = 1.0 / (rho * nn_length)
-        tau_min = tau_max / (2.0 * n)
-        tau0 = tau_max
+    (
+        pheromone,
+        global_best_tour,
+        restart_best_tour,
+        anytime,
+        diagnostics,
+        tours,
+        visited,
+        lengths,
+        candidates,
+        tr_terminals,
+        scores,
+        scratch,
+        stack,
+        edge_u,
+        edge_v,
+        edge_counts,
+        active_edges,
+        local_factors,
+        ph_terminals,
+        dense,
+        edge_frequency,
+        frequency_active_edges,
+        deposits,
+    ) = workspace
+    for first in range(n):
+        for second in range(n):
+            pheromone[first, second] = tau0
+        pheromone[first, first] = 0.0
+    for index in range(3):
+        diagnostics[index] = 0
 
-    pheromone = np.full((n, n), tau0, dtype=np.float64)
-    for city in range(n):
-        pheromone[city, city] = 0.0
-
-    global_best_tour = np.zeros(n + 1, dtype=np.int64)
-    restart_best_tour = np.zeros(n + 1, dtype=np.int64)
     global_best_length = np.inf
     restart_best_length = np.inf
     global_best_iteration = 0
     stagnation = 0
-    anytime = np.empty(iterations, dtype=np.float64)
-    diagnostics = np.zeros(3, dtype=np.int64)
-
-    tours = np.empty((ants, n + 1), dtype=np.int64)
-    visited = np.zeros((ants, n), dtype=np.uint8)
-    lengths = np.empty(ants, dtype=np.float64)
-    candidates = np.empty(n, dtype=np.int64)
-    tr_terminals = np.empty((14, n), dtype=np.float64)
-    tau_values = np.empty(n, dtype=np.float64)
-    eta_values = np.empty(n, dtype=np.float64)
-    distance_values = np.empty(n, dtype=np.float64)
-    base_scores = np.empty(n, dtype=np.float64)
-    probabilities = np.empty(n, dtype=np.float64)
-    scores = np.empty(n, dtype=np.float64)
-    scratch = np.empty(n, dtype=np.float64)
-    stack_size = max(tr_opcodes.shape[0], ph_opcodes.shape[0], 1)
-    stack = np.empty(stack_size, dtype=np.float64)
-    edge_u = np.empty(max(ants, n), dtype=np.int64)
-    edge_v = np.empty(max(ants, n), dtype=np.int64)
-    edge_counts = np.zeros(n * n, dtype=np.int64)
-    active_edges = np.empty(max(ants, n), dtype=np.int64)
-
-    node_log_eta_mean = np.zeros(n, dtype=np.float64)
-    if _mask_has(ph_required_mask, 0):
-        for city in range(n):
-            value = 0.0
-            for candidate_index in range(nearest.shape[1]):
-                candidate = nearest[city, candidate_index]
-                value += np.log(
-                    max(heuristic[city, candidate], epsilon_numeric)
-                )
-            node_log_eta_mean[city] = value / nearest.shape[1]
-    ph_terminals = np.empty((7, n), dtype=np.float64)
-    dense = np.empty((n, n), dtype=np.float64)
-    edge_frequency = np.zeros(n * n, dtype=np.int64)
-    deposits = np.empty(n, dtype=np.float64)
 
     for iteration in range(1, iterations + 1):
         _construct_tours(
             distances,
             heuristic,
+            log_heuristic,
             nearest,
             pheromone,
             tours,
@@ -1218,7 +1526,7 @@ def _solve_instance(
             alpha,
             beta,
             q0,
-            xi,
+            local_factors,
             tau0,
             epsilon_numeric,
             transition_mode,
@@ -1235,11 +1543,6 @@ def _solve_instance(
             iterations,
             candidates,
             tr_terminals,
-            tau_values,
-            eta_values,
-            distance_values,
-            base_scores,
-            probabilities,
             scores,
             scratch,
             stack,
@@ -1281,6 +1584,7 @@ def _solve_instance(
 
         _global_pheromone_update(
             heuristic,
+            log_heuristic,
             full_nn_rank,
             pheromone,
             tours,
@@ -1310,6 +1614,7 @@ def _solve_instance(
             ph_terminals,
             dense,
             edge_frequency,
+            frequency_active_edges,
             edge_u,
             edge_v,
             scratch,
@@ -1337,8 +1642,13 @@ def _instance_key(instance_id: str) -> np.uint64:
 def _solve_population_quality_kernel(
     distances: np.ndarray,
     heuristic: np.ndarray,
+    log_heuristic: np.ndarray,
     nearest: np.ndarray,
     full_nn_rank: np.ndarray,
+    node_log_eta_mean: np.ndarray,
+    initial_tau0: np.ndarray,
+    initial_tau_min: np.ndarray,
+    initial_tau_max: np.ndarray,
     variant: int,
     ants: int,
     iterations: int,
@@ -1369,6 +1679,7 @@ def _solve_population_quality_kernel(
     ph_active: np.ndarray,
     seeds: np.ndarray,
     instance_keys: np.ndarray,
+    stack_size: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """在一个 native 边界内并行全部 genotype×instance 任务。"""
 
@@ -1377,55 +1688,67 @@ def _solve_population_quality_kernel(
     best_lengths = np.empty((population, batch), dtype=np.float64)
     best_iterations = np.empty((population, batch), dtype=np.int64)
     diagnostics = np.empty((population, batch, 3), dtype=np.int64)
-    tasks = population * batch
-    for task in prange(tasks):
-        individual = task // batch
-        batch_index = task - individual * batch
-        tr_length = int(tr_lengths[individual])
-        ph_length = int(ph_lengths[individual])
-        (
-            _,
-            best_length,
-            best_iteration,
-            _,
-            task_diagnostics,
-        ) = _solve_instance(
-            distances[batch_index],
-            heuristic[batch_index],
-            nearest[batch_index],
-            full_nn_rank[batch_index],
-            variant,
+    for batch_index in prange(batch):
+        # 一个线程连续求解同一 instance 的整个人口，复用大工作区与几何 cache。
+        workspace = _allocate_solver_workspace(
+            distances.shape[1],
             ants,
             iterations,
-            alpha,
-            beta,
-            rho,
-            q0,
+            stack_size,
             xi,
-            gamma_transition,
-            gamma_pheromone,
-            transition_mode,
-            pheromone_mode,
-            synchronous_acs,
-            epsilon_numeric,
-            mmas_update_period,
-            mmas_p_best,
-            bool(tr_active[individual]),
-            tr_opcodes[individual, :tr_length],
-            tr_float_arguments[individual, :tr_length],
-            tr_integer_arguments[individual, :tr_length],
-            tr_required_masks[individual],
-            bool(ph_active[individual]),
-            ph_opcodes[individual, :ph_length],
-            ph_float_arguments[individual, :ph_length],
-            ph_integer_arguments[individual, :ph_length],
-            ph_required_masks[individual],
-            seeds[batch_index],
-            instance_keys[batch_index],
         )
-        best_lengths[individual, batch_index] = best_length
-        best_iterations[individual, batch_index] = best_iteration
-        diagnostics[individual, batch_index] = task_diagnostics
+        for individual in range(population):
+            tr_length = int(tr_lengths[individual])
+            ph_length = int(ph_lengths[individual])
+            (
+                _,
+                best_length,
+                best_iteration,
+                _,
+                task_diagnostics,
+            ) = _solve_instance_inplace(
+                distances[batch_index],
+                heuristic[batch_index],
+                log_heuristic[batch_index],
+                nearest[batch_index],
+                full_nn_rank[batch_index],
+                node_log_eta_mean[batch_index],
+                initial_tau0[batch_index],
+                initial_tau_min[batch_index],
+                initial_tau_max[batch_index],
+                variant,
+                ants,
+                iterations,
+                alpha,
+                beta,
+                rho,
+                q0,
+                xi,
+                gamma_transition,
+                gamma_pheromone,
+                transition_mode,
+                pheromone_mode,
+                synchronous_acs,
+                epsilon_numeric,
+                mmas_update_period,
+                mmas_p_best,
+                bool(tr_active[individual]),
+                tr_opcodes[individual, :tr_length],
+                tr_float_arguments[individual, :tr_length],
+                tr_integer_arguments[individual, :tr_length],
+                tr_required_masks[individual],
+                bool(ph_active[individual]),
+                ph_opcodes[individual, :ph_length],
+                ph_float_arguments[individual, :ph_length],
+                ph_integer_arguments[individual, :ph_length],
+                ph_required_masks[individual],
+                seeds[batch_index],
+                instance_keys[batch_index],
+                workspace,
+            )
+            best_lengths[individual, batch_index] = best_length
+            best_iterations[individual, batch_index] = best_iteration
+            diagnostics[individual, batch_index] = task_diagnostics
     return best_lengths, best_iterations, diagnostics
 
 
@@ -1478,13 +1801,33 @@ def solve_population_numba(
         tr_active[
             (transition.exact_zero.astype(bool))
             | (config.gamma_transition == 0.0)
+            | (
+                (transition.required_masks & _TRANSITION_VECTOR_TERMINAL_MASK)
+                == 0
+            )
         ] = 0
     ph_active = pheromone.active.copy()
     if pheromone_mode != 3:
         ph_active[
             (pheromone.exact_zero.astype(bool))
             | (config.gamma_pheromone == 0.0)
+            | (
+                (pheromone_mode == 0)
+                & (
+                    (
+                        pheromone.required_masks
+                        & _PHEROMONE_VECTOR_TERMINAL_MASK
+                    )
+                    == 0
+                )
+            )
         ] = 0
+    representatives, inverse = _semantic_representatives(
+        transition,
+        pheromone,
+        tr_active,
+        ph_active,
+    )
 
     distances = np.ascontiguousarray(problem.distances.detach().numpy())
     heuristic = np.ascontiguousarray(problem.heuristic.detach().numpy())
@@ -1496,6 +1839,20 @@ def solve_population_numba(
         [_instance_key(instance_id) for instance_id in problem.instance_ids],
         dtype=np.uint64,
     )
+    log_heuristic, node_log_eta_mean = _prepare_static_geometry(
+        heuristic,
+        nearest,
+        config.epsilon_numeric,
+    )
+    initial_tau0, initial_tau_min, initial_tau_max = (
+        _prepare_initial_pheromone_parameters(
+            distances,
+            seeds,
+            instance_keys,
+            variant,
+            config.rho,
+        )
+    )
 
     set_num_threads(threads)
     started = perf_counter()
@@ -1503,8 +1860,13 @@ def solve_population_numba(
         _solve_population_quality_kernel(
             distances,
             heuristic,
+            log_heuristic,
             nearest,
             ranks,
+            node_log_eta_mean,
+            initial_tau0,
+            initial_tau_min,
+            initial_tau_max,
             variant,
             config.resolve_ants(problem.n),
             config.iterations,
@@ -1521,22 +1883,39 @@ def solve_population_numba(
             config.epsilon_numeric,
             config.mmas_update_period,
             config.mmas_p_best,
-            transition.opcodes,
-            transition.float_arguments,
-            transition.integer_arguments,
-            transition.lengths,
-            transition.required_masks,
-            tr_active,
-            pheromone.opcodes,
-            pheromone.float_arguments,
-            pheromone.integer_arguments,
-            pheromone.lengths,
-            pheromone.required_masks,
-            ph_active,
+            np.ascontiguousarray(transition.opcodes[representatives]),
+            np.ascontiguousarray(
+                transition.float_arguments[representatives]
+            ),
+            np.ascontiguousarray(
+                transition.integer_arguments[representatives]
+            ),
+            np.ascontiguousarray(transition.lengths[representatives]),
+            np.ascontiguousarray(
+                transition.required_masks[representatives]
+            ),
+            np.ascontiguousarray(tr_active[representatives]),
+            np.ascontiguousarray(pheromone.opcodes[representatives]),
+            np.ascontiguousarray(
+                pheromone.float_arguments[representatives]
+            ),
+            np.ascontiguousarray(
+                pheromone.integer_arguments[representatives]
+            ),
+            np.ascontiguousarray(pheromone.lengths[representatives]),
+            np.ascontiguousarray(
+                pheromone.required_masks[representatives]
+            ),
+            np.ascontiguousarray(ph_active[representatives]),
             seeds,
             instance_keys,
+            max(transition.stack_size, pheromone.stack_size),
         )
     )
+    if representatives.size != len(programs):
+        best_lengths = best_lengths[inverse]
+        best_iterations = best_iterations[inverse]
+        diagnostics = diagnostics[inverse]
     elapsed = perf_counter() - started
     return PopulationQualityResult(
         best_length=torch.from_numpy(best_lengths),
@@ -1544,7 +1923,7 @@ def solve_population_numba(
         diagnostics=torch.from_numpy(diagnostics.sum(axis=1)),
         wall_time_sec=elapsed,
         constructed_tours=(
-            len(programs)
+            representatives.size
             * batch
             * config.resolve_ants(problem.n)
             * config.iterations
@@ -1592,6 +1971,11 @@ def solve_numba(
         and (
             transition.exact_zero
             or config.gamma_transition == 0.0
+            or (
+                transition.required_mask
+                & _TRANSITION_VECTOR_TERMINAL_MASK
+            )
+            == 0
         )
     ):
         transition_active = False
@@ -1601,6 +1985,14 @@ def solve_numba(
         and (
             pheromone.exact_zero
             or config.gamma_pheromone == 0.0
+            or (
+                pheromone_mode == 0
+                and (
+                    pheromone.required_mask
+                    & _PHEROMONE_VECTOR_TERMINAL_MASK
+                )
+                == 0
+            )
         )
     ):
         pheromone_active = False
@@ -1617,6 +2009,32 @@ def solve_numba(
     anytime = np.empty((batch, config.iterations), dtype=np.float64)
     diagnostics = np.zeros(3, dtype=np.int64)
     seed_value = np.uint64(int(seed) % (2**64))
+    seeds = np.full(batch, seed_value, dtype=np.uint64)
+    instance_keys = np.asarray(
+        [_instance_key(instance_id) for instance_id in problem.instance_ids],
+        dtype=np.uint64,
+    )
+    log_heuristic, node_log_eta_mean = _prepare_static_geometry(
+        heuristic,
+        nearest,
+        config.epsilon_numeric,
+    )
+    initial_tau0, initial_tau_min, initial_tau_max = (
+        _prepare_initial_pheromone_parameters(
+            distances,
+            seeds,
+            instance_keys,
+            variant,
+            config.rho,
+        )
+    )
+    workspace = _allocate_solver_workspace(
+        n,
+        config.resolve_ants(n),
+        config.iterations,
+        max(transition.stack_size, pheromone.stack_size),
+        config.xi,
+    )
 
     started = perf_counter()
     for batch_index in range(batch):
@@ -1626,11 +2044,16 @@ def solve_numba(
             best_iteration,
             instance_anytime,
             instance_diagnostics,
-        ) = _solve_instance(
+        ) = _solve_instance_inplace(
             distances[batch_index],
             heuristic[batch_index],
+            log_heuristic[batch_index],
             nearest[batch_index],
             ranks[batch_index],
+            node_log_eta_mean[batch_index],
+            initial_tau0[batch_index],
+            initial_tau_min[batch_index],
+            initial_tau_max[batch_index],
             variant,
             config.resolve_ants(n),
             config.iterations,
@@ -1658,7 +2081,8 @@ def solve_numba(
             pheromone.integer_arguments,
             pheromone.required_mask,
             seed_value,
-            _instance_key(problem.instance_ids[batch_index]),
+            instance_keys[batch_index],
+            workspace,
         )
         best_tours[batch_index] = best_tour
         best_lengths[batch_index] = best_length

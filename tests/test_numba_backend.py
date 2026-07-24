@@ -14,6 +14,7 @@ from rmtgp_aco.aco_numba import (
     _TRANSITION_TERMINAL_INDEX,
     _encode_program,
     _evaluate_program,
+    solve_population_numba,
 )
 from rmtgp_aco.config import ACOConfig, ACOVariant
 from rmtgp_aco.data import make_problem_batch
@@ -124,3 +125,44 @@ def test_numba_postfix_matches_tensor_interpreter() -> None:
         ]
     )
     np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
+
+
+def test_population_backend_merges_residual_scalar_introns(
+    small_instances,
+) -> None:
+    """候选/边内常数 residual 经归一化后应合并为一个 baseline 行为。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default("acs", iterations=3),
+        ants=4,
+        candidate_size=2,
+    )
+    transition_pset, pheromone_pset = create_primitive_sets()
+    scalar_transition = compile_tree(
+        gp.PrimitiveTree.from_string("ACOProg", transition_pset),
+        role="transition",
+    )
+    scalar_pheromone = compile_tree(
+        gp.PrimitiveTree.from_string("Stagnation", pheromone_pset),
+        role="pheromone",
+    )
+    result = solve_population_numba(
+        batch,
+        config,
+        [
+            (None, None),
+            (scalar_transition, None),
+            (None, scalar_pheromone),
+        ],
+        seed=123,
+        threads=2,
+    )
+    assert result.best_length.shape == (3, batch.batch_size)
+    assert torch.equal(result.best_length[0], result.best_length[1])
+    assert torch.equal(result.best_length[0], result.best_length[2])
+    assert torch.equal(result.best_iteration[0], result.best_iteration[1])
+    assert torch.equal(result.best_iteration[0], result.best_iteration[2])
+    assert result.constructed_tours == (
+        batch.batch_size * config.resolve_ants(batch.n) * config.iterations
+    )

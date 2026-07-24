@@ -123,6 +123,26 @@ python -m rmtgp_aco summarize \
 Holm-Wilcoxon、paired rank-biserial 和 champion–instance–seed 三层
 bootstrap 置信区间。
 
+## 1--3 代加速短跑
+
+在恢复 50 代正式训练前，使用 `benchmark-training` 按完整单代负载执行
+1--3 代。该命令复用冻结 schedule 与 baseline archive，但不运行 validation、
+不保存 checkpoint，也不产生可作为论文结果的 champion：
+
+```bash
+python -m rmtgp_aco benchmark-training \
+  --config configs/acs_protocol_a.yaml \
+  --schedule runs/protocol-a-v0.3/schedules/acs-seed-2001.json \
+  --baseline-archive runs/protocol-a-v0.3/baselines/acs \
+  --method-profile rmtgp-full-f1 \
+  --generations 3 --cpu-threads 16 \
+  --output runs/protocol-a-v0.3/benchmarks/acs-3gen-optimized.json
+```
+
+当前 ACS 三代端到端合计由 97.09 s 降至 40.52 s，fitness 与优化前逐代
+一致。优化过程、golden 等价检查、GPU 排除性测试和逐代记录见
+[`docs/performance/acs_short_generation_acceleration_20260724.md`](docs/performance/acs_short_generation_acceleration_20260724.md)。
+
 ## 实现结构
 
 - `data.py` / `sampling.py` / `schedule.py`：严格数据解析、连续距离、
