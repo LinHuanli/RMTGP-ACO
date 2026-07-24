@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import subprocess
 import sys
+import threading
 import traceback
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
+from statistics import fmean, median
 from time import perf_counter
 
 import numpy as np
@@ -27,9 +33,11 @@ from .baseline import (
 )
 from .config import (
     ExecutionBackend,
+    GPUMode,
     PheromoneIntegration,
     TransitionIntegration,
 )
+from .data import make_problem_batch
 from .evaluation import (
     compile_champion,
     evaluate_batches,
@@ -39,7 +47,7 @@ from .evaluation import (
 )
 from .experiment_plan import (
     PROTOCOL_ID,
-    build_protocol_a_v04_pilot_plan,
+    build_protocol_a_v05_pilot_plan,
     write_experiment_plan,
 )
 from .genetic import evolve_generation, initialise_population
@@ -83,6 +91,82 @@ def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _external_gpu_processes(
+    target_devices: set[int],
+    *,
+    own_pid: int | None = None,
+) -> list[dict[str, str | int]]:
+    """只返回目标 GPU 上的外部计算进程。
+
+    ``nvidia-smi --query-compute-apps`` 仅提供 GPU UUID，不能直接按设备
+    索引过滤。因此先建立 UUID 到索引的映射，避免其他 GPU 上的无关作业
+    使当前 benchmark 被误判为受到争用。
+    """
+
+    if not target_devices:
+        return []
+    try:
+        gpu_query = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        app_query = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+
+    uuid_to_index: dict[str, int] = {}
+    for line in gpu_query.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",", maxsplit=1)]
+        if len(fields) != 2:
+            continue
+        try:
+            uuid_to_index[fields[1]] = int(fields[0])
+        except ValueError:
+            continue
+
+    current_pid = os.getpid() if own_pid is None else own_pid
+    records: list[dict[str, str | int]] = []
+    for line in app_query.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",", maxsplit=3)]
+        if len(fields) != 4:
+            continue
+        device = uuid_to_index.get(fields[0])
+        if device is None or device not in target_devices:
+            continue
+        try:
+            pid = int(fields[1])
+        except ValueError:
+            continue
+        if pid == current_pid:
+            continue
+        records.append(
+            {
+                "device": device,
+                "pid": pid,
+                "process_name": fields[2],
+                "used_memory_mib": fields[3],
+            }
+        )
+    return records
+
+
 def _apply_runtime_overrides(spec, args: argparse.Namespace):
     """为独立 run 覆盖 seed/process 数，不修改冻结的 YAML 模板。"""
 
@@ -108,6 +192,24 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
         experiment = replace(
             experiment,
             runtime=replace(experiment.runtime, cpu_threads=cpu_threads),
+        )
+    gpu_devices = getattr(args, "gpu_devices", None)
+    gpu_mode = getattr(args, "gpu_mode", None)
+    gpu_block_threads = getattr(args, "gpu_block_threads", None)
+    gpu_task_chunk_size = getattr(args, "gpu_task_chunk_size", None)
+    runtime_updates: dict[str, object] = {}
+    if gpu_devices is not None:
+        runtime_updates["gpu_devices"] = tuple(gpu_devices)
+    if gpu_mode is not None:
+        runtime_updates["gpu_mode"] = GPUMode(gpu_mode)
+    if gpu_block_threads is not None:
+        runtime_updates["gpu_block_threads"] = gpu_block_threads
+    if gpu_task_chunk_size is not None:
+        runtime_updates["gpu_task_chunk_size"] = gpu_task_chunk_size
+    if runtime_updates:
+        experiment = replace(
+            experiment,
+            runtime=replace(experiment.runtime, **runtime_updates),
         )
     backend = getattr(args, "backend", None)
     if backend is not None:
@@ -468,6 +570,7 @@ def _command_precompute_baselines(args: argparse.Namespace) -> int:
         spec.experiment.aco,
         spec.experiment.runtime.aco_backend,
         threads=spec.experiment.runtime.cpu_threads,
+        runtime=spec.experiment.runtime,
     )
     target = write_baseline_shard(
         records,
@@ -592,6 +695,846 @@ def _command_benchmark_backends(args: argparse.Namespace) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(rendered + "\n", encoding="utf-8")
     return 0
+
+
+def _command_benchmark_accelerators(args: argparse.Namespace) -> int:
+    """在同一固定 GP generation 上比较 CPU、单 GPU、双 GPU 与 campaign。"""
+
+    target_gpu_devices: set[int] = set()
+    observed_contention: dict[
+        tuple[int, int, str],
+        dict[str, str | int],
+    ] = {}
+
+    def record_external_gpu_processes() -> None:
+        for record in _external_gpu_processes(target_gpu_devices):
+            key = (
+                int(record["device"]),
+                int(record["pid"]),
+                str(record["process_name"]),
+            )
+            observed_contention[key] = record
+
+    def start_gpu_monitor():
+        stop = threading.Event()
+        samples: list[dict[str, float | int]] = []
+
+        def sample_loop() -> None:
+            while not stop.is_set():
+                record_external_gpu_processes()
+                try:
+                    completed = subprocess.run(
+                        [
+                            "nvidia-smi",
+                            "--query-gpu=index,utilization.gpu,power.draw,"
+                            "temperature.gpu,clocks.current.sm,memory.used",
+                            "--format=csv,noheader,nounits",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    for line in completed.stdout.splitlines():
+                        fields = [
+                            field.strip()
+                            for field in line.split(",")
+                        ]
+                        if len(fields) != 6:
+                            continue
+                        device = int(fields[0])
+                        if device not in target_gpu_devices:
+                            continue
+                        samples.append(
+                            {
+                                "device": device,
+                                "utilization_percent": float(fields[1]),
+                                "power_watts": float(fields[2]),
+                                "temperature_c": float(fields[3]),
+                                "sm_clock_mhz": float(fields[4]),
+                                "memory_used_mib": float(fields[5]),
+                            }
+                        )
+                except (
+                    FileNotFoundError,
+                    subprocess.SubprocessError,
+                    ValueError,
+                ):
+                    pass
+                stop.wait(0.5)
+
+        thread = threading.Thread(target=sample_loop, daemon=True)
+        thread.start()
+        return stop, thread, samples
+
+    def summarize_gpu_samples(
+        samples: list[dict[str, float | int]],
+    ) -> dict[str, dict[str, float | int]]:
+        summary: dict[str, dict[str, float | int]] = {}
+        devices = sorted({int(sample["device"]) for sample in samples})
+        for device in devices:
+            selected = [
+                sample
+                for sample in samples
+                if int(sample["device"]) == device
+            ]
+            entry: dict[str, float | int] = {"samples": len(selected)}
+            for field in (
+                "utilization_percent",
+                "power_watts",
+                "temperature_c",
+                "sm_clock_mhz",
+                "memory_used_mib",
+            ):
+                values = [float(sample[field]) for sample in selected]
+                entry[f"{field}_mean"] = float(np.mean(values))
+                entry[f"{field}_max"] = float(np.max(values))
+            summary[str(device)] = entry
+        return summary
+    spec = _apply_runtime_overrides(load_run_spec(args.config), args)
+    experiment = spec.experiment
+    gpu_devices = tuple(experiment.runtime.gpu_devices)
+    target_gpu_devices.update(gpu_devices)
+    if args.iterations is not None:
+        experiment = replace(
+            experiment,
+            aco=replace(experiment.aco, iterations=args.iterations),
+        )
+    training_pools = pools_from_paths(spec.data.training_paths())
+    validation_pools = pools_from_paths(spec.data.validation_paths())
+    schedule = _protocol_schedule(
+        replace(spec, experiment=experiment),
+        training_pools,
+        validation_pools,
+        path=args.schedule,
+        phase=args.phase,
+        replicate_id=args.replicate_id,
+    )
+    sampler = ScheduledTrainingSampler(
+        schedule,
+        training_pools,
+        replicate_id=args.replicate_id,
+        candidate_size=experiment.aco.candidate_size,
+        dtype=experiment.aco.dtype,
+        device=experiment.aco.device,
+    )
+    cases = sampler.cases_for_generation(args.generation)
+
+    random.seed(experiment.root_seed)
+    np.random.seed(experiment.root_seed % (2**32))
+    torch.manual_seed(experiment.root_seed)
+    population, _, _ = initialise_population(experiment.gp)
+    population = population[: args.max_individuals]
+    from .genetic import compile_individual
+
+    programs = [compile_individual(individual) for individual in population]
+
+    def run_workload(runtime, *, seed_offset: int = 0):
+        outputs = []
+        constructed_tours = 0
+        backend_metrics: list[dict[str, float | int | str]] = []
+        started = perf_counter()
+        for case in cases:
+            if (
+                runtime.aco_backend
+                is ExecutionBackend.CUDA_FUSED_FP32
+            ):
+                from .aco_cuda import solve_population_cuda
+
+                result = solve_population_cuda(
+                    case.batch,
+                    experiment.aco,
+                    programs,
+                    seed=case.seed + seed_offset,
+                    runtime=runtime,
+                )
+            else:
+                from .aco_numba import solve_population_numba
+
+                result = solve_population_numba(
+                    case.batch,
+                    experiment.aco,
+                    programs,
+                    seed=case.seed + seed_offset,
+                    threads=runtime.cpu_threads,
+                )
+            outputs.append(result)
+            constructed_tours += result.constructed_tours
+            backend_metrics.append(result.backend_metrics)
+        elapsed = perf_counter() - started
+        return elapsed, constructed_tours, outputs, backend_metrics
+
+    def output_signature(outputs) -> str:
+        digest = sha256()
+        for result in outputs:
+            digest.update(
+                np.ascontiguousarray(result.best_tour.numpy()).tobytes()
+            )
+            digest.update(
+                np.ascontiguousarray(result.best_length.numpy()).tobytes()
+            )
+            digest.update(
+                np.ascontiguousarray(result.best_iteration.numpy()).tobytes()
+            )
+        return digest.hexdigest()
+
+    def summarize_backend_metrics(
+        samples: list[dict[str, float | int | str]],
+    ) -> dict[str, float]:
+        if not samples or "kernel_seconds_critical" not in samples[0]:
+            return {}
+        return {
+            "kernel_seconds": sum(
+                float(metric.get("kernel_seconds_critical", 0.0))
+                for metric in samples
+            ),
+            "compile_seconds_sum": sum(
+                float(metric.get("compile_seconds_sum", 0.0))
+                for metric in samples
+            ),
+            "h2d_seconds_sum": sum(
+                float(metric.get("h2d_seconds_sum", 0.0))
+                for metric in samples
+            ),
+            "d2h_seconds_sum": sum(
+                float(metric.get("d2h_seconds_sum", 0.0))
+                for metric in samples
+            ),
+            "exact_fp64_scoring_seconds": sum(
+                float(metric.get("exact_fp64_scoring_seconds", 0.0))
+                for metric in samples
+            ),
+        }
+
+    def measure(label: str, runtime) -> tuple[dict[str, object], list]:
+        monitor_stop = monitor_thread = None
+        monitor_samples: list[dict[str, float | int]] = []
+        if runtime.aco_backend is ExecutionBackend.CUDA_FUSED_FP32:
+            from .aco_cuda import (
+                clear_cuda_kernel_cache,
+                clear_cuda_problem_cache,
+            )
+
+            clear_cuda_problem_cache()
+            clear_cuda_kernel_cache()
+            monitor_stop, monitor_thread, monitor_samples = (
+                start_gpu_monitor()
+            )
+        print(f"[benchmark] {label}: cold", file=sys.stderr, flush=True)
+        cold, tours, cold_outputs, cold_metrics = run_workload(runtime)
+        repeat_seconds: list[float] = []
+        repeat_metrics: list[list[dict[str, float | int | str]]] = []
+        repeat_outputs = cold_outputs
+        metric_samples = cold_metrics
+        for repeat in range(args.repeats):
+            print(
+                f"[benchmark] {label}: warm {repeat + 1}/{args.repeats}",
+                file=sys.stderr,
+                flush=True,
+            )
+            elapsed, observed_tours, repeat_outputs, metric_samples = (
+                run_workload(runtime)
+            )
+            if observed_tours != tours:
+                raise RuntimeError(f"{label}: constructed tour 数不稳定")
+            repeat_seconds.append(elapsed)
+            repeat_metrics.append(metric_samples)
+        selected = median(repeat_seconds)
+        median_index = min(
+            range(len(repeat_seconds)),
+            key=lambda index: abs(repeat_seconds[index] - selected),
+        )
+        metric_samples = repeat_metrics[median_index]
+        payload: dict[str, object] = {
+            "cold_seconds": cold,
+            "repeat_seconds": repeat_seconds,
+            "median_seconds": selected,
+            "constructed_tours": tours,
+            "tours_per_second": tours / max(selected, 1e-12),
+            "signature": output_signature(repeat_outputs),
+        }
+        warm_summary = summarize_backend_metrics(metric_samples)
+        cold_summary = summarize_backend_metrics(cold_metrics)
+        if warm_summary:
+            payload.update(warm_summary)
+            payload["host_overhead_seconds"] = (
+                selected - warm_summary["kernel_seconds"]
+            )
+        if cold_summary:
+            payload.update(
+                {
+                    f"cold_{name}": value
+                    for name, value in cold_summary.items()
+                }
+            )
+            payload["cold_host_overhead_seconds"] = (
+                cold - cold_summary["kernel_seconds"]
+            )
+        if monitor_stop is not None and monitor_thread is not None:
+            monitor_stop.set()
+            monitor_thread.join(timeout=2)
+            payload["gpu_telemetry"] = summarize_gpu_samples(
+                monitor_samples
+            )
+        return payload, repeat_outputs
+
+    modes = set(args.modes)
+    measurements: dict[str, dict[str, object]] = {}
+    outputs_by_mode: dict[str, list] = {}
+    if "cpu8" in modes:
+        runtime = replace(
+            experiment.runtime,
+            aco_backend=ExecutionBackend.NUMBA_BATCH,
+            processes=1,
+            cpu_threads=8,
+        )
+        measurements["cpu8"], outputs_by_mode["cpu8"] = measure(
+            "cpu8",
+            runtime,
+        )
+    if "cpu16" in modes:
+        runtime = replace(
+            experiment.runtime,
+            aco_backend=ExecutionBackend.NUMBA_BATCH,
+            processes=1,
+            cpu_threads=16,
+        )
+        measurements["cpu16"], outputs_by_mode["cpu16"] = measure(
+            "cpu16",
+            runtime,
+        )
+
+    for name, device in (("gpu0", 0), ("gpu1", 1)):
+        if name not in modes:
+            continue
+        if device not in gpu_devices:
+            raise ValueError(
+                f"{name} 要求设备 {device} 出现在 runtime.gpu_devices"
+            )
+        runtime = replace(
+            experiment.runtime,
+            aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+            processes=1,
+            gpu_mode=GPUMode.SINGLE,
+            gpu_devices=(device,),
+        )
+        measurements[name], outputs_by_mode[name] = measure(name, runtime)
+    if "dual" in modes:
+        if len(gpu_devices) < 2:
+            raise ValueError("dual benchmark 至少需要两个 gpu_devices")
+        runtime = replace(
+            experiment.runtime,
+            aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+            processes=1,
+            gpu_mode=GPUMode.DUAL,
+            gpu_devices=gpu_devices[:2],
+        )
+        measurements["dual"], outputs_by_mode["dual"] = measure(
+            "dual",
+            runtime,
+        )
+
+    if "campaign" in modes:
+        if len(gpu_devices) < 2:
+            raise ValueError("campaign benchmark 至少需要两个 gpu_devices")
+        from .aco_cuda import (
+            clear_cuda_kernel_cache,
+            clear_cuda_problem_cache,
+        )
+
+        clear_cuda_problem_cache()
+        clear_cuda_kernel_cache()
+        runtimes = [
+            replace(
+                experiment.runtime,
+                aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+                processes=1,
+                gpu_mode=GPUMode.SINGLE,
+                gpu_devices=(device,),
+            )
+            for device in gpu_devices[:2]
+        ]
+        monitor_stop, monitor_thread, monitor_samples = start_gpu_monitor()
+        print("[benchmark] campaign: cold", file=sys.stderr, flush=True)
+        cold_started = perf_counter()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            cold_futures = [
+                executor.submit(
+                    run_workload,
+                    runtime,
+                    seed_offset=index * 10_000_019,
+                )
+                for index, runtime in enumerate(runtimes)
+            ]
+            cold_values = [future.result() for future in cold_futures]
+        campaign_cold = perf_counter() - cold_started
+        campaign_repeats: list[float] = []
+        campaign_repeat_values: list[list[tuple]] = []
+        tours_per_run = cold_values[0][1]
+        for repeat in range(args.repeats):
+            print(
+                f"[benchmark] campaign: warm {repeat + 1}/{args.repeats}",
+                file=sys.stderr,
+                flush=True,
+            )
+            started = perf_counter()
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(
+                        run_workload,
+                        runtime,
+                        seed_offset=index * 10_000_019,
+                    )
+                    for index, runtime in enumerate(runtimes)
+                ]
+                values = [future.result() for future in futures]
+            campaign_repeats.append(perf_counter() - started)
+            campaign_repeat_values.append(values)
+            tours_per_run = values[0][1]
+        campaign_median = median(campaign_repeats)
+        campaign_median_index = min(
+            range(len(campaign_repeats)),
+            key=lambda index: abs(
+                campaign_repeats[index] - campaign_median
+            ),
+        )
+        selected_campaign_values = campaign_repeat_values[
+            campaign_median_index
+        ]
+        measurements["campaign"] = {
+            "cold_seconds": campaign_cold,
+            "repeat_seconds": campaign_repeats,
+            "median_seconds": campaign_median,
+            "constructed_tours": 2 * tours_per_run,
+            "tours_per_second": (
+                2 * tours_per_run / max(campaign_median, 1e-12)
+            ),
+            "signatures": [
+                output_signature(value[2])
+                for value in selected_campaign_values
+            ],
+        }
+        warm_run_summaries = [
+            summarize_backend_metrics(value[3])
+            for value in selected_campaign_values
+        ]
+        cold_run_summaries = [
+            summarize_backend_metrics(value[3])
+            for value in cold_values
+        ]
+        if all(warm_run_summaries):
+            warm_kernel = max(
+                summary["kernel_seconds"]
+                for summary in warm_run_summaries
+            )
+            measurements["campaign"].update(
+                {
+                    "kernel_seconds": warm_kernel,
+                    "host_overhead_seconds": (
+                        campaign_median - warm_kernel
+                    ),
+                    **{
+                        name: sum(summary[name] for summary in warm_run_summaries)
+                        for name in (
+                            "compile_seconds_sum",
+                            "h2d_seconds_sum",
+                            "d2h_seconds_sum",
+                            "exact_fp64_scoring_seconds",
+                        )
+                    },
+                }
+            )
+        if all(cold_run_summaries):
+            cold_kernel = max(
+                summary["kernel_seconds"]
+                for summary in cold_run_summaries
+            )
+            measurements["campaign"].update(
+                {
+                    "cold_kernel_seconds": cold_kernel,
+                    "cold_host_overhead_seconds": (
+                        campaign_cold - cold_kernel
+                    ),
+                    **{
+                        f"cold_{name}": sum(
+                            summary[name]
+                            for summary in cold_run_summaries
+                        )
+                        for name in (
+                            "compile_seconds_sum",
+                            "h2d_seconds_sum",
+                            "d2h_seconds_sum",
+                            "exact_fp64_scoring_seconds",
+                        )
+                    },
+                }
+            )
+        monitor_stop.set()
+        monitor_thread.join(timeout=2)
+        measurements["campaign"]["gpu_telemetry"] = summarize_gpu_samples(
+            monitor_samples
+        )
+
+    gpu_signatures = {
+        name: values["signature"]
+        for name, values in measurements.items()
+        if name in {"gpu0", "gpu1", "dual"}
+    }
+    gpu_device_invariant = len(set(gpu_signatures.values())) <= 1
+    if not gpu_device_invariant:
+        raise RuntimeError("单卡/双卡输出不一致，拒绝生成性能结论")
+
+    cpu_key = "cpu16" if "cpu16" in measurements else "cpu8"
+    single_keys = [
+        key for key in ("gpu0", "gpu1") if key in measurements
+    ]
+    derived: dict[str, float | bool] = {
+        "gpu_device_invariant": gpu_device_invariant,
+    }
+    if cpu_key in measurements and single_keys:
+        single_seconds = min(
+            float(measurements[key]["median_seconds"])
+            for key in single_keys
+        )
+        cpu_seconds = float(measurements[cpu_key]["median_seconds"])
+        derived["single_gpu_speedup"] = cpu_seconds / single_seconds
+        derived["single_gpu_meets_3x_gate"] = (
+            cpu_seconds / single_seconds >= 3.0
+        )
+    if cpu_key in measurements and "dual" in measurements:
+        cpu_seconds = float(measurements[cpu_key]["median_seconds"])
+        dual_seconds = float(measurements["dual"]["median_seconds"])
+        derived["dual_gpu_speedup"] = cpu_seconds / dual_seconds
+        derived["dual_gpu_meets_5x_gate"] = cpu_seconds / dual_seconds >= 5.0
+    if single_keys and "dual" in measurements:
+        single_seconds = min(
+            float(measurements[key]["median_seconds"])
+            for key in single_keys
+        )
+        dual_seconds = float(measurements["dual"]["median_seconds"])
+        derived["dual_scaling_g2"] = single_seconds / dual_seconds
+        derived["dual_efficiency_e2"] = single_seconds / (2.0 * dual_seconds)
+        derived["dual_scaling_meets_1_7x_gate"] = (
+            single_seconds / dual_seconds >= 1.7
+        )
+    if single_keys and "campaign" in measurements:
+        single_seconds = min(
+            float(measurements[key]["median_seconds"])
+            for key in single_keys
+        )
+        campaign_seconds = float(
+            measurements["campaign"]["median_seconds"]
+        )
+        derived["campaign_throughput_scaling"] = (
+            2.0 * single_seconds / campaign_seconds
+        )
+        derived["campaign_meets_1_8x_gate"] = (
+            2.0 * single_seconds / campaign_seconds >= 1.8
+        )
+
+    record_external_gpu_processes()
+    derived["performance_gate_eligible"] = not observed_contention
+    tours_per_semantic_program = sum(
+        case.batch.batch_size
+        * experiment.aco.resolve_ants(case.batch.n)
+        * experiment.aco.iterations
+        for case in cases
+    )
+    representative_measurement = next(
+        (
+            value
+            for name, value in measurements.items()
+            if name != "campaign"
+        ),
+        measurements.get("campaign"),
+    )
+    if representative_measurement is None:
+        raise ValueError("benchmark 至少需要一个 mode")
+    representative_tours = int(
+        representative_measurement["constructed_tours"]
+    )
+    if not any(name != "campaign" for name in measurements):
+        representative_tours //= 2
+    semantic_programs = (
+        representative_tours // tours_per_semantic_program
+    )
+    payload = {
+        "schema_version": 1,
+        "cold_definition": (
+            "in-process resident/RawKernel cache cleared; "
+            "CUDA context creation excluded"
+        ),
+        "variant": experiment.aco.variant.value,
+        "generation": args.generation,
+        "requested_individuals": len(programs),
+        "semantic_programs": semantic_programs,
+        "instances": sum(case.batch.batch_size for case in cases),
+        "scales": [case.scale for case in cases],
+        "ants": experiment.aco.resolve_ants(cases[0].batch.n),
+        "iterations": experiment.aco.iterations,
+        "repeats": args.repeats,
+        "measurements": measurements,
+        "derived": derived,
+        "external_gpu_processes": list(observed_contention.values()),
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    print(rendered)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered + "\n", encoding="utf-8")
+    return 0
+
+
+def _command_validate_cuda_quality(args: argparse.Namespace) -> int:
+    """对 CPU FP64 与 CUDA FP32 搜索执行预注册的 paired 质量门控。"""
+
+    if min(
+        args.instances_per_scale,
+        args.seeds,
+        args.individuals,
+        args.batch_size,
+        args.cpu_threads,
+    ) < 1:
+        raise ValueError("实例、seed、individual、batch 和 thread 数必须为正")
+    spec = _apply_runtime_overrides(load_run_spec(args.config), args)
+    experiment = spec.experiment
+    validation_pools = pools_from_paths(spec.data.validation_paths())
+    missing = set(experiment.validation_scales) - set(validation_pools)
+    if missing:
+        raise ValueError(f"validation pool 缺少规模: {sorted(missing)}")
+
+    random.seed(experiment.root_seed)
+    np.random.seed(experiment.root_seed % (2**32))
+    torch.manual_seed(experiment.root_seed)
+    programs = [(None, None)]
+    if args.individuals > 1:
+        from .genetic import compile_individual
+
+        population, _, _ = initialise_population(experiment.gp)
+        programs.extend(
+            compile_individual(individual)
+            for individual in population[: args.individuals - 1]
+        )
+
+    gpu_runtime = replace(
+        experiment.runtime,
+        aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+        processes=1,
+    )
+    cpu_values: dict[int, list[np.ndarray]] = {}
+    gpu_values: dict[int, list[np.ndarray]] = {}
+    unit_keys: dict[int, list[np.ndarray]] = {}
+    cpu_seconds = 0.0
+    gpu_seconds = 0.0
+    selected_instance_ids: dict[str, list[str]] = {}
+    rng = np.random.default_rng(experiment.root_seed ^ 0x43554441)
+    seed_values = [
+        int(value)
+        for value in rng.integers(
+            0,
+            2**63 - 1,
+            size=args.seeds,
+            dtype=np.int64,
+        )
+    ]
+    for scale in experiment.validation_scales:
+        pool = validation_pools[scale]
+        if args.instances_per_scale > len(pool):
+            raise ValueError(
+                f"TSP{scale} validation 仅有 {len(pool)} 个实例，"
+                f"无法抽取 {args.instances_per_scale}"
+            )
+        indices = rng.choice(
+            len(pool),
+            size=args.instances_per_scale,
+            replace=False,
+        )
+        selected = [pool.get(int(index)) for index in indices]
+        selected_instance_ids[str(scale)] = [
+            instance.instance_id for instance in selected
+        ]
+        for start in range(0, len(selected), args.batch_size):
+            print(
+                f"[quality] TSP{scale}: batch "
+                f"{start // args.batch_size + 1}/"
+                f"{(len(selected) + args.batch_size - 1) // args.batch_size}",
+                file=sys.stderr,
+                flush=True,
+            )
+            batch = make_problem_batch(
+                selected[start : start + args.batch_size],
+                candidate_size=experiment.aco.candidate_size,
+                dtype=torch.float64,
+                device="cpu",
+            )
+            reference = batch.reference_length.numpy()[None, :]
+            for seed in seed_values:
+                from .aco_numba import solve_population_numba
+
+                cpu_started = perf_counter()
+                cpu_result = solve_population_numba(
+                    batch,
+                    experiment.aco,
+                    programs,
+                    seed=seed,
+                    threads=args.cpu_threads,
+                )
+                cpu_seconds += perf_counter() - cpu_started
+
+                from .aco_cuda import solve_population_cuda
+
+                gpu_started = perf_counter()
+                gpu_result = solve_population_cuda(
+                    batch,
+                    experiment.aco,
+                    programs,
+                    seed=seed,
+                    runtime=gpu_runtime,
+                )
+                gpu_seconds += perf_counter() - gpu_started
+                cpu_gap = (
+                    100.0
+                    * (cpu_result.best_length.numpy() - reference)
+                    / reference
+                )
+                gpu_gap = (
+                    100.0
+                    * (gpu_result.best_length.numpy() - reference)
+                    / reference
+                )
+                cpu_values.setdefault(scale, []).append(cpu_gap.reshape(-1))
+                gpu_values.setdefault(scale, []).append(gpu_gap.reshape(-1))
+                program_index = np.repeat(
+                    np.arange(len(programs), dtype=np.int64),
+                    batch.batch_size,
+                )
+                instance_id = np.tile(
+                    np.asarray(batch.instance_ids, dtype=str),
+                    len(programs),
+                )
+                unit_keys.setdefault(scale, []).append(
+                    np.asarray(
+                        [
+                            f"{program}:{identifier}"
+                            for program, identifier in zip(
+                                program_index,
+                                instance_id,
+                                strict=True,
+                            )
+                        ],
+                        dtype=str,
+                    )
+                )
+
+    scale_payload: dict[str, dict[str, float | int]] = {}
+    all_delta: list[np.ndarray] = []
+    raw_observations = 0
+
+    def aggregate_by_unit(
+        values: np.ndarray,
+        keys: np.ndarray,
+    ) -> np.ndarray:
+        grouped: dict[str, list[float]] = {}
+        for value, key in zip(values, keys, strict=True):
+            grouped.setdefault(str(key), []).append(float(value))
+        return np.asarray(
+            [fmean(grouped[key]) for key in sorted(grouped)],
+            dtype=np.float64,
+        )
+
+    for scale in experiment.validation_scales:
+        raw_cpu_gap = np.concatenate(cpu_values[scale])
+        raw_gpu_gap = np.concatenate(gpu_values[scale])
+        keys = np.concatenate(unit_keys[scale])
+        raw_observations += int(raw_cpu_gap.size)
+        cpu_gap = aggregate_by_unit(raw_cpu_gap, keys)
+        gpu_gap = aggregate_by_unit(raw_gpu_gap, keys)
+        delta = gpu_gap - cpu_gap
+        all_delta.append(delta)
+        standard_error = (
+            float(delta.std(ddof=1) / np.sqrt(delta.size))
+            if delta.size > 1
+            else 0.0
+        )
+        scale_payload[str(scale)] = {
+            "observations": int(delta.size),
+            "raw_seed_observations": int(raw_cpu_gap.size),
+            "cpu_mean_gap_percent": float(cpu_gap.mean()),
+            "gpu_mean_gap_percent": float(gpu_gap.mean()),
+            "mean_delta_pp": float(delta.mean()),
+            "upper_bound_95_pp": float(
+                delta.mean() + 1.645 * standard_error
+            ),
+            "wins": int((delta < -1e-12).sum()),
+            "ties": int((np.abs(delta) <= 1e-12).sum()),
+            "losses": int((delta > 1e-12).sum()),
+            "passed": bool(
+                delta.mean() + 1.645 * standard_error
+                <= args.tolerance_pp
+            ),
+        }
+    pooled = np.concatenate(all_delta)
+    pooled_standard_error = (
+        float(pooled.std(ddof=1) / np.sqrt(pooled.size))
+        if pooled.size > 1
+        else 0.0
+    )
+    upper_bound = float(
+        pooled.mean() + 1.645 * pooled_standard_error
+    )
+    passed = (
+        upper_bound <= args.tolerance_pp
+        and all(
+            bool(summary["passed"])
+            for summary in scale_payload.values()
+        )
+    )
+    payload = {
+        "schema_version": 1,
+        "contract": "gpu-fp32-search-cpu-fp64-score",
+        "statistical_unit": "program-instance (ACO seeds aggregated first)",
+        "experiment_id": experiment.experiment_id,
+        "root_seed": experiment.root_seed,
+        "aco_config_hash": experiment.aco.config_hash,
+        "aco_seed_values": seed_values,
+        "selected_instance_ids": selected_instance_ids,
+        "programs_manifest": [
+            {
+                "transition": (
+                    None if transition is None else transition.expression
+                ),
+                "pheromone": (
+                    None if pheromone is None else pheromone.expression
+                ),
+            }
+            for transition, pheromone in programs
+        ],
+        "gpu_devices": list(gpu_runtime.gpu_devices),
+        "gpu_mode": gpu_runtime.gpu_mode.value,
+        "gpu_block_threads": gpu_runtime.gpu_block_threads or 32,
+        "variant": experiment.aco.variant.value,
+        "instances_per_scale": args.instances_per_scale,
+        "seeds": args.seeds,
+        "programs": len(programs),
+        "observations": int(pooled.size),
+        "raw_seed_observations": raw_observations,
+        "tolerance_pp": args.tolerance_pp,
+        "mean_delta_pp": float(pooled.mean()),
+        "upper_bound_95_pp": upper_bound,
+        "passed": passed,
+        "cpu_seconds": cpu_seconds,
+        "gpu_seconds": gpu_seconds,
+        "speedup": cpu_seconds / max(gpu_seconds, 1e-12),
+        "scales": scale_payload,
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    print(rendered)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered + "\n", encoding="utf-8")
+    return 0 if passed else 1
 
 
 def _command_benchmark_training(args: argparse.Namespace) -> int:
@@ -779,7 +1722,7 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
 
 
 def _command_prepare_pilot_plan(args: argparse.Namespace) -> int:
-    plan = build_protocol_a_v04_pilot_plan(
+    plan = build_protocol_a_v05_pilot_plan(
         runs_root=args.runs_root,
         python=args.python,
     )
@@ -945,9 +1888,22 @@ def _command_train(args: argparse.Namespace) -> int:
             print(f"训练失败：{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     finalise_run_artifacts(output, artifact_payload, status="completed")
+    audit_status = (
+        ""
+        if result.cpu_fp64_audit is None
+        else (
+            "；CPU/FP64-audit="
+            + (
+                "pass"
+                if result.cpu_fp64_audit.passed_noninferiority
+                else "fail"
+            )
+        )
+    )
     print(
         f"训练完成：{output}；champion nodes={result.champion.total_nodes}；"
         f"non-inferiority={'pass' if result.passed_noninferiority else 'fallback'}"
+        f"{audit_status}"
     )
     return 0
 
@@ -987,6 +1943,7 @@ def _command_evaluate(args: argparse.Namespace) -> int:
         transition_program=transition,
         pheromone_program=pheromone,
         backend=spec.experiment.runtime.aco_backend,
+        runtime=spec.experiment.runtime,
         gp_run_id=args.gp_run_id,
     )
     target = write_records(records, args.output)
@@ -1063,6 +2020,26 @@ def _command_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_gpu_arguments(parser: argparse.ArgumentParser) -> None:
+    """为可执行 ACO 的命令加入一致的 CUDA 调度覆盖参数。"""
+
+    parser.add_argument("--gpu-devices", nargs="+", type=int)
+    parser.add_argument(
+        "--gpu-mode",
+        choices=[mode.value for mode in GPUMode],
+    )
+    parser.add_argument(
+        "--gpu-block-threads",
+        type=int,
+        choices=[0, 32, 64],
+    )
+    parser.add_argument(
+        "--gpu-task-chunk-size",
+        type=int,
+        help="0/省略表示按 20%% 显存保留策略自动分块",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rmtgp-aco",
@@ -1119,6 +2096,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=[backend.value for backend in ExecutionBackend],
     )
+    _add_gpu_arguments(baseline_parser)
     baseline_parser.set_defaults(handler=_command_precompute_baselines)
 
     benchmark_parser = subparsers.add_parser(
@@ -1138,7 +2116,54 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--reference-processes", type=int, default=8)
     benchmark_parser.add_argument("--max-individuals", type=int, default=100)
     benchmark_parser.add_argument("--output")
+    _add_gpu_arguments(benchmark_parser)
     benchmark_parser.set_defaults(handler=_command_benchmark_backends)
+
+    accelerator_benchmark = subparsers.add_parser(
+        "benchmark-accelerators",
+        help="同代比较 CPU8/CPU16、单 GPU、双 GPU 与双 run campaign",
+    )
+    accelerator_benchmark.add_argument("--config", required=True)
+    accelerator_benchmark.add_argument("--schedule")
+    accelerator_benchmark.add_argument(
+        "--phase",
+        choices=["pilot", "formal", "development"],
+        default="development",
+    )
+    accelerator_benchmark.add_argument("--replicate-id", type=int, default=0)
+    accelerator_benchmark.add_argument("--root-seed", type=int)
+    accelerator_benchmark.add_argument("--generation", type=int, default=1)
+    accelerator_benchmark.add_argument("--iterations", type=int)
+    accelerator_benchmark.add_argument("--max-individuals", type=int, default=100)
+    accelerator_benchmark.add_argument("--repeats", type=int, default=3)
+    accelerator_benchmark.add_argument(
+        "--modes",
+        nargs="+",
+        choices=["cpu8", "cpu16", "gpu0", "gpu1", "dual", "campaign"],
+        default=["cpu8", "cpu16", "gpu0", "gpu1", "dual", "campaign"],
+    )
+    accelerator_benchmark.add_argument("--output")
+    accelerator_benchmark.add_argument("--cpu-threads", type=int)
+    _add_gpu_arguments(accelerator_benchmark)
+    accelerator_benchmark.set_defaults(
+        handler=_command_benchmark_accelerators
+    )
+
+    cuda_quality = subparsers.add_parser(
+        "validate-cuda-quality",
+        help="CPU FP64 与 CUDA FP32 搜索的 paired 非劣质量门控",
+    )
+    cuda_quality.add_argument("--config", required=True)
+    cuda_quality.add_argument("--instances-per-scale", type=int, default=128)
+    cuda_quality.add_argument("--seeds", type=int, default=3)
+    cuda_quality.add_argument("--individuals", type=int, default=1)
+    cuda_quality.add_argument("--batch-size", type=int, default=16)
+    cuda_quality.add_argument("--cpu-threads", type=int, default=16)
+    cuda_quality.add_argument("--tolerance-pp", type=float, default=0.10)
+    cuda_quality.add_argument("--root-seed", type=int)
+    cuda_quality.add_argument("--output")
+    _add_gpu_arguments(cuda_quality)
+    cuda_quality.set_defaults(handler=_command_validate_cuda_quality)
 
     training_benchmark = subparsers.add_parser(
         "benchmark-training",
@@ -1178,19 +2203,20 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         default="rmtgp-full-f1",
     )
+    _add_gpu_arguments(training_benchmark)
     training_benchmark.set_defaults(handler=_command_benchmark_training)
 
     plan_parser = subparsers.add_parser(
         "prepare-pilot-plan",
-        help="生成 Protocol A v0.4 的 78-run pilot 任务图",
+        help="生成 Protocol A v0.5 的 78-run pilot 任务图",
     )
     plan_parser.add_argument(
         "--output",
-        default="runs/protocol-a-v0.4/pilot-plan.json",
+        default="runs/protocol-a-v0.5/pilot-plan.json",
     )
     plan_parser.add_argument(
         "--runs-root",
-        default="runs/protocol-a-v0.4",
+        default="runs/protocol-a-v0.5",
     )
     plan_parser.add_argument("--python")
     plan_parser.set_defaults(handler=_command_prepare_pilot_plan)
@@ -1236,6 +2262,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="E1 组件/上一篇研究对照；默认训练双 residual",
     )
     train_parser.add_argument("--traceback", action="store_true")
+    _add_gpu_arguments(train_parser)
     train_parser.set_defaults(handler=_command_train)
 
     evaluate = subparsers.add_parser("evaluate", help="锁定模型后的 paired 测试")
@@ -1260,6 +2287,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=[backend.value for backend in ExecutionBackend],
     )
+    _add_gpu_arguments(evaluate)
     evaluate.set_defaults(handler=_command_evaluate)
 
     summarize = subparsers.add_parser("summarize", help="统计检验与论文指标汇总")

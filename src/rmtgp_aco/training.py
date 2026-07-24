@@ -11,7 +11,7 @@ import random
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -26,7 +26,7 @@ from deap import tools
 
 from .aco import solve
 from .baseline import BaselineArchive
-from .config import ExecutionBackend, ExperimentConfig
+from .config import ExecutionBackend, ExperimentConfig, GPUMode
 from .genetic import (
     RMTGPIndividual,
     compile_individual,
@@ -38,7 +38,7 @@ from .program import create_primitive_sets
 from .sampling import EvaluationCase
 
 _WORKER_EXPERIMENT: ExperimentConfig | None = None
-_CHECKPOINT_SCHEMA_VERSION = 2
+_CHECKPOINT_SCHEMA_VERSION = 3
 _T = TypeVar("_T")
 
 
@@ -132,6 +132,7 @@ class ValidationSelection:
     """validation 模型选择、门控和候选审计信息。"""
 
     champion: RMTGPIndividual
+    backend: ExecutionBackend
     passed_noninferiority: bool
     selected_candidate_hash: str
     selected_macro_gap_percent: float
@@ -152,6 +153,7 @@ class TrainingResult:
     checkpoints: list[RMTGPIndividual]
     passed_noninferiority: bool
     validation: ValidationSelection
+    cpu_fp64_audit: ValidationSelection | None = None
     output_directory: Path | None = None
 
 
@@ -209,6 +211,7 @@ class BaselineCache:
                 experiment.aco,
                 seed=case.seed,
                 backend=experiment.runtime.aco_backend,
+                runtime=experiment.runtime,
             )
             self.put(case, experiment, result.best_length)
             value = self.get_cpu(case, experiment)
@@ -330,6 +333,7 @@ def _score_with_explicit_baselines(
             pheromone_program=pheromone,
             seed=case.seed,
             backend=experiment.runtime.aco_backend,
+            runtime=experiment.runtime,
         )
         candidate.setdefault(case.scale, []).append(result.best_length)
         baseline.setdefault(case.scale, []).append(
@@ -362,6 +366,7 @@ def _validation_data_with_explicit_baselines(
             pheromone_program=pheromone,
             seed=case.seed,
             backend=experiment.runtime.aco_backend,
+            runtime=experiment.runtime,
         )
         reference = case.batch.reference_length
         candidate_gap = 100.0 * (result.best_length - reference) / reference
@@ -407,9 +412,33 @@ def _batched_population_breakdowns(
     cases: Sequence[EvaluationCase],
     baseline_values: Sequence[torch.Tensor],
 ) -> tuple[list[FitnessBreakdown], int]:
-    """用一个 population×instance Numba 边界计算全部训练 fitness。"""
+    """用一个 population×instance native 边界计算全部训练 fitness。"""
 
-    from .aco_numba import solve_population_numba
+    if (
+        experiment.runtime.aco_backend
+        is ExecutionBackend.CUDA_FUSED_FP32
+    ):
+        from .aco_cuda import solve_population_cuda
+
+        def solve_population(case, programs):
+            return solve_population_cuda(
+                case.batch,
+                experiment.aco,
+                programs,
+                seed=case.seed,
+                runtime=experiment.runtime,
+            )
+    else:
+        from .aco_numba import solve_population_numba
+
+        def solve_population(case, programs):
+            return solve_population_numba(
+                case.batch,
+                experiment.aco,
+                programs,
+                seed=case.seed,
+                threads=experiment.runtime.cpu_threads,
+            )
 
     programs = [compile_individual(individual) for individual in individuals]
     candidate: dict[int, list[torch.Tensor]] = {}
@@ -417,13 +446,7 @@ def _batched_population_breakdowns(
     references: dict[int, list[torch.Tensor]] = {}
     constructed_tours = 0
     for case, baseline_length in zip(cases, baseline_values, strict=True):
-        result = solve_population_numba(
-            case.batch,
-            experiment.aco,
-            programs,
-            seed=case.seed,
-            threads=experiment.runtime.cpu_threads,
-        )
+        result = solve_population(case, programs)
         candidate.setdefault(case.scale, []).append(result.best_length)
         baseline.setdefault(case.scale, []).append(baseline_length.detach().cpu())
         references.setdefault(case.scale, []).append(
@@ -484,7 +507,31 @@ def _batched_validation_data(
 ) -> dict[str, ValidationData]:
     """批量计算 validation absolute/baseline/delta gaps。"""
 
-    from .aco_numba import solve_population_numba
+    if (
+        experiment.runtime.aco_backend
+        is ExecutionBackend.CUDA_FUSED_FP32
+    ):
+        from .aco_cuda import solve_population_cuda
+
+        def solve_population(case, programs):
+            return solve_population_cuda(
+                case.batch,
+                experiment.aco,
+                programs,
+                seed=case.seed,
+                runtime=experiment.runtime,
+            )
+    else:
+        from .aco_numba import solve_population_numba
+
+        def solve_population(case, programs):
+            return solve_population_numba(
+                case.batch,
+                experiment.aco,
+                programs,
+                seed=case.seed,
+                threads=experiment.runtime.cpu_threads,
+            )
 
     programs = [compile_individual(individual) for individual in individuals]
     candidates: dict[int, list[torch.Tensor]] = {}
@@ -492,13 +539,7 @@ def _batched_validation_data(
     references: dict[int, list[torch.Tensor]] = {}
     ids: dict[int, list[np.ndarray]] = {}
     for case, baseline_length in zip(cases, baseline_values, strict=True):
-        result = solve_population_numba(
-            case.batch,
-            experiment.aco,
-            programs,
-            seed=case.seed,
-            threads=experiment.runtime.cpu_threads,
-        )
+        result = solve_population(case, programs)
         candidates.setdefault(case.scale, []).append(result.best_length)
         baselines.setdefault(case.scale, []).append(baseline_length.detach().cpu())
         references.setdefault(case.scale, []).append(
@@ -591,6 +632,7 @@ def _baseline_chunk_in_worker(
             _WORKER_EXPERIMENT.aco,
             seed=case.seed,
             backend=_WORKER_EXPERIMENT.runtime.aco_backend,
+            runtime=_WORKER_EXPERIMENT.runtime,
         ).best_length.detach().cpu()
         for case in cases
     ]
@@ -630,6 +672,7 @@ def _warm_worker(case: EvaluationCase) -> int:
         _WORKER_EXPERIMENT.aco,
         seed=case.seed,
         backend=_WORKER_EXPERIMENT.runtime.aco_backend,
+        runtime=_WORKER_EXPERIMENT.runtime,
     )
     # 给 executor 足够时间启动全部 worker，避免一个进程吞掉全部 warm tasks。
     sleep(0.02)
@@ -682,17 +725,34 @@ class EvaluationPool:
 
         if (
             self.experiment.runtime.aco_backend
-            is ExecutionBackend.NUMBA_BATCH
+            in {
+                ExecutionBackend.NUMBA_BATCH,
+                ExecutionBackend.CUDA_FUSED_FP32,
+            }
         ):
-            from .aco_numba import solve_population_numba
+            if (
+                self.experiment.runtime.aco_backend
+                is ExecutionBackend.CUDA_FUSED_FP32
+            ):
+                from .aco_cuda import solve_population_cuda
 
-            solve_population_numba(
-                case.batch,
-                self.experiment.aco,
-                [(None, None)],
-                seed=case.seed,
-                threads=self.experiment.runtime.cpu_threads,
-            )
+                solve_population_cuda(
+                    case.batch,
+                    self.experiment.aco,
+                    [(None, None)],
+                    seed=case.seed,
+                    runtime=self.experiment.runtime,
+                )
+            else:
+                from .aco_numba import solve_population_numba
+
+                solve_population_numba(
+                    case.batch,
+                    self.experiment.aco,
+                    [(None, None)],
+                    seed=case.seed,
+                    threads=self.experiment.runtime.cpu_threads,
+                )
             return {os.getpid()}
         if (
             self.executor is None
@@ -748,6 +808,7 @@ class EvaluationPool:
                         self.experiment.aco,
                         seed=case.seed,
                         backend=self.experiment.runtime.aco_backend,
+                        runtime=self.experiment.runtime,
                     ).best_length.detach().cpu()
                     for case in missing
                 ]
@@ -791,7 +852,10 @@ class EvaluationPool:
         constructed_tours = 0
         if (
             self.experiment.runtime.aco_backend
-            is ExecutionBackend.NUMBA_BATCH
+            in {
+                ExecutionBackend.NUMBA_BATCH,
+                ExecutionBackend.CUDA_FUSED_FP32,
+            }
         ):
             breakdowns, constructed_tours = _batched_population_breakdowns(
                 individuals,
@@ -866,7 +930,10 @@ class EvaluationPool:
         )
         if (
             self.experiment.runtime.aco_backend
-            is ExecutionBackend.NUMBA_BATCH
+            in {
+                ExecutionBackend.NUMBA_BATCH,
+                ExecutionBackend.CUDA_FUSED_FP32,
+            }
         ):
             return _batched_validation_data(
                 candidates,
@@ -1111,6 +1178,7 @@ def validate_candidates(
         champion.fitness.values = (0.0,)
     return ValidationSelection(
         champion=champion,
+        backend=experiment.runtime.aco_backend,
         passed_noninferiority=passed,
         selected_candidate_hash=selected.structural_hash,
         selected_macro_gap_percent=float(macro_gap),
@@ -1212,6 +1280,28 @@ def _environment_payload() -> dict[str, object]:
     except (ImportError, ModuleNotFoundError):
         numba_version = "unavailable"
         llvmlite_version = "unavailable"
+    cupy_module: object | None = None
+    try:
+        import cupy as cupy_module
+
+        cupy_version = cupy_module.__version__
+        cupy_devices = []
+        for index in range(cupy_module.cuda.runtime.getDeviceCount()):
+            name = cupy_module.cuda.runtime.getDeviceProperties(index)["name"]
+            cupy_devices.append(
+                name.decode("utf-8") if isinstance(name, bytes) else str(name)
+            )
+        cupy_error = None
+    except (ImportError, ModuleNotFoundError):
+        cupy_version = "unavailable"
+        cupy_devices = []
+        cupy_error = None
+    except Exception as exc:
+        # CPU-only 节点可能装有 CuPy 但没有可用驱动；artifact 记录错误而不
+        # 阻断正式 CPU run。
+        cupy_version = getattr(cupy_module, "__version__", "unknown")
+        cupy_devices = []
+        cupy_error = f"{type(exc).__name__}: {exc}"
     return {
         "created_at": datetime.now(UTC).isoformat(),
         "python": platform.python_version(),
@@ -1221,6 +1311,9 @@ def _environment_payload() -> dict[str, object]:
         "deap": deap_version,
         "numba": numba_version,
         "llvmlite": llvmlite_version,
+        "cupy": cupy_version,
+        "cupy_devices": cupy_devices,
+        "cupy_runtime_error": cupy_error,
         "cuda_available": torch.cuda.is_available(),
         "cuda_device": (
             torch.cuda.get_device_name(0)
@@ -1368,14 +1461,19 @@ def _evolution_summary(result: TrainingResult) -> str:
             "",
             f"- 唯一候选数：{result.validation.unique_candidates}",
             f"- Finalists：{result.validation.finalist_candidates}",
+            f"- Selection backend：{result.validation.backend.value}",
             (
                 "- 选中候选 macro reference gap："
                 f"{result.validation.selected_macro_gap_percent:.6f}%"
             ),
             f"- 选中候选 macro Δ：{result.validation.selected_macro_delta_pp:+.6f} pp",
             (
-                "- Non-inferiority："
-                + ("通过" if result.passed_noninferiority else "失败，部署 baseline fallback")
+                "- Selection non-inferiority："
+                + (
+                    "通过"
+                    if result.validation.passed_noninferiority
+                    else "失败"
+                )
             ),
         ]
     )
@@ -1386,7 +1484,77 @@ def _evolution_summary(result: TrainingResult) -> str:
             f"{summary.bootstrap_ci_high:+.6f}], "
             f"W/T/L={summary.wins}/{summary.ties}/{summary.losses}"
         )
+    if result.cpu_fp64_audit is not None:
+        audit = result.cpu_fp64_audit
+        lines.extend(
+            [
+                "",
+                "## CPU/FP64 final audit",
+                "",
+                f"- Backend：{audit.backend.value}",
+                (
+                    "- 选中候选 macro reference gap："
+                    f"{audit.selected_macro_gap_percent:.6f}%"
+                ),
+                f"- 选中候选 macro Δ：{audit.selected_macro_delta_pp:+.6f} pp",
+                (
+                    "- CPU/FP64 non-inferiority："
+                    + ("通过" if audit.passed_noninferiority else "失败")
+                ),
+            ]
+        )
+        for summary in audit.scales:
+            lines.append(
+                f"- TSP{summary.scale}: mean={summary.mean_delta_pp:+.6f} pp, "
+                f"95% CI=[{summary.bootstrap_ci_low:+.6f}, "
+                f"{summary.bootstrap_ci_high:+.6f}], "
+                f"W/T/L={summary.wins}/{summary.ties}/{summary.losses}"
+            )
+    lines.extend(
+        [
+            "",
+            "## Deployment decision",
+            "",
+            (
+                "- Final non-inferiority："
+                + (
+                    "通过"
+                    if result.passed_noninferiority
+                    else "失败，部署 baseline fallback"
+                )
+            ),
+        ]
+    )
     return "\n".join(lines) + "\n"
+
+
+def _validation_csv(
+    selection: ValidationSelection,
+    *,
+    deployed: bool,
+) -> str:
+    """把一个 selection/audit 阶段写成带后端标识的长表。"""
+
+    lines = [
+        (
+            "backend,scale,observations,instances,mean_delta_pp,"
+            "median_delta_pp,bootstrap_ci_low,bootstrap_ci_high,"
+            "normal_upper_bound_95,wins,ties,losses,"
+            "stage_passed_noninferiority,deployed\n"
+        )
+    ]
+    for summary in selection.scales:
+        lines.append(
+            f"{selection.backend.value},{summary.scale},"
+            f"{summary.observations},{summary.instances},"
+            f"{summary.mean_delta_pp:.17g},{summary.median_delta_pp:.17g},"
+            f"{summary.bootstrap_ci_low:.17g},{summary.bootstrap_ci_high:.17g},"
+            f"{summary.normal_upper_bound_95:.17g},{summary.wins},"
+            f"{summary.ties},{summary.losses},"
+            f"{str(selection.passed_noninferiority).lower()},"
+            f"{str(deployed).lower()}\n"
+        )
+    return "".join(lines)
 
 
 def save_training_result(
@@ -1398,6 +1566,11 @@ def save_training_result(
 
     target = Path(output_directory)
     target.mkdir(parents=True, exist_ok=True)
+    audit_passed = (
+        None
+        if result.cpu_fp64_audit is None
+        else result.cpu_fp64_audit.passed_noninferiority
+    )
     _atomic_write_text(
         target / "config.yaml",
         yaml.safe_dump(
@@ -1417,6 +1590,10 @@ def save_training_result(
             f"transition: {result.champion.transition_tree}\n"
             f"pheromone: {result.champion.pheromone_tree}\n"
             f"passed_noninferiority: {result.passed_noninferiority}\n"
+            f"selection_backend: {result.validation.backend.value}\n"
+            f"selection_passed_noninferiority: "
+            f"{result.validation.passed_noninferiority}\n"
+            f"cpu_fp64_audit_passed: {audit_passed}\n"
             f"selected_candidate_hash: "
             f"{result.validation.selected_candidate_hash}\n"
         ),
@@ -1424,26 +1601,21 @@ def save_training_result(
     with (target / "champion.pkl").open("wb") as handle:
         pickle.dump(result.champion, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    validation_lines = [
-        (
-            "scale,observations,instances,mean_delta_pp,median_delta_pp,"
-            "bootstrap_ci_low,bootstrap_ci_high,normal_upper_bound_95,"
-            "wins,ties,losses,passed_noninferiority\n"
-        )
-    ]
-    for summary in result.validation.scales:
-        validation_lines.append(
-            f"{summary.scale},{summary.observations},{summary.instances},"
-            f"{summary.mean_delta_pp:.17g},{summary.median_delta_pp:.17g},"
-            f"{summary.bootstrap_ci_low:.17g},{summary.bootstrap_ci_high:.17g},"
-            f"{summary.normal_upper_bound_95:.17g},{summary.wins},"
-            f"{summary.ties},{summary.losses},"
-            f"{str(result.passed_noninferiority).lower()}\n"
-        )
     _atomic_write_text(
         target / "validation_summary.csv",
-        "".join(validation_lines),
+        _validation_csv(
+            result.validation,
+            deployed=result.passed_noninferiority,
+        ),
     )
+    if result.cpu_fp64_audit is not None:
+        _atomic_write_text(
+            target / "cpu_fp64_audit_summary.csv",
+            _validation_csv(
+                result.cpu_fp64_audit,
+                deployed=result.passed_noninferiority,
+            ),
+        )
     _atomic_write_text(
         target / "evolution_summary.md",
         _evolution_summary(result),
@@ -1458,6 +1630,38 @@ def save_training_result(
             pickle.dump(checkpoint, handle, protocol=pickle.HIGHEST_PROTOCOL)
     result.output_directory = target
     return target
+
+
+def _cpu_fp64_final_audit(
+    candidate: RMTGPIndividual,
+    experiment: ExperimentConfig,
+    gate_cases: Sequence[EvaluationCase],
+) -> ValidationSelection:
+    """用独立 CPU float64 semantic domain 复评 CUDA 选出的候选。
+
+    GPU baseline archive 属于另一 kernel semantic domain，不能用于此处；
+    CPU baseline 与候选均按相同 instance/seed 现场批量计算并在内存中缓存。
+    """
+
+    cpu_experiment = replace(
+        experiment,
+        experiment_id=f"{experiment.experiment_id}-cpu-fp64-audit",
+        runtime=replace(
+            experiment.runtime,
+            aco_backend=ExecutionBackend.NUMBA_BATCH,
+            processes=1,
+            gpu_devices=(),
+            gpu_mode=GPUMode.CPU,
+            gpu_block_threads=0,
+            gpu_task_chunk_size=0,
+        ),
+    )
+    return validate_candidates(
+        [candidate],
+        cpu_experiment,
+        gate_cases,
+        BaselineCache(),
+    )
 
 
 def train(
@@ -1647,12 +1851,46 @@ def train(
             evaluator_pool=evaluator,
         )
 
+    cpu_fp64_audit: ValidationSelection | None = None
+    passed_noninferiority = validation.passed_noninferiority
+    champion = validation.champion
+    if (
+        experiment.runtime.aco_backend
+        is ExecutionBackend.CUDA_FUSED_FP32
+    ):
+        selected_candidate = next(
+            candidate
+            for candidate in checkpoints
+            if candidate.structural_hash
+            == validation.selected_candidate_hash
+        )
+        audit_cases = (
+            validation_cases
+            if validation_gate_cases is None
+            else validation_gate_cases
+        )
+        cpu_fp64_audit = _cpu_fp64_final_audit(
+            selected_candidate,
+            experiment,
+            audit_cases,
+        )
+        passed_noninferiority = (
+            validation.passed_noninferiority
+            and cpu_fp64_audit.passed_noninferiority
+        )
+        if passed_noninferiority:
+            champion = cpu_fp64_audit.champion
+        elif validation.passed_noninferiority:
+            # CPU audit 已在失败时构造了确定的 baseline fallback。
+            champion = cpu_fp64_audit.champion
+
     result = TrainingResult(
-        champion=validation.champion,
+        champion=champion,
         history=history,
         checkpoints=checkpoints,
-        passed_noninferiority=validation.passed_noninferiority,
+        passed_noninferiority=passed_noninferiority,
         validation=validation,
+        cpu_fp64_audit=cpu_fp64_audit,
     )
     if target is not None:
         save_training_result(result, experiment, target)

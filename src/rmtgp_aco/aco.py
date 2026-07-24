@@ -14,6 +14,7 @@ from .config import (
     ACOVariant,
     ExecutionBackend,
     PheromoneIntegration,
+    RuntimeConfig,
     TransitionIntegration,
 )
 from .model import (
@@ -35,6 +36,7 @@ class _SearchState:
     global_best_iteration: torch.Tensor
     restart_best_tour: torch.Tensor
     restart_best_length: torch.Tensor
+    restart_found_best_iteration: torch.Tensor
     stagnation: torch.Tensor
     tau_min: torch.Tensor
     tau_max: torch.Tensor
@@ -705,6 +707,11 @@ def _update_search_state(
         iteration_tour,
         state.restart_best_tour,
     )
+    state.restart_found_best_iteration = torch.where(
+        improved_restart,
+        torch.full_like(state.restart_found_best_iteration, iteration),
+        state.restart_found_best_iteration,
+    )
 
     if config.variant is ACOVariant.MMAS and bool(improved_global.any()):
         p_x = float(torch.exp(torch.tensor(log(config.mmas_p_best) / problem.n)))
@@ -1031,6 +1038,11 @@ def _initial_search_state(
         ),
         restart_best_tour=empty_tour.clone(),
         restart_best_length=infinity.clone(),
+        restart_found_best_iteration=torch.zeros(
+            batch,
+            dtype=torch.int64,
+            device=problem.device,
+        ),
         stagnation=torch.zeros(batch, dtype=torch.int64, device=problem.device),
         tau_min=tau_min,
         tau_max=tau_max,
@@ -1167,6 +1179,66 @@ def _solve_torch(
                 pheromone_program,
                 diagnostics,
             )
+            if (
+                config.variant is ACOVariant.MMAS
+                and iteration % config.mmas_branch_check_period == 0
+            ):
+                batch_index = _batch_indices(
+                    problem.batch_size,
+                    problem.n,
+                    problem.nn_indices.shape[-1],
+                    device=device,
+                )
+                node_index = (
+                    torch.arange(problem.n, device=device)
+                    .reshape(1, problem.n, 1)
+                    .expand_as(problem.nn_indices)
+                )
+                candidate_tau = pheromone[
+                    batch_index,
+                    node_index,
+                    problem.nn_indices,
+                ]
+                minimum = candidate_tau.amin(dim=-1, keepdim=True)
+                maximum = candidate_tau.amax(dim=-1, keepdim=True)
+                cutoff = minimum + config.mmas_branch_lambda * (
+                    maximum - minimum
+                )
+                branching_factor = (
+                    (candidate_tau > cutoff).sum(dim=(1, 2)).to(config.dtype)
+                    / (2.0 * problem.n)
+                )
+                restart_mask = (
+                    branching_factor < config.mmas_branch_threshold
+                ) & (
+                    iteration - state.restart_found_best_iteration
+                    > config.mmas_restart_stagnation
+                )
+                if bool(restart_mask.any()):
+                    reset = state.tau_max[:, None, None].expand_as(pheromone)
+                    pheromone = torch.where(
+                        restart_mask[:, None, None],
+                        reset,
+                        pheromone,
+                    )
+                    diagonal = torch.arange(problem.n, device=device)
+                    pheromone[:, diagonal, diagonal] = 0.0
+                    state.restart_best_length = torch.where(
+                        restart_mask,
+                        torch.full_like(state.restart_best_length, torch.inf),
+                        state.restart_best_length,
+                    )
+                    state.restart_found_best_iteration = torch.where(
+                        restart_mask,
+                        torch.full_like(
+                            state.restart_found_best_iteration,
+                            iteration,
+                        ),
+                        state.restart_found_best_iteration,
+                    )
+                    diagnostics.mmas_restart_count += int(
+                        restart_mask.sum().item()
+                    )
             anytime.append(state.global_best_length.clone())
 
     if device.type == "cuda":
@@ -1195,6 +1267,7 @@ def solve(
     pheromone_program: TensorProgram | None = None,
     seed: int = 0,
     backend: ExecutionBackend | str = ExecutionBackend.TORCH,
+    runtime: RuntimeConfig | None = None,
 ) -> RunResult:
     """按所选后端运行 AS、ACS 或 MMAS。
 
@@ -1203,6 +1276,20 @@ def solve(
     """
 
     selected = ExecutionBackend(backend)
+    if selected is ExecutionBackend.CUDA_FUSED_FP32:
+        from .aco_cuda import solve_cuda
+
+        selected_runtime = runtime or RuntimeConfig(
+            aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+        )
+        return solve_cuda(
+            problem,
+            config,
+            transition_program=transition_program,
+            pheromone_program=pheromone_program,
+            seed=seed,
+            runtime=selected_runtime,
+        )
     if selected in {ExecutionBackend.NUMBA, ExecutionBackend.NUMBA_BATCH}:
         from .aco_numba import solve_numba
 

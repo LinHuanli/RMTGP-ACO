@@ -1,5 +1,5 @@
 experiment:
-  experiment_id: protocol-a-v04-mmas-rmtgp
+  experiment_id: protocol-a-v05-mmas-rmtgp
   root_seed: 3001
   train_scales: [50, 100]
   validation_scales: [50, 100]
@@ -20,6 +20,10 @@ aco:
   gamma_pheromone: 0.3333333333333333
   mmas_update_period: 25
   mmas_p_best: 0.05
+  mmas_branch_check_period: 100
+  mmas_branch_lambda: 0.05
+  mmas_branch_threshold: 1.00001
+  mmas_restart_stagnation: 250
 
 gp:
   population_size: 100
@@ -92,5 +96,5 @@ data:
   validation_selection_instances_per_scale: 32
   validation_gate_instances_per_scale: 32
   evaluation_batch_size: 32
-  baseline_archive: runs/protocol-a-v0.4/baselines/mmas
+  baseline_archive: runs/protocol-a-v0.5/baselines/mmas
   baseline_policy: require

@@ -1,4 +1,4 @@
-"""Protocol A v0.4 pilot 的可审计命令矩阵。"""
+"""Protocol A v0.5 pilot 的可审计命令矩阵。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
-PROTOCOL_ID = "protocol-a-v0.4"
+PROTOCOL_ID = "protocol-a-v0.5"
 
 MAIN_METHOD_PROFILES = (
     "legacy",
@@ -44,9 +44,9 @@ def _base_command(python: str) -> list[str]:
     return [python, "-m", "rmtgp_aco"]
 
 
-def build_protocol_a_v04_pilot_plan(
+def build_protocol_a_v05_pilot_plan(
     *,
-    runs_root: str | Path = "runs/protocol-a-v0.4",
+    runs_root: str | Path = "runs/protocol-a-v0.5",
     python: str | None = None,
 ) -> dict[str, object]:
     """生成 72 个主消融 run 与 6 个 ACS 单尺度 run。"""
@@ -170,6 +170,10 @@ def build_protocol_a_v04_pilot_plan(
         "setup_tasks": setup_tasks,
         "training_tasks": training_tasks,
     }
+
+
+# 兼容外部脚本的旧函数名；生成内容和 protocol_id 始终是 v0.5。
+build_protocol_a_v04_pilot_plan = build_protocol_a_v05_pilot_plan
 
 
 def write_experiment_plan(plan: dict[str, object], path: str | Path) -> tuple[Path, Path]:

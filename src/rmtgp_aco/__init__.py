@@ -9,6 +9,7 @@ from .config import (
     ExecutionBackend,
     ExperimentConfig,
     GPConfig,
+    GPUMode,
     PheromoneIntegration,
     RuntimeConfig,
     TransitionIntegration,
@@ -19,10 +20,11 @@ __all__ = [
     "ACOVariant",
     "ExecutionBackend",
     "ExperimentConfig",
+    "GPUMode",
     "GPConfig",
     "PheromoneIntegration",
     "RuntimeConfig",
     "TransitionIntegration",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

@@ -1,20 +1,245 @@
 # RMTGP-ACO：面向 TSP50、TSP100 与 TSP500 的 Multi-Tree GP–ACO 研究设计
 
-> **文档状态**：Design v1.2 / Protocol A v0.4（2026-07-24 冻结）
+> **文档状态**：Design v1.3 / Protocol A v0.5（2026-07-24 候选冻结）
 >
 > **研究对象**：对称二维 Euclidean TSP；Ant System（AS）、Ant Colony System（ACS）和 MAX–MIN Ant System（MMAS）
 >
 > **核心方法**：使用两棵 Strongly Typed GP 树分别学习状态转移残差和全局信息素强化残差
 >
-> **实现技术**：DEAP、PyTorch、NumPy、Numba；16-thread CPU population batching
+> **实现技术**：DEAP、PyTorch、NumPy、Numba、CuPy Raw CUDA；CPU/GPU 分层并行
 >
-> **范围约束**：本文档只定义研究、算法、接口、伪代码与实验协议，不包含实现代码
+> **范围约束**：本文档定义研究、算法、接口、伪代码与实验协议；实现位于
+> `src/rmtgp_aco`
 
 ---
 
-## v1.2 协议修订（实现时优先于下文旧参数）
+## v1.3 / Protocol A v0.5：融合 CUDA 与完整 MMAS 重启
 
-本节冻结 Protocol A v0.4。下文保留的早期候选参数仅用于解释设计演化；如与
+本节优先于 v1.2 及后文的旧执行建议。ACO、GP、数据量、fitness 与消融矩阵
+保持 v1.2 不变；v0.5 只改变执行后端契约和 MMAS 搜索控制语义。由于 kernel
+semantic version、ACO config hash、baseline schema 与 checkpoint schema 均已
+升级，v0.4 的 baseline archive 和 checkpoint 不得用于 v0.5。
+
+### 数值契约
+
+GPU 后端采用“FP32 搜索、FP64 计分”：
+
+1. distance、heuristic、pheromone、GP terminal 和 ACO 控制状态在 GPU 上
+   使用 FP32；
+2. GPU 只返回最优 Hamiltonian tour
+   \(\pi\in\{0,\ldots,n-1\}^{n+1}\)；
+3. 主机用由原始坐标生成的 FP64 distance matrix 重算
+
+\[
+L_{64}(\pi)=\sum_{j=0}^{n-1}d_{64}(\pi_j,\pi_{j+1});
+\]
+
+4. fitness、reference gap、baseline delta 和最终论文表格只使用
+   \(L_{64}\)，不使用 GPU 累加的 FP32 length；
+5. TF32、FP16、BF16 和 `--use_fast_math` 均关闭。Tensor Core 不属于该
+   不规则组合搜索的计算路径。
+
+FP32 仍可能通过 roulette、argmax 和 best-tour 比较改变搜索轨迹。因此 GPU
+不是 CPU 的逐位替代，而是独立的 kernel semantic domain。进入正式训练前，
+在固定 128 个 TSP50、128 个 TSP100、3 个 ACO seeds 上计算
+
+\[
+D_i=g_i^{\mathrm{GPU}}-g_i^{\mathrm{CPU}},
+\qquad
+U_{0.95}=\overline D+1.645\frac{s_D}{\sqrt N}.
+\]
+
+统计单位为 `program × instance`：先在同一 instance 内聚合 3 个 ACO
+seeds，再计算置信上界，避免把随机重复误当成独立 TSP 样本。仅当 TSP50、
+TSP100 及 pooled 的 \(U_{0.95}\le0.10\) percentage points 时，GPU 数值契约
+通过质量门控。最终 champion 还必须在 CPU float64 后端复评；GPU selection
+gate 或 CPU/FP64 gate 任一失败均部署原始 ACO，两个阶段分别写入
+`validation_summary.csv` 与 `cpu_fp64_audit_summary.csv`。
+
+### 分层并行架构
+
+并行层级固定为：
+
+```text
+independent GP runs               -> campaign：GPU0 / GPU1 各一个 run
+one GP generation                 -> 严格顺序，完成 fitness 后才能 breeding
+semantic program × instance       -> 一个 CUDA block 对应一个独立 ACO task
+ACO iteration / construction step -> block 内严格顺序
+32 ants                           -> 32 个 CUDA threads 同步构造
+matrix init / evaporation         -> block 中全部 threads 分片处理
+```
+
+CPU 是 control plane，负责 schedule、数据解析、GP 结构/语义去重、postfix
+打包、FP64 精确计分、DEAP breeding、统计和 checkpoint。GPU 是 data plane，
+在一个 kernel launch 内完成一个 task 的全部 500 次 ACO iterations。禁止在
+同一代中把部分个体交给 CPU、部分个体交给 GPU，因为这会把数值后端变成
+fitness 的混杂因素。
+
+### 驻留数据和内存策略
+
+每张 GPU 缓存当前用到的只读问题数据：
+
+- FP32 distance、heuristic、log-heuristic 和节点局部均值；
+- FP64 distance 排序后得到的 candidate list 与完整 nearest-neighbour rank；
+- instance-keyed counter RNG key。
+
+H2D 使用 page-locked staging buffer 和异步 copy。两张 GPU 各自保存一份
+静态数据，不依赖 P2P 或 NVLink。tour 使用 `uint16`，visited set 使用
+64-bit bitset。对每个 task，主要工作区近似为
+
+\[
+4n^2+n^2+2M(n+1)+8M\left\lceil\frac n{64}\right\rceil+4Mn
+\quad\text{bytes},
+\]
+
+分别对应 pheromone、edge frequency、tour、visited 和 deposit。运行时至少
+保留 20% 显存；若任务矩阵超过剩余预算，按 task chunk 分批，不得静默回退
+CPU。禁止物化 \([P,B,M,n,K]\) terminal tensor；candidate terminal 在寄存器
+和局部栈中流式求值。
+
+### 融合 kernel 与 GP 解释器
+
+GP 树被编译成定长二维 packed postfix buffers：
+
+\[
+(\text{opcode},\text{float argument},\text{integer argument},
+\text{length},\text{terminal mask}).
+\]
+
+每个 thread 使用实际最大栈深度不超过 32 的局部栈解释 `ADD, SUB, MUL,
+PDIV, PDIV1, MIN, MAX, ABS, NEG`。只计算 required-terminal mask 引用的
+动态量。候选列表为空时扫描完整未访问城市集，并保持“fallback 固定
+argmax”的参考语义。
+
+ACS 在一个 construction step 中先让全部 ants 基于同一 pheromone snapshot
+选择边，再由 thread 0 按无向 edge multiplicity 执行同步局部更新：
+
+\[
+\tau'_{uv}
+=(1-\xi)^c\tau_{uv}
++\left[1-(1-\xi)^c\right]\tau_0.
+\]
+
+全局强化、GP pheromone residual、best state 和 anytime state 均留在同一
+kernel 内，主机不参与 500 次迭代。当前 ant-per-thread 实现只允许
+32/64-thread block；早期 A5000 探索和后续 RTX 4000 Ada 正式复核均采用
+32 threads，64 threads 在相同短跑中更慢。128 threads 以上会因每线程 GP
+栈和调用栈压力失效，因而配置层直接拒绝该不安全区域。
+
+集群 CUDA 12.6 所见 GCC 16 超过 NVCC 支持范围，所以当前实现通过 CuPy
+NVRTC 生成 PTX，并以 CUDA source hash 使用磁盘编译缓存；这不改变 kernel
+代码或数值契约。
+
+### 单 GPU、双 GPU 与 campaign 调度
+
+同一 scale 内对 task \(q=(p,b)\) 估算成本：
+
+\[
+C_q \propto T\left[
+M n K(4+L_{\mathrm{tr},p})
++n^2
++S n(2+L_{\mathrm{ph},p})
+\right],
+\]
+
+其中 AS 的 \(S=M\)，ACS/MMAS 的 \(S=1\)。双 GPU 使用 longest-processing-
+time greedy shard，而不是按 program 编号简单对半切；counter RNG 只依赖
+`seed, instance, iteration, ant, step, stream`，所以 task 移到另一张 GPU
+不会改变输出。
+
+运行模式为：
+
+- `single`：一个 run 使用指定的一张 GPU；
+- `dual`：一个 run 的 task matrix 分给两张 GPU；
+- `campaign`：两张 GPU 各运行一个独立 GP replicate；
+- `auto`：单个训练进程有两张可见卡时使用 dual。跨 run 的 ready queue
+  由集群 orchestrator 管理：有至少两个 ready runs 时，根据实测门控显式
+  启动两个 `campaign` 进程，并分别设置 `RMTGP_ACO_GPU_DEVICE` 或
+  `LOCAL_RANK`；训练进程不猜测其他作业的全局状态。
+
+由于 TSP100 约为 TSP50 的两倍成本，不得采用“一张卡固定 TSP50、另一张卡
+固定 TSP100”的静态 scale split。
+
+### 性能门控和记录
+
+在同一冻结 generation、同一 programs、instances 和 seeds 上，先 cold run，
+再 warm-up，最后至少 3 次完整重复并报告 median。矩阵包括 CPU8、CPU16、
+GPU0、GPU1、dual 和两个 concurrent single-GPU runs。定义
+
+\[
+S_1=\frac{T_{\mathrm{CPU16}}}{T_{\mathrm{GPU1}}},
+\quad
+S_2=\frac{T_{\mathrm{CPU16}}}{T_{\mathrm{GPU2}}},
+\quad
+G_2=\frac{T_{\mathrm{GPU1}}}{T_{\mathrm{GPU2}}},
+\quad
+E_2=\frac{G_2}{2}.
+\]
+
+GPU 正式启用门槛为 \(S_1\ge3\)、\(S_2\ge5\)；单 run 双卡要求
+\(G_2\ge1.7\)，campaign 总吞吐要求至少为单卡的 1.8 倍。若质量门控通过
+而双卡 scaling 不通过，正式调度改为每张 GPU 一个独立 run，不把“有两张
+卡”等同于“单个 run 必须双卡”。
+
+每次 benchmark 至少记录 cold/end-to-end/kernel/H2D/D2H/FP64-scoring
+时间、constructed tours、tours/s、设备名、block size、chunk 数和输出
+signature。还应通过 `nvidia-smi`/Nsight 记录利用率、带宽、occupancy、
+功耗和温度；参与 benchmark 的目标 GPU 上存在其他进程时，结果标记为受
+污染，不用于门控。未参与运行的其他设备不属于该次测量的争用域。
+
+2026-07-25 在两张独占 RTX 4000 Ada 上完成正式门控。固定 100 requested
+individuals（79 个语义 program）、TSP50/TSP100 各 16 instances、32 ants
+和 500 iterations，CPU16、单卡和 dual 的 warm median 分别为 304.325 s、
+20.807 s 和 12.776 s。故 \(S_1=14.626\)、\(S_2=23.820\)，但
+\(G_2=1.629<1.7\)。两张卡并发两个独立 workload 的吞吐扩展为
+1.972 倍，通过 1.8 倍门槛。因此确认性实验按每卡一个独立 run 调度；
+dual 只用于降低单 run 代时，不作为默认吞吐策略。完整审计见
+`docs/performance/cuda_fused_architecture_20260724.md`。
+
+### 完整 MMAS restart
+
+v0.5 补齐 ACOTSP-1.03 的无局部搜索重启控制。每 100 iterations 计算
+\(\lambda=0.05\) 的平均 node branching factor：
+
+\[
+b_\lambda
+=\frac{1}{2n}\sum_{i=1}^{n}
+\left|
+\left\{j\in\mathcal N_i:
+\tau_{ij}>
+\tau_i^{\min}+\lambda(\tau_i^{\max}-\tau_i^{\min})
+\right\}
+\right|.
+\]
+
+若
+
+\[
+b_\lambda<1.00001
+\quad\land\quad
+t-t_{\mathrm{restart\ best}}>250,
+\]
+
+则把非对角 pheromone 重置为当前 \(\tau_{\max}\)，清空 restart-best，并从
+本次 iteration 重新计时。CPU PyTorch、CPU Numba 和 CUDA 使用相同控制
+参数，并把 restart 次数写入 diagnostics。该语义改变要求新的 MMAS
+baseline archive。
+
+### 后端正确性门
+
+实现必须通过：
+
+- tour 首尾相同且恰好访问每个城市一次；
+- 同 GPU 重复逐位相同；
+- GPU0、GPU1、single、dual、chunk partition 输出相同；
+- 精确零 residual 恢复该 GPU semantic domain 内的原始 ACO；
+- ACS edge multiplicity、AS budget、MMAS bounds/restart 回归测试；
+- GPU best tour 的 FP64 重算长度与训练使用长度完全相同；
+- CPU/GPU 质量非劣门和最终 champion CPU float64 复评。
+
+## v1.2 协议修订（历史；仅在不与 v1.3 冲突时适用）
+
+本节记录历史 Protocol A v0.4。下文保留的早期候选参数仅用于解释设计演化；如与
 本节冲突，以本节为准。
 
 相对于 v0.3，三种 ACO 统一采用：

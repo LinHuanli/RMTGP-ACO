@@ -6,7 +6,13 @@ from dataclasses import replace
 
 import pytest
 
-from rmtgp_aco.config import ACOConfig, ACOVariant
+from rmtgp_aco.config import (
+    ACOConfig,
+    ACOVariant,
+    ExecutionBackend,
+    GPUMode,
+    RuntimeConfig,
+)
 
 
 @pytest.mark.parametrize(
@@ -42,3 +48,15 @@ def test_invalid_residual_bound_is_rejected() -> None:
     config = ACOConfig.acotsp_default("mmas")
     with pytest.raises(ValueError, match="gamma_transition"):
         replace(config, gamma_transition=1.0)
+
+
+def test_cuda_runtime_rejects_unsafe_block_and_cpu_mode() -> None:
+    with pytest.raises(ValueError, match="gpu_block_threads"):
+        RuntimeConfig(gpu_block_threads=128)
+    with pytest.raises(ValueError, match="至少保留 20%"):
+        RuntimeConfig(gpu_memory_fraction=0.81)
+    with pytest.raises(ValueError, match="gpu_mode=cpu"):
+        RuntimeConfig(
+            aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+            gpu_mode=GPUMode.CPU,
+        )

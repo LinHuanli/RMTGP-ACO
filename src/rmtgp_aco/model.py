@@ -100,6 +100,7 @@ class RunDiagnostics:
     nan_sanitized_count: int = 0
     candidate_fallback_count: int = 0
     bound_clip_count: int = 0
+    mmas_restart_count: int = 0
 
 
 @dataclass(slots=True)
@@ -113,26 +114,35 @@ class RunResult:
     wall_time_sec: float
     constructed_tours: int
     diagnostics: RunDiagnostics = field(default_factory=RunDiagnostics)
+    backend_metrics: dict[str, float | int | str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class PopulationQualityResult:
     """population-batched 训练内核的轻量输出。
 
-    第一维为唯一 GP genotype，第二维为 instance；训练不复制 tour 与
-    anytime curve，从而把内存和 Python object 数量保持在最低。
+    第一维为唯一 GP genotype，第二维为 instance。后端返回每个任务的最优
+    tour 以支持 CPU float64 精确计分，但不返回完整 colony 或 anytime curve，
+    从而控制 Python object 数量和跨设备传输量。
     """
 
+    best_tour: torch.Tensor
     best_length: torch.Tensor
     best_iteration: torch.Tensor
     diagnostics: torch.Tensor
     wall_time_sec: float
     constructed_tours: int
+    backend_metrics: dict[str, float | int | str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.best_length.ndim != 2:
             raise ValueError("population best_length 必须具有 [P,B] shape")
+        if (
+            self.best_tour.ndim != 3
+            or self.best_tour.shape[:2] != self.best_length.shape
+        ):
+            raise ValueError("population best_tour 必须具有 [P,B,n+1] shape")
         if self.best_iteration.shape != self.best_length.shape:
             raise ValueError("population best_iteration shape 不一致")
-        if self.diagnostics.shape != (self.best_length.shape[0], 3):
-            raise ValueError("population diagnostics 必须具有 [P,3] shape")
+        if self.diagnostics.shape != (self.best_length.shape[0], 4):
+            raise ValueError("population diagnostics 必须具有 [P,4] shape")

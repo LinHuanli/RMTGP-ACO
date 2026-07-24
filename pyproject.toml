@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rmtgp-aco"
-version = "0.4.0"
+version = "0.5.0"
 description = "面向 Euclidean TSP 的 Strongly Typed Multi-Tree GP–ACO 研究实现"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,12 +24,18 @@ dev = [
   "pytest-cov>=5,<8",
   "ruff>=0.9,<1",
 ]
+cuda = [
+  "cupy-cuda12x>=13,<14",
+]
 
 [project.scripts]
 rmtgp-aco = "rmtgp_aco.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+rmtgp_aco = ["cuda/*.cu"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

@@ -5,3 +5,5 @@ llvmlite==0.44.0
 scipy==1.17.1
 deap==1.4.4
 PyYAML==6.0.2
+# 仅在安装 `.[cuda]` 时生效；与节点 CUDA 12.6 配套。
+cupy-cuda12x==13.6.0

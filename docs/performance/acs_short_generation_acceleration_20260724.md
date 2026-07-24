@@ -1,7 +1,7 @@
 # ACS 正式规模短代加速实验（2026-07-24）
 
 > 历史基准：本文使用 Protocol A v0.3 的 10 ants、100 ACO iterations。
-> Protocol A v0.4 已改为 32 ants、500 ACO iterations，本文代时不可直接用于
+> Protocol A v0.5 已改为 32 ants、500 ACO iterations，本文代时不可直接用于
 > 估计新协议。
 
 ## 1. 目的与比较原则

@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from .aco import solve
-from .config import ACOConfig, ExecutionBackend
+from .config import ACOConfig, ExecutionBackend, RuntimeConfig
 from .genetic import RMTGPIndividual, compile_individual
 from .model import ProblemBatch, RunResult
 from .program import TensorProgram
@@ -163,6 +163,7 @@ def evaluate_batches(
     transition_program: TensorProgram | None = None,
     pheromone_program: TensorProgram | None = None,
     backend: ExecutionBackend | str = ExecutionBackend.TORCH,
+    runtime: RuntimeConfig | None = None,
     tie_tolerance: float = 1e-12,
     gp_run_id: str | None = None,
 ) -> list[EvaluationRecord]:
@@ -175,7 +176,13 @@ def evaluate_batches(
     for batch_number, batch in enumerate(batches):
         for replicate in range(seeds_per_batch):
             seed = _batch_seed(root_seed, batch_number, replicate)
-            baseline = solve(batch, config, seed=seed, backend=backend)
+            baseline = solve(
+                batch,
+                config,
+                seed=seed,
+                backend=backend,
+                runtime=runtime,
+            )
             candidate = (
                 baseline
                 if is_baseline
@@ -186,6 +193,7 @@ def evaluate_batches(
                     pheromone_program=pheromone_program,
                     seed=seed,
                     backend=backend,
+                    runtime=runtime,
                 )
             )
             records.extend(

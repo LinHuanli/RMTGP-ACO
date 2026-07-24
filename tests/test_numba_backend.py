@@ -159,6 +159,7 @@ def test_population_backend_merges_residual_scalar_introns(
         threads=2,
     )
     assert result.best_length.shape == (3, batch.batch_size)
+    assert result.best_tour.shape == (3, batch.batch_size, batch.n + 1)
     assert torch.equal(result.best_length[0], result.best_length[1])
     assert torch.equal(result.best_length[0], result.best_length[2])
     assert torch.equal(result.best_iteration[0], result.best_iteration[1])
@@ -166,3 +167,17 @@ def test_population_backend_merges_residual_scalar_introns(
     assert result.constructed_tours == (
         batch.batch_size * config.resolve_ants(batch.n) * config.iterations
     )
+
+
+def test_numba_mmas_full_restart_is_audited(small_instances) -> None:
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default("mmas", iterations=6),
+        ants=4,
+        candidate_size=2,
+        mmas_branch_check_period=2,
+        mmas_restart_stagnation=0,
+        mmas_branch_threshold=100.0,
+    )
+    result = solve(batch, config, seed=17, backend="numba")
+    assert result.diagnostics.mmas_restart_count > 0

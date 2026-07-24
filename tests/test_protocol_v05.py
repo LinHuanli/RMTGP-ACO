@@ -1,4 +1,4 @@
-"""Protocol A v0.4 的 batching、schedule、cache 与 fitness 回归测试。"""
+"""Protocol A v0.5 的 batching、schedule、cache 与 fitness 回归测试。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from rmtgp_aco.baseline import (
 )
 from rmtgp_aco.config import ACOConfig, ACOVariant, GPConfig
 from rmtgp_aco.data import make_problem_batch
-from rmtgp_aco.experiment_plan import build_protocol_a_v04_pilot_plan
+from rmtgp_aco.experiment_plan import build_protocol_a_v05_pilot_plan
 from rmtgp_aco.genetic import initialise_population, make_individual
 from rmtgp_aco.program import compile_tree, create_primitive_sets
 from rmtgp_aco.sampling import in_memory_cases, pools_from_paths
@@ -64,6 +64,7 @@ def test_population_batch_matches_scalar_numba(variant, small_instances) -> None
             backend="numba",
         )
         assert torch.equal(batched.best_length[index], scalar.best_length)
+        assert torch.equal(batched.best_tour[index], scalar.best_tour)
         assert torch.equal(batched.best_iteration[index], scalar.best_iteration)
 
     one_thread = solve_population_numba(
@@ -140,7 +141,7 @@ def test_pilot_and_formal_schedules_use_disjoint_index_domains(tmp_path) -> None
         return build_protocol_schedule(
             training_pools,
             validation_pools,
-            protocol_id="protocol-a-v0.4",
+            protocol_id="protocol-a-v0.5",
             phase=phase,
             root_seed=17,
             replicate_id=2,
@@ -167,7 +168,7 @@ def test_pilot_and_formal_schedules_use_disjoint_index_domains(tmp_path) -> None
 
     validate_schedule_contract(
         formal,
-        protocol_id="protocol-a-v0.4",
+        protocol_id="protocol-a-v0.5",
         phase="formal",
         root_seed=17,
         replicate_id=2,
@@ -182,7 +183,7 @@ def test_pilot_and_formal_schedules_use_disjoint_index_domains(tmp_path) -> None
     with pytest.raises(ValueError, match="phase"):
         validate_schedule_contract(
             formal,
-            protocol_id="protocol-a-v0.4",
+            protocol_id="protocol-a-v0.5",
             phase="pilot",
             root_seed=17,
             replicate_id=2,
@@ -197,7 +198,7 @@ def test_pilot_and_formal_schedules_use_disjoint_index_domains(tmp_path) -> None
 
 
 def test_pilot_plan_contains_paired_78_run_matrix() -> None:
-    plan = build_protocol_a_v04_pilot_plan(
+    plan = build_protocol_a_v05_pilot_plan(
         runs_root="runs/test",
         python="python",
     )

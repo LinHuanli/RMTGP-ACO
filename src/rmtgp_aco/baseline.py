@@ -13,13 +13,14 @@ import numpy as np
 import torch
 
 from .aco import solve
-from .config import ACOConfig, ExecutionBackend
+from .config import ACOConfig, ExecutionBackend, RuntimeConfig
 from .model import RunResult
 from .sampling import EvaluationCase
 
-BASELINE_ARCHIVE_SCHEMA_VERSION = 1
-NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v1"
+BASELINE_ARCHIVE_SCHEMA_VERSION = 2
+NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v2-mmas-restart"
 TORCH_KERNEL_SEMANTIC_VERSION = "torch-generator-v1"
+CUDA_KERNEL_SEMANTIC_VERSION = "counter-rng-cuda-fp32-search-v1"
 
 
 def backend_semantic_id(backend: ExecutionBackend | str) -> str:
@@ -28,6 +29,8 @@ def backend_semantic_id(backend: ExecutionBackend | str) -> str:
     selected = ExecutionBackend(backend)
     if selected in {ExecutionBackend.NUMBA, ExecutionBackend.NUMBA_BATCH}:
         return NUMBA_KERNEL_SEMANTIC_VERSION
+    if selected is ExecutionBackend.CUDA_FUSED_FP32:
+        return CUDA_KERNEL_SEMANTIC_VERSION
     return TORCH_KERNEL_SEMANTIC_VERSION
 
 
@@ -63,6 +66,7 @@ class BaselineRecord:
     candidate_fallback_count: int
     uniform_fallback_count: int
     bound_clip_count: int
+    mmas_restart_count: int
 
 
 def records_from_result(
@@ -103,6 +107,7 @@ def records_from_result(
                 candidate_fallback_count=result.diagnostics.candidate_fallback_count,
                 uniform_fallback_count=result.diagnostics.uniform_fallback_count,
                 bound_clip_count=result.diagnostics.bound_clip_count,
+                mmas_restart_count=result.diagnostics.mmas_restart_count,
             )
         )
     return records
@@ -166,6 +171,7 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
                 ),
                 uniform_fallback_count=int(payload["uniform_fallback_count"][index]),
                 bound_clip_count=int(payload["bound_clip_count"][index]),
+                mmas_restart_count=int(payload["mmas_restart_count"][index]),
             )
             for index in range(count)
         ]
@@ -253,22 +259,39 @@ def precompute_baseline_cases(
     backend: ExecutionBackend | str,
     *,
     threads: int = 16,
+    runtime: RuntimeConfig | None = None,
 ) -> list[BaselineRecord]:
     """显式预计算 cases；调用方负责按 split/replicate 写 immutable shard。"""
 
     records: list[BaselineRecord] = []
     selected = ExecutionBackend(backend)
     for case in cases:
-        if selected is ExecutionBackend.NUMBA_BATCH:
-            from .aco_numba import solve_population_numba
+        if selected in {
+            ExecutionBackend.NUMBA_BATCH,
+            ExecutionBackend.CUDA_FUSED_FP32,
+        }:
+            if selected is ExecutionBackend.CUDA_FUSED_FP32:
+                from .aco_cuda import solve_population_cuda
 
-            quality = solve_population_numba(
-                case.batch,
-                config,
-                [(None, None)],
-                seed=case.seed,
-                threads=threads,
-            )
+                if runtime is None:
+                    runtime = RuntimeConfig(aco_backend=selected)
+                quality = solve_population_cuda(
+                    case.batch,
+                    config,
+                    [(None, None)],
+                    seed=case.seed,
+                    runtime=runtime,
+                )
+            else:
+                from .aco_numba import solve_population_numba
+
+                quality = solve_population_numba(
+                    case.batch,
+                    config,
+                    [(None, None)],
+                    seed=case.seed,
+                    threads=threads,
+                )
             semantic = backend_semantic_id(selected)
             reference = case.batch.reference_length.detach().cpu().numpy()
             best = quality.best_length[0].detach().cpu().numpy()
@@ -297,6 +320,7 @@ def precompute_baseline_cases(
                         candidate_fallback_count=int(diagnostic[0].item()),
                         uniform_fallback_count=int(diagnostic[1].item()),
                         bound_clip_count=int(diagnostic[2].item()),
+                        mmas_restart_count=int(diagnostic[3].item()),
                     )
                 )
             continue
@@ -305,6 +329,7 @@ def precompute_baseline_cases(
             config,
             seed=case.seed,
             backend=backend,
+            runtime=runtime,
         )
         records.extend(records_from_result(case, result, config, backend))
     return records

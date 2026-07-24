@@ -29,6 +29,17 @@ class ExecutionBackend(StrEnum):
     TORCH = "torch"
     NUMBA = "numba"
     NUMBA_BATCH = "numba_batch"
+    CUDA_FUSED_FP32 = "cuda_fused_fp32"
+
+
+class GPUMode(StrEnum):
+    """CUDA 设备的使用方式。"""
+
+    CPU = "cpu"
+    SINGLE = "single"
+    DUAL = "dual"
+    CAMPAIGN = "campaign"
+    AUTO = "auto"
 
 
 class TransitionIntegration(StrEnum):
@@ -77,6 +88,10 @@ class ACOConfig:
     epsilon_numeric: float = 1e-12
     mmas_update_period: int = 25
     mmas_p_best: float = 0.05
+    mmas_branch_check_period: int = 100
+    mmas_branch_lambda: float = 0.05
+    mmas_branch_threshold: float = 1.00001
+    mmas_restart_stagnation: int = 250
 
     @classmethod
     def acotsp_default(
@@ -145,6 +160,16 @@ class ACOConfig:
             raise ValueError("gamma_transition 必须位于 [0, 1)")
         if not 0.0 <= self.gamma_pheromone < 1.0:
             raise ValueError("gamma_pheromone 必须位于 [0, 1)")
+        if self.mmas_update_period < 1:
+            raise ValueError("mmas_update_period 必须为正整数")
+        if self.mmas_branch_check_period < 1:
+            raise ValueError("mmas_branch_check_period 必须为正整数")
+        if not 0.0 <= self.mmas_branch_lambda <= 1.0:
+            raise ValueError("mmas_branch_lambda 必须位于 [0, 1]")
+        if self.mmas_branch_threshold < 0.0:
+            raise ValueError("mmas_branch_threshold 不得为负")
+        if self.mmas_restart_stagnation < 0:
+            raise ValueError("mmas_restart_stagnation 不得为负")
 
     def resolve_ants(self, n: int) -> int:
         """把 ACOTSP 的 `ants=n` 约定解析为实际蚂蚁数。"""
@@ -268,12 +293,23 @@ class RuntimeConfig:
     multiprocessing_start_method: str = "spawn"
     deterministic_algorithms: bool = True
     aco_backend: ExecutionBackend = ExecutionBackend.TORCH
+    gpu_devices: tuple[int, ...] = (0,)
+    gpu_mode: GPUMode = GPUMode.AUTO
+    gpu_block_threads: int = 0
+    gpu_memory_fraction: float = 0.80
+    gpu_task_chunk_size: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "aco_backend",
             ExecutionBackend(self.aco_backend),
+        )
+        object.__setattr__(self, "gpu_mode", GPUMode(self.gpu_mode))
+        object.__setattr__(
+            self,
+            "gpu_devices",
+            tuple(int(device) for device in self.gpu_devices),
         )
         if self.processes < 1:
             raise ValueError("processes 必须为正整数")
@@ -285,6 +321,23 @@ class RuntimeConfig:
             raise ValueError("multiprocessing_start_method 必须为 spawn/forkserver/fork")
         if self.aco_backend is ExecutionBackend.NUMBA_BATCH and self.processes != 1:
             raise ValueError("numba_batch 使用单进程内部线程，processes 必须为 1")
+        if len(set(self.gpu_devices)) != len(self.gpu_devices):
+            raise ValueError("gpu_devices 不得包含重复设备")
+        if any(device < 0 for device in self.gpu_devices):
+            raise ValueError("gpu_devices 必须是非负整数")
+        if self.gpu_block_threads not in {0, 32, 64}:
+            raise ValueError("gpu_block_threads 必须为 0/32/64")
+        if not 0.0 < self.gpu_memory_fraction <= 0.8:
+            raise ValueError("gpu_memory_fraction 必须位于 (0, 0.8]，至少保留 20%")
+        if self.gpu_task_chunk_size < 0:
+            raise ValueError("gpu_task_chunk_size 不得为负")
+        if self.aco_backend is ExecutionBackend.CUDA_FUSED_FP32:
+            if self.processes != 1:
+                raise ValueError("CUDA fused 后端使用单进程，processes 必须为 1")
+            if self.gpu_mode is GPUMode.CPU:
+                raise ValueError("CUDA fused 后端不能使用 gpu_mode=cpu")
+            if not self.gpu_devices:
+                raise ValueError("CUDA fused 后端至少需要一个 gpu_devices")
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +379,8 @@ class ExperimentConfig:
                 gp_values[name] = list(gp_values[name])
         runtime_values = asdict(self.runtime)
         runtime_values["aco_backend"] = self.runtime.aco_backend.value
+        runtime_values["gpu_mode"] = self.runtime.gpu_mode.value
+        runtime_values["gpu_devices"] = list(self.runtime.gpu_devices)
         return {
             "experiment_id": self.experiment_id,
             "root_seed": self.root_seed,

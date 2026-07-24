@@ -1409,7 +1409,7 @@ def _allocate_solver_workspace(
         np.empty(n + 1, dtype=np.int64),  # global best tour
         np.empty(n + 1, dtype=np.int64),  # restart best tour
         np.empty(iterations, dtype=np.float64),  # anytime
-        np.empty(3, dtype=np.int64),  # diagnostics
+        np.empty(4, dtype=np.int64),  # diagnostics
         np.empty((ants, n + 1), dtype=np.int64),  # tours
         np.empty((ants, n), dtype=np.uint8),  # visited
         np.empty(ants, dtype=np.float64),  # lengths
@@ -1458,6 +1458,10 @@ def _solve_instance_inplace(
     epsilon_numeric: float,
     mmas_update_period: int,
     mmas_p_best: float,
+    mmas_branch_check_period: int,
+    mmas_branch_lambda: float,
+    mmas_branch_threshold: float,
+    mmas_restart_stagnation: int,
     tr_active: bool,
     tr_opcodes: np.ndarray,
     tr_float_arguments: np.ndarray,
@@ -1504,13 +1508,14 @@ def _solve_instance_inplace(
         for second in range(n):
             pheromone[first, second] = tau0
         pheromone[first, first] = 0.0
-    for index in range(3):
+    for index in range(4):
         diagnostics[index] = 0
 
     global_best_length = np.inf
     restart_best_length = np.inf
     global_best_iteration = 0
     stagnation = 0
+    restart_found_best = 0
 
     for iteration in range(1, iterations + 1):
         _construct_tours(
@@ -1572,6 +1577,7 @@ def _solve_instance_inplace(
 
         if iteration_best_length < restart_best_length:
             restart_best_length = iteration_best_length
+            restart_found_best = iteration
             for city in range(n + 1):
                 restart_best_tour[city] = tours[iteration_best_index, city]
 
@@ -1622,6 +1628,38 @@ def _solve_instance_inplace(
             stack,
             diagnostics,
         )
+        if (
+            variant == 2
+            and iteration % mmas_branch_check_period == 0
+            and iteration - restart_found_best > mmas_restart_stagnation
+        ):
+            branch_sum = 0.0
+            for city in range(n):
+                minimum = np.inf
+                maximum = -np.inf
+                for candidate_index in range(nearest.shape[1]):
+                    candidate = nearest[city, candidate_index]
+                    value = pheromone[city, candidate]
+                    minimum = min(minimum, value)
+                    maximum = max(maximum, value)
+                cutoff = minimum + mmas_branch_lambda * (
+                    maximum - minimum
+                )
+                branches = 0
+                for candidate_index in range(nearest.shape[1]):
+                    candidate = nearest[city, candidate_index]
+                    if pheromone[city, candidate] > cutoff:
+                        branches += 1
+                branch_sum += branches
+            branching_factor = branch_sum / (2.0 * n)
+            if branching_factor < mmas_branch_threshold:
+                for first in range(n):
+                    for second in range(n):
+                        pheromone[first, second] = tau_max
+                    pheromone[first, first] = 0.0
+                restart_best_length = np.inf
+                restart_found_best = iteration
+                diagnostics[3] += 1
         anytime[iteration - 1] = global_best_length
 
     return (
@@ -1665,6 +1703,10 @@ def _solve_population_quality_kernel(
     epsilon_numeric: float,
     mmas_update_period: int,
     mmas_p_best: float,
+    mmas_branch_check_period: int,
+    mmas_branch_lambda: float,
+    mmas_branch_threshold: float,
+    mmas_restart_stagnation: int,
     tr_opcodes: np.ndarray,
     tr_float_arguments: np.ndarray,
     tr_integer_arguments: np.ndarray,
@@ -1680,14 +1722,18 @@ def _solve_population_quality_kernel(
     seeds: np.ndarray,
     instance_keys: np.ndarray,
     stack_size: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """在一个 native 边界内并行全部 genotype×instance 任务。"""
 
     population = tr_opcodes.shape[0]
     batch = distances.shape[0]
     best_lengths = np.empty((population, batch), dtype=np.float64)
     best_iterations = np.empty((population, batch), dtype=np.int64)
-    diagnostics = np.empty((population, batch, 3), dtype=np.int64)
+    best_tours = np.empty(
+        (population, batch, distances.shape[1] + 1),
+        dtype=np.int64,
+    )
+    diagnostics = np.empty((population, batch, 4), dtype=np.int64)
     for batch_index in prange(batch):
         # 一个线程连续求解同一 instance 的整个人口，复用大工作区与几何 cache。
         workspace = _allocate_solver_workspace(
@@ -1701,7 +1747,7 @@ def _solve_population_quality_kernel(
             tr_length = int(tr_lengths[individual])
             ph_length = int(ph_lengths[individual])
             (
-                _,
+                best_tour,
                 best_length,
                 best_iteration,
                 _,
@@ -1732,6 +1778,10 @@ def _solve_population_quality_kernel(
                 epsilon_numeric,
                 mmas_update_period,
                 mmas_p_best,
+                mmas_branch_check_period,
+                mmas_branch_lambda,
+                mmas_branch_threshold,
+                mmas_restart_stagnation,
                 bool(tr_active[individual]),
                 tr_opcodes[individual, :tr_length],
                 tr_float_arguments[individual, :tr_length],
@@ -1748,8 +1798,9 @@ def _solve_population_quality_kernel(
             )
             best_lengths[individual, batch_index] = best_length
             best_iterations[individual, batch_index] = best_iteration
+            best_tours[individual, batch_index] = best_tour
             diagnostics[individual, batch_index] = task_diagnostics
-    return best_lengths, best_iterations, diagnostics
+    return best_tours, best_lengths, best_iterations, diagnostics
 
 
 def solve_population_numba(
@@ -1856,7 +1907,7 @@ def solve_population_numba(
 
     set_num_threads(threads)
     started = perf_counter()
-    best_lengths, best_iterations, diagnostics = (
+    best_tours, best_lengths, best_iterations, diagnostics = (
         _solve_population_quality_kernel(
             distances,
             heuristic,
@@ -1883,6 +1934,10 @@ def solve_population_numba(
             config.epsilon_numeric,
             config.mmas_update_period,
             config.mmas_p_best,
+            config.mmas_branch_check_period,
+            config.mmas_branch_lambda,
+            config.mmas_branch_threshold,
+            config.mmas_restart_stagnation,
             np.ascontiguousarray(transition.opcodes[representatives]),
             np.ascontiguousarray(
                 transition.float_arguments[representatives]
@@ -1913,11 +1968,13 @@ def solve_population_numba(
         )
     )
     if representatives.size != len(programs):
+        best_tours = best_tours[inverse]
         best_lengths = best_lengths[inverse]
         best_iterations = best_iterations[inverse]
         diagnostics = diagnostics[inverse]
     elapsed = perf_counter() - started
     return PopulationQualityResult(
+        best_tour=torch.from_numpy(best_tours),
         best_length=torch.from_numpy(best_lengths),
         best_iteration=torch.from_numpy(best_iterations),
         diagnostics=torch.from_numpy(diagnostics.sum(axis=1)),
@@ -2007,7 +2064,7 @@ def solve_numba(
     best_lengths = np.empty(batch, dtype=np.float64)
     best_iterations = np.empty(batch, dtype=np.int64)
     anytime = np.empty((batch, config.iterations), dtype=np.float64)
-    diagnostics = np.zeros(3, dtype=np.int64)
+    diagnostics = np.zeros(4, dtype=np.int64)
     seed_value = np.uint64(int(seed) % (2**64))
     seeds = np.full(batch, seed_value, dtype=np.uint64)
     instance_keys = np.asarray(
@@ -2070,6 +2127,10 @@ def solve_numba(
             config.epsilon_numeric,
             config.mmas_update_period,
             config.mmas_p_best,
+            config.mmas_branch_check_period,
+            config.mmas_branch_lambda,
+            config.mmas_branch_threshold,
+            config.mmas_restart_stagnation,
             transition_active,
             transition.opcodes,
             transition.float_arguments,
@@ -2104,5 +2165,6 @@ def solve_numba(
             candidate_fallback_count=int(diagnostics[0]),
             uniform_fallback_count=int(diagnostics[1]),
             bound_clip_count=int(diagnostics[2]),
+            mmas_restart_count=int(diagnostics[3]),
         ),
     )

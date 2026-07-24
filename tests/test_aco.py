@@ -81,6 +81,20 @@ def test_same_seed_is_deterministic(small_instances) -> None:
     assert torch.equal(first.anytime_best, second.anytime_best)
 
 
+def test_torch_mmas_full_restart_is_audited(small_instances) -> None:
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default("mmas", iterations=6),
+        ants=4,
+        candidate_size=2,
+        mmas_branch_check_period=2,
+        mmas_restart_stagnation=0,
+        mmas_branch_threshold=100.0,
+    )
+    result = solve(batch, config, seed=31)
+    assert result.diagnostics.mmas_restart_count > 0
+
+
 def test_candidate_list_exhaustion_uses_full_fallback(small_instances) -> None:
     batch = make_problem_batch(small_instances[:1], candidate_size=1)
     config = replace(

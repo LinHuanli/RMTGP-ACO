@@ -2,6 +2,29 @@
 
 本项目遵循语义化版本。研究设计的统计结论冻结标签与软件版本标签分开。
 
+## 0.5.0 — 2026-07-24
+
+- 新增 CuPy Raw CUDA 融合后端：一个 block 完成一个
+  program×instance 的全部 ACO 迭代，支持 AS、同步 ACS、MMAS 和双树
+  postfix GP；
+- 实施“GPU FP32 搜索、CPU FP64 tour 精确计分”契约、page-locked H2D、
+  problem resident cache、显存保留/chunk、单 GPU、双 GPU LPT shard 与
+  campaign 调度；
+- population 后端统一返回最优 tour，新增单卡/双卡/chunk 逐位不变性和
+  GPU 内部零 residual 回归测试；
+- CUDA 训练选出的候选必须再通过独立 Numba float64 gate，GPU gate 与
+  CPU/FP64 gate 任一失败均部署原始 ACO fallback，并单独保存审计表；
+- CPU PyTorch、CPU Numba 和 CUDA 补齐 ACOTSP-style MMAS branching-factor
+  检查与 pheromone restart，并记录 restart diagnostics；
+- 新增 `benchmark-accelerators` 和 `development_acs_cuda.yaml`，baseline、
+  checkpoint、kernel semantic 与 Protocol A 根目录升级到 v0.5。
+- 在两张 RTX 4000 Ada 上完成 32 ants × 500 iterations 正式性能复核：
+  单卡相对 CPU16 为 14.63×，dual 为 23.82×，双 run campaign 吞吐扩展为
+  1.972×；单 run 双卡扩展 1.629× 未过 1.7× 门槛，故正式多实验调度采用
+  每卡一个独立 run；
+- GPU benchmark 的外部进程检测改为按 UUID 映射并仅检查目标设备，避免
+  未参与测试的其他 GPU 作业误触发争用标记。
+
 ## 0.4.0 — 2026-07-24
 
 - 将 Protocol A 的 AS、ACS、MMAS 统一为 32 只蚂蚁和 500 个 ACO

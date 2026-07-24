@@ -1,5 +1,5 @@
 experiment:
-  experiment_id: protocol-a-v04-as-rmtgp
+  experiment_id: protocol-a-v05-as-rmtgp
   root_seed: 1001
   train_scales: [50, 100]
   validation_scales: [50, 100]
@@ -90,5 +90,5 @@ data:
   validation_selection_instances_per_scale: 32
   validation_gate_instances_per_scale: 32
   evaluation_batch_size: 32
-  baseline_archive: runs/protocol-a-v0.4/baselines/as
+  baseline_archive: runs/protocol-a-v0.5/baselines/as
   baseline_policy: require

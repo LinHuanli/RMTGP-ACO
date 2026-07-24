@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from rmtgp_aco.cli import _apply_runtime_overrides
-from rmtgp_aco.config import ExecutionBackend, TransitionIntegration
+from rmtgp_aco.config import ExecutionBackend, GPUMode, TransitionIntegration
 from rmtgp_aco.manifest import (
     build_manifest,
     verify_manifest,
@@ -16,6 +18,22 @@ from rmtgp_aco.sampling import (
 from rmtgp_aco.spec import load_run_spec
 
 SQUARE = "0 0 1 0 1 1 0 1 output 1 2 3 4 1"
+
+
+def test_yaml_duplicate_keys_are_rejected(tmp_path) -> None:
+    source = (
+        "experiment:\n"
+        "  experiment_id: duplicate\n"
+        "  root_seed: 1\n"
+        "aco:\n"
+        "  variant: as\n"
+        "  iterations: 1\n"
+        "  iterations: 2\n"
+    )
+    path = tmp_path / "duplicate.yaml"
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(ValueError, match="YAML 重复字段 'iterations'"):
+        load_run_spec(path)
 
 
 def test_repository_protocol_configs_resolve() -> None:
@@ -31,7 +49,7 @@ def test_repository_protocol_configs_resolve() -> None:
         assert spec.experiment.aco.iterations == 500
         assert spec.data.train_instances_per_scale == 16
         assert spec.data.baseline_policy == "require"
-        assert "protocol-a-v0.4" in str(spec.data.baseline_path)
+        assert "protocol-a-v0.5" in str(spec.data.baseline_path)
 
     for scale in (50, 100):
         spec = load_run_spec(f"configs/acs_protocol_a_tsp{scale}_only.yaml")
@@ -40,6 +58,15 @@ def test_repository_protocol_configs_resolve() -> None:
         assert spec.experiment.aco.ants == 32
         assert spec.experiment.aco.iterations == 500
         assert spec.data.train_instances_per_scale == 32
+
+    cuda_spec = load_run_spec("configs/development_acs_cuda.yaml")
+    assert (
+        cuda_spec.experiment.runtime.aco_backend
+        is ExecutionBackend.CUDA_FUSED_FP32
+    )
+    assert cuda_spec.experiment.runtime.gpu_mode is GPUMode.DUAL
+    assert cuda_spec.experiment.runtime.gpu_devices == (0, 1)
+    assert cuda_spec.data.baseline_policy == "compute"
 
 
 def test_cli_legacy_profile_keeps_common_budget() -> None:

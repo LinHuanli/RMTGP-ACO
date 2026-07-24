@@ -33,9 +33,14 @@ python -m rmtgp_aco --help
 ```
 
 集群正式环境使用 `constraints-py312.txt` 固定 NumPy/Numba/llvmlite
-兼容组合。Protocol A v0.4 使用单进程、16-thread Numba population-batch
-float64 CPU 后端；AS、ACS、MMAS 均固定 32 只蚂蚁、500 个 ACO
-iterations。首次运行会预编译内核，JIT warm-up 不计入逐代用时。
+兼容组合。Protocol A v0.5 的科学预算固定为 32 只蚂蚁、500 个 ACO
+iterations。默认正式配置仍使用单进程、16-thread Numba float64 CPU
+后端；另提供融合 CUDA 候选后端，在 GPU 上 FP32 搜索、返回 tour 后由 CPU
+FP64 精确计分。RTX 4000 Ada 上的正式质量门、单卡速度门和双卡 campaign
+吞吐门均已通过；单 run 双卡扩展为 1.629×，未达到预注册的 1.7×。因此
+大规模实验默认采用“一张 GPU 一个独立 run”的 campaign 调度，dual shard
+仅用于确实需要降低单代延迟的运行。CPU 配置继续作为 float64 oracle 和
+fallback，不因加速后端加入而改写科学协议。
 
 仓库中的 `references/ACOTSP-1.03` 是算法语义参考，保留其原始许可证。
 
@@ -60,21 +65,21 @@ python -m rmtgp_aco prepare-schedules \
   --config configs/as_protocol_a.yaml \
   --phase pilot \
   --root-seed 1001 \
-  --output runs/protocol-a-v0.4/schedules/as-seed-1001.json
+  --output runs/protocol-a-v0.5/schedules/as-seed-1001.json
 
 python -m rmtgp_aco precompute-baselines \
   --config configs/as_protocol_a.yaml \
   --root-seed 1001 \
-  --schedule runs/protocol-a-v0.4/schedules/as-seed-1001.json \
-  --output runs/protocol-a-v0.4/baselines/as/seed-1001.npz
+  --schedule runs/protocol-a-v0.5/schedules/as-seed-1001.json \
+  --output runs/protocol-a-v0.5/baselines/as/seed-1001.npz
 
 python -m rmtgp_aco train \
   --config configs/as_protocol_a.yaml \
   --phase pilot \
   --method-profile rmtgp-full-f1 \
   --root-seed 1001 \
-  --schedule runs/protocol-a-v0.4/schedules/as-seed-1001.json \
-  --baseline-archive runs/protocol-a-v0.4/baselines/as
+  --schedule runs/protocol-a-v0.5/schedules/as-seed-1001.json \
+  --baseline-archive runs/protocol-a-v0.5/baselines/as
 ```
 
 每代使用 TSP50 与 TSP100 各 16 个实例，即 32 个实例；50 代累计使用每规模
@@ -86,7 +91,7 @@ python -m rmtgp_aco train \
 ```bash
 python -m rmtgp_aco train \
   --config configs/as_protocol_a.yaml \
-  --resume runs/protocol-a-v04-as-rmtgp/seed-1001
+  --resume runs/protocol-a-v05-as-rmtgp/seed-1001
 ```
 
 `--method-profile` 支持 `legacy`、`matched-replace`、`tr-rgp`、
@@ -100,7 +105,7 @@ schedule、baseline archive 和总节点预算。完整 78-run pilot 任务图�
 python -m rmtgp_aco evaluate \
   --config configs/as_protocol_a.yaml \
   --partition tsp500_uniform \
-  --champion runs/protocol-a-v04-as-rmtgp/seed-1001/champion.pkl \
+  --champion runs/protocol-a-v05-as-rmtgp/seed-1001/champion.pkl \
   --method RMTGP-ACO \
   --champion-id as-run-01 \
   --seeds 30 \
@@ -133,17 +138,63 @@ bootstrap 置信区间。
 ```bash
 python -m rmtgp_aco benchmark-training \
   --config configs/acs_protocol_a.yaml \
-  --schedule runs/protocol-a-v0.4/schedules/acs-seed-2001.json \
-  --baseline-archive runs/protocol-a-v0.4/baselines/acs \
+  --schedule runs/protocol-a-v0.5/schedules/acs-seed-2001.json \
+  --baseline-archive runs/protocol-a-v0.5/baselines/acs \
   --method-profile rmtgp-full-f1 \
   --generations 3 --cpu-threads 16 \
-  --output runs/protocol-a-v0.4/benchmarks/acs-3gen.json
+  --output runs/protocol-a-v0.5/benchmarks/acs-3gen.json
 ```
 
 Protocol A v0.3（10 ants、100 iterations）的历史 ACS 三代端到端合计由
-97.09 s 降至 40.52 s，fitness 与优化前逐代一致；该时间不能外推为 v0.4
+97.09 s 降至 40.52 s，fitness 与优化前逐代一致；该时间不能外推为 v0.5
 的正式代时。历史优化过程、golden 等价检查和逐代记录见
 [`docs/performance/acs_short_generation_acceleration_20260724.md`](docs/performance/acs_short_generation_acceleration_20260724.md)。
+
+融合 CUDA 的工程短跑使用相同的正式单代规模，但 baseline 可在开发阶段按
+需计算：
+
+```bash
+python -m rmtgp_aco benchmark-training \
+  --config configs/development_acs_cuda.yaml \
+  --phase development --generations 1 \
+  --output /tmp/acs-cuda-generation.json
+```
+
+同一 population 的 CPU16、两张单卡、双卡和双 run campaign 对照：
+
+```bash
+python -m rmtgp_aco benchmark-accelerators \
+  --config configs/acs_protocol_a.yaml \
+  --phase development --repeats 3 \
+  --gpu-devices 0 1 \
+  --modes cpu16 gpu0 gpu1 dual campaign \
+  --output /tmp/acs-accelerator-matrix.json
+```
+
+共享目标 GPU 上若有其他进程，报告只能用于功能检查，不能用于正式速度
+门控。监控按目标设备过滤，不会把未参与 benchmark 的其他 GPU 作业误算为
+争用。RTX 4000 Ada 的 500-iteration 复核中，CPU16、单卡、dual 分别为
+304.32 s、20.81 s、12.78 s；双卡 campaign 在 21.10 s 内完成两个独立
+workload，吞吐扩展 1.972×。实现、内存布局、历史受污染测量和正式门控见
+[`docs/performance/cuda_fused_architecture_20260724.md`](docs/performance/cuda_fused_architecture_20260724.md)。
+
+GPU 进入正式训练前还必须通过固定的 paired 质量门：
+
+```bash
+python -m rmtgp_aco validate-cuda-quality \
+  --config configs/acs_protocol_a.yaml \
+  --instances-per-scale 128 --seeds 3 \
+  --gpu-devices 0 1 --gpu-mode dual \
+  --tolerance-pp 0.10 \
+  --output /tmp/acs-cuda-quality.json
+```
+
+质量门以 `program × instance` 为统计单位，先聚合同一 instance 的 3 个 ACO
+seeds，再分别要求 TSP50、TSP100 和 pooled 的单侧 95% 上界不超过
+0.10 pp。即使全局 CUDA 质量门已通过，每次 CUDA 训练选出的最终候选仍会在
+独立 Numba float64 后端对 holdout gate 复评；GPU gate 或 CPU/FP64 gate
+任一失败都保存 baseline fallback。两阶段结果分别写入
+`validation_summary.csv` 和 `cpu_fp64_audit_summary.csv`。
 
 ## 实现结构
 
@@ -151,6 +202,8 @@ Protocol A v0.3（10 ants、100 iterations）的历史 ACS 三代端到端合计
   candidate list、offset cache、phase 隔离的冻结 schedule；
 - `aco.py`：AS、同步 ACS、MMAS 的 PyTorch batch 实现；
 - `aco_numba.py`：确定性标量 oracle 与 population×instance 并行内核；
+- `aco_cuda.py` / `cuda/aco_fused.cu`：问题驻留、FP32 融合搜索、单/双 GPU
+  cost-balanced shard 和 CPU FP64 tour 计分；
 - `program.py` / `genetic.py`：DEAP Strongly Typed 双树、postfix tensor
   interpreter 和角色保持遗传算子；
 - `baseline.py` / `training.py`：不可变 baseline archive、absolute reference

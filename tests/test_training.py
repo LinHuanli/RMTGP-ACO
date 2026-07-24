@@ -80,6 +80,8 @@ def test_tiny_training_run_is_reproducible(tmp_path) -> None:
     )
     assert len(result.history) == 2
     assert result.champion.total_nodes <= gp.max_total_nodes
+    assert result.validation.backend.value == "torch"
+    assert result.cpu_fp64_audit is None
     assert (output / "config.yaml").is_file()
     assert (output / "environment.json").is_file()
     assert (output / "champion.pkl").is_file()

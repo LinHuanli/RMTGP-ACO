@@ -19,7 +19,7 @@ def _project_version() -> str:
     try:
         return version("rmtgp-aco")
     except PackageNotFoundError:
-        return "0.3.0+uninstalled"
+        return "0.5.0+uninstalled"
 
 
 def _git_output(repository: Path, *arguments: str) -> str | None:

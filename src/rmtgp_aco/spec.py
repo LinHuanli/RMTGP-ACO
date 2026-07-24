@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 import yaml
+from yaml.resolver import BaseResolver
 
 from .config import (
     ACOConfig,
@@ -20,6 +21,33 @@ from .config import (
 )
 
 ALLOWED_SCALES = frozenset({50, 100, 500})
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """拒绝 YAML mapping 中会被 PyYAML 静默覆盖的重复键。"""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ValueError(
+                f"YAML 重复字段 {key!r}（第 {key_node.start_mark.line + 1} 行）"
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +244,10 @@ def load_run_spec(path: str | Path) -> RunSpec:
     """读取 YAML，并拒绝拼写错误造成的静默默认。"""
 
     source = Path(path).resolve()
-    payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    payload = yaml.load(
+        source.read_text(encoding="utf-8"),
+        Loader=_UniqueKeyLoader,
+    )
     if not isinstance(payload, Mapping):
         raise ValueError("配置根节点必须是 mapping")
     unknown_sections = set(payload) - {"experiment", "aco", "gp", "runtime", "data"}
