@@ -27,13 +27,18 @@ def test_repository_protocol_configs_resolve() -> None:
         assert spec.experiment.runtime.aco_backend is ExecutionBackend.NUMBA_BATCH
         assert spec.experiment.runtime.processes == 1
         assert spec.experiment.runtime.cpu_threads == 16
+        assert spec.experiment.aco.ants == 32
+        assert spec.experiment.aco.iterations == 500
         assert spec.data.train_instances_per_scale == 16
         assert spec.data.baseline_policy == "require"
+        assert "protocol-a-v0.4" in str(spec.data.baseline_path)
 
     for scale in (50, 100):
         spec = load_run_spec(f"configs/acs_protocol_a_tsp{scale}_only.yaml")
         assert set(spec.data.training_paths()) == {scale}
         assert spec.experiment.train_scales == (scale,)
+        assert spec.experiment.aco.ants == 32
+        assert spec.experiment.aco.iterations == 500
         assert spec.data.train_instances_per_scale == 32
 
 

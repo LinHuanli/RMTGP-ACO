@@ -38,7 +38,8 @@ from .evaluation import (
     write_records,
 )
 from .experiment_plan import (
-    build_protocol_a_v03_pilot_plan,
+    PROTOCOL_ID,
+    build_protocol_a_v04_pilot_plan,
     write_experiment_plan,
 )
 from .genetic import evolve_generation, initialise_population
@@ -321,7 +322,7 @@ def _protocol_schedule(
         schedule = build_protocol_schedule(
             training_pools,
             validation_pools,
-            protocol_id="protocol-a-v0.3",
+            protocol_id=PROTOCOL_ID,
             phase=phase,
             root_seed=spec.experiment.root_seed,
             replicate_id=replicate_id,
@@ -337,7 +338,7 @@ def _protocol_schedule(
         )
     validate_schedule_contract(
         schedule,
-        protocol_id="protocol-a-v0.3",
+        protocol_id=PROTOCOL_ID,
         phase=phase,
         root_seed=spec.experiment.root_seed,
         replicate_id=replicate_id,
@@ -418,7 +419,7 @@ def _command_precompute_baselines(args: argparse.Namespace) -> int:
     schedule = load_schedule(args.schedule)
     validate_schedule_contract(
         schedule,
-        protocol_id="protocol-a-v0.3",
+        protocol_id=PROTOCOL_ID,
         phase=schedule.phase,
         root_seed=spec.experiment.root_seed,
         replicate_id=args.replicate_id,
@@ -778,7 +779,7 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
 
 
 def _command_prepare_pilot_plan(args: argparse.Namespace) -> int:
-    plan = build_protocol_a_v03_pilot_plan(
+    plan = build_protocol_a_v04_pilot_plan(
         runs_root=args.runs_root,
         python=args.python,
     )
@@ -1090,7 +1091,7 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_parser.add_argument("--config", required=True)
     schedule_parser.add_argument("--output", required=True)
     schedule_parser.add_argument("--phase", choices=["pilot", "formal"], required=True)
-    schedule_parser.add_argument("--protocol-id", default="protocol-a-v0.3")
+    schedule_parser.add_argument("--protocol-id", default=PROTOCOL_ID)
     schedule_parser.add_argument("--replicate-id", type=int, default=0)
     schedule_parser.add_argument("--root-seed", type=int)
     schedule_parser.add_argument("--cpu-threads", type=int)
@@ -1181,15 +1182,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_parser = subparsers.add_parser(
         "prepare-pilot-plan",
-        help="生成 Protocol A v0.3 的 78-run pilot 任务图",
+        help="生成 Protocol A v0.4 的 78-run pilot 任务图",
     )
     plan_parser.add_argument(
         "--output",
-        default="runs/protocol-a-v0.3/pilot-plan.json",
+        default="runs/protocol-a-v0.4/pilot-plan.json",
     )
     plan_parser.add_argument(
         "--runs-root",
-        default="runs/protocol-a-v0.3",
+        default="runs/protocol-a-v0.4",
     )
     plan_parser.add_argument("--python")
     plan_parser.set_defaults(handler=_command_prepare_pilot_plan)

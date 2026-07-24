@@ -1,4 +1,4 @@
-"""Protocol A v0.3 pilot 的可审计命令矩阵。"""
+"""Protocol A v0.4 pilot 的可审计命令矩阵。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 import shlex
 import sys
 from pathlib import Path
+
+PROTOCOL_ID = "protocol-a-v0.4"
 
 MAIN_METHOD_PROFILES = (
     "legacy",
@@ -42,9 +44,9 @@ def _base_command(python: str) -> list[str]:
     return [python, "-m", "rmtgp_aco"]
 
 
-def build_protocol_a_v03_pilot_plan(
+def build_protocol_a_v04_pilot_plan(
     *,
-    runs_root: str | Path = "runs/protocol-a-v0.3",
+    runs_root: str | Path = "runs/protocol-a-v0.4",
     python: str | None = None,
 ) -> dict[str, object]:
     """生成 72 个主消融 run 与 6 个 ACS 单尺度 run。"""
@@ -158,7 +160,7 @@ def build_protocol_a_v03_pilot_plan(
 
     return {
         "schema_version": 1,
-        "protocol_id": "protocol-a-v0.3",
+        "protocol_id": PROTOCOL_ID,
         "phase": "pilot",
         "cpu_threads_per_run": 16,
         "main_methods": list(MAIN_METHOD_PROFILES),

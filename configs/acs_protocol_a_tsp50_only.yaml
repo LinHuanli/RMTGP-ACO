@@ -1,5 +1,5 @@
 experiment:
-  experiment_id: protocol-a-acs-rmtgp-tsp50-only
+  experiment_id: protocol-a-v04-acs-rmtgp-tsp50-only
   root_seed: 2001
   train_scales: [50]
   validation_scales: [50, 100]
@@ -11,7 +11,8 @@ experiment:
 
 aco:
   variant: acs
-  iterations: 100
+  ants: 32
+  iterations: 500
   dtype: float64
   device: cpu
   candidate_size: 20
@@ -90,5 +91,5 @@ data:
   validation_selection_instances_per_scale: 32
   validation_gate_instances_per_scale: 32
   evaluation_batch_size: 32
-  baseline_archive: runs/protocol-a-v0.3/baselines/acs
+  baseline_archive: runs/protocol-a-v0.4/baselines/acs
   baseline_policy: require

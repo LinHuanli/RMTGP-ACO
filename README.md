@@ -33,8 +33,9 @@ python -m rmtgp_aco --help
 ```
 
 集群正式环境使用 `constraints-py312.txt` 固定 NumPy/Numba/llvmlite
-兼容组合。Protocol A v0.3 使用单进程、16-thread Numba population-batch
-float64 CPU 后端；首次运行会预编译内核，JIT warm-up 不计入逐代用时。
+兼容组合。Protocol A v0.4 使用单进程、16-thread Numba population-batch
+float64 CPU 后端；AS、ACS、MMAS 均固定 32 只蚂蚁、500 个 ACO
+iterations。首次运行会预编译内核，JIT warm-up 不计入逐代用时。
 
 仓库中的 `references/ACOTSP-1.03` 是算法语义参考，保留其原始许可证。
 
@@ -59,21 +60,21 @@ python -m rmtgp_aco prepare-schedules \
   --config configs/as_protocol_a.yaml \
   --phase pilot \
   --root-seed 1001 \
-  --output runs/protocol-a-v0.3/schedules/as-seed-1001.json
+  --output runs/protocol-a-v0.4/schedules/as-seed-1001.json
 
 python -m rmtgp_aco precompute-baselines \
   --config configs/as_protocol_a.yaml \
   --root-seed 1001 \
-  --schedule runs/protocol-a-v0.3/schedules/as-seed-1001.json \
-  --output runs/protocol-a-v0.3/baselines/as/seed-1001.npz
+  --schedule runs/protocol-a-v0.4/schedules/as-seed-1001.json \
+  --output runs/protocol-a-v0.4/baselines/as/seed-1001.npz
 
 python -m rmtgp_aco train \
   --config configs/as_protocol_a.yaml \
   --phase pilot \
   --method-profile rmtgp-full-f1 \
   --root-seed 1001 \
-  --schedule runs/protocol-a-v0.3/schedules/as-seed-1001.json \
-  --baseline-archive runs/protocol-a-v0.3/baselines/as
+  --schedule runs/protocol-a-v0.4/schedules/as-seed-1001.json \
+  --baseline-archive runs/protocol-a-v0.4/baselines/as
 ```
 
 每代使用 TSP50 与 TSP100 各 16 个实例，即 32 个实例；50 代累计使用每规模
@@ -85,7 +86,7 @@ python -m rmtgp_aco train \
 ```bash
 python -m rmtgp_aco train \
   --config configs/as_protocol_a.yaml \
-  --resume runs/protocol-a-as-rmtgp/seed-1001
+  --resume runs/protocol-a-v04-as-rmtgp/seed-1001
 ```
 
 `--method-profile` 支持 `legacy`、`matched-replace`、`tr-rgp`、
@@ -99,7 +100,7 @@ schedule、baseline archive 和总节点预算。完整 78-run pilot 任务图�
 python -m rmtgp_aco evaluate \
   --config configs/as_protocol_a.yaml \
   --partition tsp500_uniform \
-  --champion runs/protocol-a-as-rmtgp/seed-1001/champion.pkl \
+  --champion runs/protocol-a-v04-as-rmtgp/seed-1001/champion.pkl \
   --method RMTGP-ACO \
   --champion-id as-run-01 \
   --seeds 30 \
@@ -132,15 +133,16 @@ bootstrap 置信区间。
 ```bash
 python -m rmtgp_aco benchmark-training \
   --config configs/acs_protocol_a.yaml \
-  --schedule runs/protocol-a-v0.3/schedules/acs-seed-2001.json \
-  --baseline-archive runs/protocol-a-v0.3/baselines/acs \
+  --schedule runs/protocol-a-v0.4/schedules/acs-seed-2001.json \
+  --baseline-archive runs/protocol-a-v0.4/baselines/acs \
   --method-profile rmtgp-full-f1 \
   --generations 3 --cpu-threads 16 \
-  --output runs/protocol-a-v0.3/benchmarks/acs-3gen-optimized.json
+  --output runs/protocol-a-v0.4/benchmarks/acs-3gen.json
 ```
 
-当前 ACS 三代端到端合计由 97.09 s 降至 40.52 s，fitness 与优化前逐代
-一致。优化过程、golden 等价检查、GPU 排除性测试和逐代记录见
+Protocol A v0.3（10 ants、100 iterations）的历史 ACS 三代端到端合计由
+97.09 s 降至 40.52 s，fitness 与优化前逐代一致；该时间不能外推为 v0.4
+的正式代时。历史优化过程、golden 等价检查和逐代记录见
 [`docs/performance/acs_short_generation_acceleration_20260724.md`](docs/performance/acs_short_generation_acceleration_20260724.md)。
 
 ## 实现结构

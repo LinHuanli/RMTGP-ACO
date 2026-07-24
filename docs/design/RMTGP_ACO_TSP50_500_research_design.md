@@ -1,6 +1,6 @@
 # RMTGP-ACO：面向 TSP50、TSP100 与 TSP500 的 Multi-Tree GP–ACO 研究设计
 
-> **文档状态**：Design v1.1 / Protocol A v0.3（2026-07-24 冻结）
+> **文档状态**：Design v1.2 / Protocol A v0.4（2026-07-24 冻结）
 >
 > **研究对象**：对称二维 Euclidean TSP；Ant System（AS）、Ant Colony System（ACS）和 MAX–MIN Ant System（MMAS）
 >
@@ -12,10 +12,20 @@
 
 ---
 
-## v1.1 协议修订（实现时优先于下文旧参数）
+## v1.2 协议修订（实现时优先于下文旧参数）
 
-本节冻结 Protocol A v0.3。下文保留的早期候选参数仅用于解释设计演化；如与
+本节冻结 Protocol A v0.4。下文保留的早期候选参数仅用于解释设计演化；如与
 本节冲突，以本节为准。
+
+相对于 v0.3，三种 ACO 统一采用：
+
+\[
+M=32,\qquad T_{\mathrm{ACO}}=500.
+\]
+
+这里 \(T_{\mathrm{ACO}}\) 是每次 ACO simulation 的迭代数；GP 仍采用
+population 100、50 generations。v0.3 的 baseline archive、训练 checkpoint
+和性能数字均不得用于 v0.4。
 
 ### 数据量与模型单位
 
@@ -121,6 +131,48 @@ ACO iteration 与 tour construction step 的因果顺序不做伪并行。GP pro
 原始 ACO 必须在训练前生成不可变 baseline archive。cache key 至少包含
 coordinate hash、完整 ACO config hash、seed、dtype 与 kernel semantic
 version。正式训练遇到 cache miss 或 hash 不一致必须失败，不允许静默重算。
+
+#### CPU population-batch 的实际并行层级
+
+逻辑任务矩阵为 `GP program × instance`，但当前物理并行轴是 instance，而
+不是把整个矩阵扁平化：
+
+```text
+for scale in [TSP50, TSP100]:                 # 两个尺度顺序执行
+    parallel_for instance in batch[16]:       # Numba prange，16 个线程
+        分配并复用该 instance 的工作区
+        for semantic_unique_GP_program:        # 在线程内顺序执行
+            for ACO_iteration in 1..500:
+                构造 32 只蚂蚁的 tours
+                更新 best state 与 pheromone
+```
+
+同一线程连续处理一个 instance 上的全部程序，使 distance、candidate list、
+静态 terminals 和 solver workspace 保持缓存热，并避免每个
+program--instance 重复分配大数组。GP population 在进入内核前先按结构哈希
+去重，再合并 residual 位置上的语义 intron；结果通过 inverse mapping 展开回
+原 population。DEAP 的 selection、crossover 和 mutation 在代间串行执行，
+其用时相对 ACO simulation 很小。ACO iteration、tour construction step 和
+单个 solver 内的 ants 不启用嵌套线程，以保持确定性并避免过度订阅。
+
+每代实际构造 tour 数为：
+
+\[
+N_{\mathrm{tour}}
+=
+P_{\mathrm{sem}}
+\sum_{s\in\{50,100\}}
+B_s M T_{\mathrm{ACO}}.
+\]
+
+以首代 \(P_{\mathrm{sem}}=79\)、\(B_{50}=B_{100}=16\)、\(M=32\)、
+\(T_{\mathrm{ACO}}=500\) 为例：
+
+\[
+N_{\mathrm{tour}}
+=79\times32\times32\times500
+=40{,}448{,}000.
+\]
 
 ### 推断边界
 
@@ -229,18 +281,19 @@ TSP200、TSP1000 和 TSP10000 不进入本研究的训练、模型选择或主�
 
 ### 0.3 ACO 主配置
 
-主实验关闭局部搜索，采用 ACOTSP-1.03 中三个算法各自的无局部搜索默认参数：
+主实验关闭局部搜索；除统一的蚂蚁数和迭代预算外，其余参数采用
+ACOTSP-1.03 中三个算法各自的无局部搜索默认值：
 
 | 变体 | 蚂蚁数 \(M\) | \(\alpha\) | \(\beta\) | 蒸发率 \(\rho\) | 其他参数 |
 |---|---:|---:|---:|---:|---|
-| AS | \(n\) | 1 | 2 | 0.50 | 所有蚂蚁全局强化 |
-| ACS | 10 | 1 | 2 | 0.10 | \(q_0=0.90,\ \xi=0.10\) |
-| MMAS | \(n\) | 1 | 2 | 0.02 | 动态 \(\tau_{\min},\tau_{\max}\) |
+| AS | 32 | 1 | 2 | 0.50 | 所有蚂蚁全局强化 |
+| ACS | 32 | 1 | 2 | 0.10 | \(q_0=0.90,\ \xi=0.10\) |
+| MMAS | 32 | 1 | 2 | 0.02 | 动态 \(\tau_{\min},\tau_{\max}\) |
 
 统一设置：
 
 - nearest-neighbour candidate list：\(K=\min(20,n-1)\)；
-- 主质量预算：100 个 ACO iterations；
+- 主质量预算：500 个 ACO iterations；
 - 次级实用预算：10 秒等时运行；
 - 主实验无 2-opt/3-opt；
 - 距离使用连续 float64 Euclidean 距离，不采用 ACOTSP 的 TSPLIB 整数舍入。
@@ -309,7 +362,9 @@ d_{ij}
 
 ### 固定迭代预算
 
-ACOTSP 可按 wall-clock time 或 constructed tours 终止。本研究主质量实验固定 100 iterations，避免 GP 树的推理开销改变搜索步数。10 秒等时结果单独报告，回答实际部署效率问题。
+ACOTSP 可按 wall-clock time 或 constructed tours 终止。本研究主质量实验固定
+500 iterations，避免 GP 树的推理开销改变搜索步数。10 秒等时结果单独报告，
+回答实际部署效率问题。
 
 ### ACS 同步步进
 
@@ -577,7 +632,7 @@ p^0_{aij}
 ## 5.1 参数与初始化
 
 \[
-M=n,\quad
+M=32,\quad
 \alpha=1,\quad
 \beta=2,\quad
 \rho=0.5,\quad
@@ -661,7 +716,7 @@ B_a
 ## 6.1 参数与初始化
 
 \[
-M=10,\quad
+M=32,\quad
 \alpha=1,\quad
 \beta=2,\quad
 \rho=0.1,\quad
@@ -768,7 +823,7 @@ B_r=\frac{n}{L_{\mathrm{gb}}}.
 ## 7.1 参数与初始化
 
 \[
-M=n,\quad
+M=32,\quad
 \alpha=1,\quad
 \beta=2,\quad
 \rho=0.02,\quad
@@ -800,7 +855,9 @@ candidate list 有可行城市时使用 roulette；fallback 使用全可行集�
 - 当 \(t\bmod 25\ne0\)：iteration-best；
 - 当 \(t\bmod 25=0\)：restart-best。
 
-主实验仅运行 100 iterations，ACOTSP 中需要超过 250 次停滞的 restart 条件通常不会触发，但实现仍保留完整状态。
+主实验运行 500 iterations，因此必须记录并审计 ACOTSP 中超过 250 次停滞
+时可能触发的 restart 语义；当前实现保留 restart-best 状态，正式 MMAS
+运行前需用专项回归确认 pheromone restart 行为。
 
 ## 7.4 动态信息素界
 
@@ -2567,7 +2624,7 @@ ACO,\ TR\text{-}RGP,\ PH\text{-}RGP,\ Legacy\text{-}GP.
 - 蒸发覆盖全部边；
 - 每条 ant tour 的每条边增加 \(1/L_a\)；
 - 无向对称；
-- \(M=n\)。
+- \(M=32\)。
 
 ### ACS
 
@@ -2583,7 +2640,7 @@ ACO,\ TR\text{-}RGP,\ PH\text{-}RGP,\ Legacy\text{-}GP.
 - dynamic bounds；
 - iteration/restart-best schedule；
 - clipping；
-- 100 iterations 下 restart 状态。
+- 500 iterations 下 restart 检测与状态重置。
 
 ## 25.3 Residual 性质测试
 
@@ -2668,9 +2725,11 @@ runs/<experiment_id>/<run_id>/
 
 # 27. 风险与控制
 
-## 27.1 AS/MMAS 默认蚂蚁数导致训练昂贵
+## 27.1 统一 32 只蚂蚁与 500 iterations 导致训练昂贵
 
-AS/MMAS 使用 \(M=n\)，TSP500 每轮构造 500 条 tours。
+三种 ACO 均使用 \(M=32\)，每次 simulation 固定运行 500 iterations。
+相对 v0.3 的 ACS（10 ants、100 iterations），单个
+program--instance 的构造 tour 数提高 16 倍。
 
 控制：
 

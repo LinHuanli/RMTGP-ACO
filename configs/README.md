@@ -5,6 +5,8 @@
 上选择 champion，再锁定后测试 TSP500 的 uniform、cluster 与 Gaussian
 分布。每代每规模使用 16 个不同实例，50 代共使用每规模 800 个实例。
 Validation 固定拆成每规模 32 个 selection 与 32 个 holdout gate。
+Protocol A v0.4 将三种 ACO 的蚂蚁数统一为 32，并将每次 ACO simulation
+统一为 500 个 iterations；GP 仍为 population 100、50 generations。
 
 `acs_protocol_a_tsp50_only.yaml` 与
 `acs_protocol_a_tsp100_only.yaml` 是等计算预算的数据协议对照：单尺度每代
@@ -31,16 +33,16 @@ Validation 固定拆成每规模 32 个 selection 与 32 个 holdout gate。
 rmtgp-aco prepare-schedules \
   --config configs/acs_protocol_a.yaml \
   --phase pilot --replicate-id 0 \
-  --output runs/protocol-a-v0.3/schedules/acs-seed-2001.json
+  --output runs/protocol-a-v0.4/schedules/acs-seed-2001.json
 
 rmtgp-aco precompute-baselines \
   --config configs/acs_protocol_a.yaml \
-  --schedule runs/protocol-a-v0.3/schedules/acs-seed-2001.json \
-  --output runs/protocol-a-v0.3/baselines/acs/seed-2001.npz
+  --schedule runs/protocol-a-v0.4/schedules/acs-seed-2001.json \
+  --output runs/protocol-a-v0.4/baselines/acs/seed-2001.npz
 
 rmtgp-aco train \
   --config configs/acs_protocol_a.yaml \
-  --schedule runs/protocol-a-v0.3/schedules/acs-seed-2001.json \
+  --schedule runs/protocol-a-v0.4/schedules/acs-seed-2001.json \
   --method-profile rmtgp-full-f1
 ```
 
@@ -56,7 +58,7 @@ baseline archive。
 
 ```bash
 rmtgp-aco prepare-pilot-plan \
-  --output runs/protocol-a-v0.3/pilot-plan.json
+  --output runs/protocol-a-v0.4/pilot-plan.json
 ```
 
 JSON 适合集群任务调度；同目录 `.sh` 是严格顺序执行的可复现版本。
@@ -75,5 +77,6 @@ PyTorch 与标量 Numba 保留为语义参考。可先运行 `benchmark-backends
 性能方案探索时不要修改正式 YAML 中的 `generations: 50`，而应使用
 `benchmark-training --generations 1|2|3`。该命令读取同一冻结 schedule 和
 baseline archive，只跳过 validation/checkpoint，因而既保持正式单代计算量，
-又不会误把短跑 artifact 当作确认性实验。当前 ACS 短代基准见
+又不会误把短跑 artifact 当作确认性实验。已有 ACS 短代报告属于旧的
+v0.3（10 ants、100 iterations）历史基准，v0.4 必须重新测量：
 `docs/performance/acs_short_generation_acceleration_20260724.md`。

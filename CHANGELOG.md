@@ -2,6 +2,16 @@
 
 本项目遵循语义化版本。研究设计的统计结论冻结标签与软件版本标签分开。
 
+## 0.4.0 — 2026-07-24
+
+- 将 Protocol A 的 AS、ACS、MMAS 统一为 32 只蚂蚁和 500 个 ACO
+  iterations；GP 仍使用 population 100、50 generations；
+- 协议标识与新生成的 schedule/baseline/run 根目录升级为
+  `protocol-a-v0.4`，禁止把 v0.3 的 baseline archive 或第 7 代 checkpoint
+  用于新配置；
+- 保留 ACOTSP 原始无局部搜索默认值工厂，正式 YAML 通过显式覆盖实现统一计算
+  预算。
+
 ## 0.3.0 — 2026-07-24
 
 - 冻结 Protocol A v0.3 的 train/selection/gate schedule 与 baseline archive；
