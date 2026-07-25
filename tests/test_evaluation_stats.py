@@ -95,6 +95,8 @@ def test_nonparametric_statistics_and_hierarchical_bootstrap() -> None:
     assert {item.compared_method for item in pairwise} == {"ACO", "TR-RGP"}
     assert all(item.mean_difference_pp < 0 for item in pairwise)
     intervals = hierarchical_bootstrap_delta(records, replicates=100, seed=9)
+    repeated = hierarchical_bootstrap_delta(records, replicates=100, seed=9)
+    assert intervals == repeated
     assert len(intervals) == 3
     rmtgp = next(item for item in intervals if item.method == "RMTGP")
     assert rmtgp.lower_95 <= rmtgp.estimate <= rmtgp.upper_95

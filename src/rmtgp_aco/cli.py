@@ -2374,7 +2374,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_study = subparsers.add_parser(
         "run-study",
-        help="在唯一可见 GPU0 上串行执行可恢复 study 队列",
+        help="在唯一可见物理 GPU 上串行执行可恢复 study 队列",
     )
     run_study.add_argument("--study-config", required=True)
     run_study.set_defaults(handler=_command_run_study)

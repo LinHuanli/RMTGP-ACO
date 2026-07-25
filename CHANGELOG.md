@@ -13,6 +13,9 @@
 - 新增跨三个 champion 共享的不可变 baseline test cache、原子 candidate
   shards、精确续跑、Holm-Wilcoxon、rank-biserial、三层 bootstrap、曲线和
   中文汇总报告。
+- 单卡 runner 支持把逻辑 GPU0 映射到任意一张唯一可见的物理 RTX 4000
+  Ada，并在任务边界按实际物理 index 检查外部进程；平衡三层 bootstrap
+  改为内存受控的分块向量化实现。
 
 ## 0.5.0 — 2026-07-24
 

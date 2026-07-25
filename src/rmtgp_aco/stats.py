@@ -341,36 +341,11 @@ def hierarchical_bootstrap_delta(
             for instance_map in champion_map.values()
             for seed_values in instance_map.values()
         )
-        estimates = np.empty(replicates, dtype=np.float64)
-        for replicate in range(replicates):
-            sampled_champions = rng.choice(
-                champion_ids,
-                size=len(champion_ids),
-                replace=True,
-            )
-            champion_means: list[float] = []
-            for champion_id in sampled_champions:
-                instance_map = champion_map[str(champion_id)]
-                instance_ids = list(instance_map)
-                sampled_instances = rng.choice(
-                    instance_ids,
-                    size=len(instance_ids),
-                    replace=True,
-                )
-                instance_means: list[float] = []
-                for instance_id in sampled_instances:
-                    seed_values = np.asarray(
-                        instance_map[str(instance_id)],
-                        dtype=np.float64,
-                    )
-                    sampled_seeds = rng.choice(
-                        seed_values,
-                        size=seed_values.size,
-                        replace=True,
-                    )
-                    instance_means.append(float(sampled_seeds.mean()))
-                champion_means.append(fmean(instance_means))
-            estimates[replicate] = fmean(champion_means)
+        estimates = _hierarchical_bootstrap_estimates(
+            champion_map,
+            replicates=replicates,
+            rng=rng,
+        )
         lower, upper = np.quantile(estimates, [0.025, 0.975])
         intervals.append(
             BootstrapInterval(
@@ -382,6 +357,114 @@ def hierarchical_bootstrap_delta(
             )
         )
     return intervals
+
+
+def _hierarchical_bootstrap_estimates(
+    champion_map: Mapping[str, Mapping[str, Sequence[float]]],
+    *,
+    replicates: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """生成三层 bootstrap estimates，并对平衡设计使用分块向量化。
+
+    正式 study 的每个 GP run 都有相同数量的 instances，且每个 instance
+    有相同数量的 ACO seeds。此时一次数组索引可同时完成 GP run、instance
+    和 seed 三层有放回采样。非平衡输入仍走通用路径，统计定义不变。
+    """
+
+    champion_ids = list(champion_map)
+    arrays: list[np.ndarray] = []
+    shape: tuple[int, int] | None = None
+    balanced = True
+    for champion_id in champion_ids:
+        instance_map = champion_map[champion_id]
+        try:
+            values = np.asarray(
+                [instance_map[key] for key in instance_map],
+                dtype=np.float64,
+            )
+        except ValueError:
+            balanced = False
+            break
+        if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] == 0:
+            balanced = False
+            break
+        if shape is None:
+            shape = values.shape
+        elif values.shape != shape:
+            balanced = False
+            break
+        arrays.append(values)
+    if balanced and shape is not None:
+        cube = np.stack(arrays, axis=0)
+        champions, instances, seeds = cube.shape
+        # 将每个 chunk 的主数据索引控制在约 200 万项，避免用内存换速度时
+        # 破坏共享节点上的资源边界。
+        chunk_size = max(
+            1,
+            min(
+                replicates,
+                2_000_000 // max(champions * instances * seeds, 1),
+            ),
+        )
+        estimates = np.empty(replicates, dtype=np.float64)
+        for start in range(0, replicates, chunk_size):
+            stop = min(start + chunk_size, replicates)
+            count = stop - start
+            sampled_champions = rng.integers(
+                0,
+                champions,
+                size=(count, champions),
+            )
+            sampled_instances = rng.integers(
+                0,
+                instances,
+                size=(count, champions, instances),
+            )
+            sampled_seeds = rng.integers(
+                0,
+                seeds,
+                size=(count, champions, instances, seeds),
+            )
+            sampled = cube[
+                sampled_champions[:, :, None, None],
+                sampled_instances[:, :, :, None],
+                sampled_seeds,
+            ]
+            estimates[start:stop] = sampled.mean(axis=(1, 2, 3))
+        return estimates
+
+    estimates = np.empty(replicates, dtype=np.float64)
+    for replicate in range(replicates):
+        sampled_champions = rng.choice(
+            champion_ids,
+            size=len(champion_ids),
+            replace=True,
+        )
+        champion_means: list[float] = []
+        for champion_id in sampled_champions:
+            instance_map = champion_map[str(champion_id)]
+            instance_ids = list(instance_map)
+            sampled_instances = rng.choice(
+                instance_ids,
+                size=len(instance_ids),
+                replace=True,
+            )
+            instance_means: list[float] = []
+            for instance_id in sampled_instances:
+                seed_values = np.asarray(
+                    instance_map[str(instance_id)],
+                    dtype=np.float64,
+                )
+                sampled_seeds = rng.choice(
+                    seed_values,
+                    size=seed_values.size,
+                    replace=True,
+                )
+                instance_means.append(float(sampled_seeds.mean()))
+            champion_means.append(fmean(instance_means))
+        estimates[replicate] = fmean(champion_means)
+    return estimates
 
 
 def _paired_run_id(record: EvaluationRecord) -> str:

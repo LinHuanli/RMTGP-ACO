@@ -3174,10 +3174,12 @@ validation 的 candidate gap、baseline gap、\(\Delta\)、墙钟时间和 ETA�
 
 ## 31.2 单 GPU0 执行与恢复
 
-正式进程必须满足 `CUDA_VISIBLE_DEVICES=0`，且进程内只能发现一张
-RTX 4000 Ada。训练的 `program population × instance batch` 在一个融合
-CUDA 调用中并行；九个独立 run 则串行执行，以避免同卡并发导致显存争用和
-不可解释的代时波动。每代原子保存 checkpoint、曲线和 provenance。
+正式进程必须通过 `CUDA_VISIBLE_DEVICES=<physical-index>` 只暴露一张
+RTX 4000 Ada；配置中的设备 0 始终表示进程内的逻辑 GPU0。因此恢复任务时
+可迁移到另一张同型号空闲物理卡，而不改变配置 hash、随机流或 CUDA 数值
+语义。训练的 `program population × instance batch` 在一个融合 CUDA 调用
+中并行；九个独立 run 则串行执行，以避免同卡并发导致显存争用和不可解释的
+代时波动。每代原子保存 checkpoint、曲线和 provenance。
 
 队列顺序采用 replicate-major：
 

@@ -861,15 +861,30 @@ def _task_complete(task: StudyTask, study: StudySpec) -> bool:
     return task.artifact.is_file()
 
 
-def _assert_single_gpu0() -> dict[str, Any]:
-    """拒绝设备映射歧义，确保进程仅能看到物理 GPU0。"""
+def _visible_physical_device() -> int:
+    """解析唯一可见的物理 GPU index，拒绝多卡或 UUID 映射歧义。"""
 
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if visible != "0":
+    if visible is None or "," in visible:
         raise RuntimeError(
-            "正式 study 要求 CUDA_VISIBLE_DEVICES=0（当前为 "
-            f"{visible!r}）"
+            "正式 study 要求 CUDA_VISIBLE_DEVICES 只包含一个物理 GPU index"
         )
+    try:
+        physical_device = int(visible)
+    except ValueError as exc:
+        raise RuntimeError(
+            "CUDA_VISIBLE_DEVICES 必须是单个非负整数物理 GPU index，"
+            f"当前为 {visible!r}"
+        ) from exc
+    if physical_device < 0:
+        raise RuntimeError("CUDA_VISIBLE_DEVICES 不得为负数")
+    return physical_device
+
+
+def _assert_single_gpu() -> dict[str, Any]:
+    """确保进程只看到一张 RTX 4000 Ada，配置中的 GPU0 为逻辑 index。"""
+
+    physical_device = _visible_physical_device()
     try:
         import cupy as cp
     except ImportError as exc:
@@ -882,18 +897,24 @@ def _assert_single_gpu0() -> dict[str, Any]:
     name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
     if "RTX 4000 Ada" not in name:
         raise RuntimeError(f"逻辑 GPU0 不是预期 RTX 4000 Ada: {name}")
-    return {"visible": visible, "logical_devices": count, "device_name": name}
+    return {
+        "visible": str(physical_device),
+        "physical_device": physical_device,
+        "logical_devices": count,
+        "logical_device": 0,
+        "device_name": name,
+    }
 
 
-def _external_gpu0_processes() -> list[dict[str, Any]]:
-    """查询物理 GPU0 上除当前 runner 外的计算进程。"""
+def _external_gpu_processes(physical_device: int) -> list[dict[str, Any]]:
+    """查询指定物理 GPU 上除当前 runner 外的计算进程。"""
 
     try:
         result = subprocess.run(
             [
                 "nvidia-smi",
                 "-i",
-                "0",
+                str(physical_device),
                 "--query-compute-apps=pid,process_name,used_memory",
                 "--format=csv,noheader,nounits",
             ],
@@ -952,12 +973,15 @@ def _state_payload(
 
 
 def run_study_queue(study: StudySpec) -> None:
-    """在唯一 GPU0 上串行执行并可从最后一个完整 artifact 恢复。"""
+    """在唯一可见 GPU 上串行执行并可从最后一个完整 artifact 恢复。"""
 
-    gpu = _assert_single_gpu0()
-    contention = _external_gpu0_processes()
+    gpu = _assert_single_gpu()
+    physical_device = int(gpu["physical_device"])
+    contention = _external_gpu_processes(physical_device)
     if contention:
-        raise RuntimeError(f"物理 GPU0 存在外部计算进程: {contention}")
+        raise RuntimeError(
+            f"物理 GPU{physical_device} 存在外部计算进程: {contention}"
+        )
     repository_state = git_state(Path.cwd())
     if repository_state["dirty"]:
         raise RuntimeError("正式 study 启动前 Git worktree 必须 clean")
@@ -994,11 +1018,11 @@ def run_study_queue(study: StudySpec) -> None:
                     completed.append(task.task_id)
                     continue
                 if task.kind in {"baseline", "train", "test"}:
-                    contention = _external_gpu0_processes()
+                    contention = _external_gpu_processes(physical_device)
                     if contention:
                         raise RuntimeError(
-                            f"任务 {task.task_id} 启动前 GPU0 出现外部进程: "
-                            f"{contention}"
+                            f"任务 {task.task_id} 启动前物理 "
+                            f"GPU{physical_device} 出现外部进程: {contention}"
                         )
                 _atomic_write_json(
                     state_path,

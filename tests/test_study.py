@@ -7,12 +7,14 @@ import json
 from dataclasses import replace
 
 import numpy as np
+import pytest
 import torch
 
 from rmtgp_aco.evaluation import EvaluationRecord, study_test_seed, write_records
 from rmtgp_aco.model import RunDiagnostics, RunResult
 from rmtgp_aco.study import (
     _read_test_cache,
+    _visible_physical_device,
     _write_test_cache,
     build_study_tasks,
     export_study_contract,
@@ -63,6 +65,14 @@ def test_study_test_seed_is_gp_independent_and_partition_separated() -> None:
     assert first == study_test_seed(9001, "tsp100_uniform", 3, 2)
     assert first != study_test_seed(9001, "tsp500_uniform", 3, 2)
     assert first != study_test_seed(9001, "tsp100_uniform", 4, 2)
+
+
+def test_visible_physical_device_accepts_exactly_one_index(monkeypatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _visible_physical_device() == 1
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    with pytest.raises(RuntimeError, match="只包含一个"):
+        _visible_physical_device()
 
 
 def test_test_baseline_cache_roundtrip_and_metadata_guard(tmp_path) -> None:

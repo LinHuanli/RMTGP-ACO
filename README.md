@@ -137,8 +137,8 @@ population 100、50 generations、32 ants、500 ACO iterations。TSP50、
 TSP100、TSP500、TSP1000 只在候选锁定后测试，其中 TSP1000 明确为补充
 外推，不能用于训练、validation、候选选择或 gate。
 
-后台队列只接受物理 GPU0 可见，并逐个执行九个训练 run，避免多个进程争用
-同一卡：
+后台队列只接受一张物理 GPU 可见，并逐个执行九个训练 run，避免多个进程
+争用同一卡。下面以物理 GPU0 为例；恢复时也可将其改为另一张空闲卡：
 
 ```bash
 mkdir -p runs/tsp100-gpu0-3seed
@@ -242,7 +242,7 @@ seeds，再分别要求 TSP50、TSP100 和 pooled 的单侧 95% 上界不超过
 - `baseline.py` / `training.py`：不可变 baseline archive、absolute reference
   gap fitness、staged validation 与 non-inferiority fallback；
 - `evaluation.py` / `stats.py`：锁定模型后的 paired test 和论文统计；
-- `study.py` / `study_report.py`：单 GPU0 可恢复队列、跨 champion baseline
+- `study.py` / `study_report.py`：单 GPU 可恢复队列、跨 champion baseline
   test cache、训练/验证曲线与三层统计报告；
 - `manifest.py` / `artifacts.py`：数据哈希、Git/环境/seed provenance。
 

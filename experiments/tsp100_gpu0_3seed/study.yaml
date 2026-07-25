@@ -1,4 +1,4 @@
-# 完整预算三算法三种子 pilot。所有任务由一个后台队列串行占用物理 GPU0。
+# 完整预算三算法三种子 pilot。所有任务由一个后台队列串行占用唯一可见 GPU。
 study_id: tsp100-gpu0-3seed-v1
 output_root: runs/tsp100-gpu0-3seed
 phase: pilot
