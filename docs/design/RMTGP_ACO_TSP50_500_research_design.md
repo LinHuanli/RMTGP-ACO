@@ -1817,10 +1817,26 @@ Role-preserving subtree crossover：
 | Initial depth | 2–4 |
 | Max depth per tree | 5 |
 | Max nodes per tree | 31 |
+| Max effective nodes per individual | 31 |
 | Development GP runs | 10 |
 | Final GP runs | 30 |
 
 树复杂度不直接混入第一版 fitness；validation 性能近似相同时，以总节点数作为 tie-breaker。
+
+主实验采用
+
+\[
+N_{\mathrm{tr}}+N_{\mathrm{ph}}\le31
+\]
+
+而不是令两棵树分别都可使用 31 个节点。其目的不是声称这是 Multi-Tree GP
+的通用约定，而是在单树与双树对照中固定个体总符号容量：若双树可使用
+62 个节点而单树只能使用 31 个节点，则性能差异同时混入角色分解与表达
+容量翻倍，无法单独归因于 Multi-Tree 结构。零残差哨兵不计入有效节点。
+
+节点数只是表达容量的可解释代理，不等同于精确运行成本，因为 transition
+与 pheromone 两棵树的调用频率和 tensor 形状不同。因此另行报告逐 champion
+的 warm inference timing，并执行第 22.9 节的 31/62 节点容量敏感性实验。
 
 ---
 
@@ -2687,7 +2703,80 @@ F0/F1 属于确认性 factorial；\(\gamma\) 扫描属于后续敏感性分析�
 - validation–test degradation；
 - OOD worse rate。
 
-## 22.9 E8：Coadaptation
+## 22.9 E8：结构 × 节点容量敏感性
+
+主实验的 31 节点约束用于容量匹配，但仍需检验它是否过度限制双树。固定
+其余协议，定义两级总预算：
+
+\[
+B\in\{31,62\}.
+\]
+
+对三个结构分别重新训练：
+
+| 结构 | \(B=31\) | \(B=62\) |
+|---|---:|---:|
+| TR 单树 | 活动树 \(\le31\) | 活动树 \(\le62\) |
+| PH 单树 | 活动树 \(\le31\) | 活动树 \(\le62\) |
+| Full-F1 双树 | 两树合计 \(\le31\) | 每树 \(\le31\)，合计 \(\le62\) |
+
+因此新增 62 节点训练量为
+
+\[
+3\ \mathrm{ACO variants}
+\times3\ \mathrm{structures}
+\times3\ \mathrm{GP seeds}
+=27\ \mathrm{runs}.
+\]
+
+31 节点结果从冻结主消融只读复用。所有条件共享逐代 instance schedule、
+baseline archive、GP root seed、ACO test seed 与数据划分。
+
+记结构 \(a\in\{\mathrm{TR},\mathrm{PH},\mathrm{MT}\}\) 在预算 \(B\) 下的
+reference gap 为 \(g_{a,B}\)。预注册三个 estimand：
+
+1. 同结构的容量效应
+
+   \[
+   C_a=g_{a,62}-g_{a,31};
+   \]
+
+2. 固定容量下的双树效应
+
+   \[
+   A_{\mathrm{TR},B}=g_{\mathrm{MT},B}-g_{\mathrm{TR},B},
+   \qquad
+   A_{\mathrm{PH},B}=g_{\mathrm{MT},B}-g_{\mathrm{PH},B};
+   \]
+
+3. 结构与容量的 difference-in-differences
+
+   \[
+   I_{\mathrm{TR}}
+   =
+   (g_{\mathrm{MT},62}-g_{\mathrm{TR},62})
+   -
+   (g_{\mathrm{MT},31}-g_{\mathrm{TR},31}),
+   \]
+
+   \[
+   I_{\mathrm{PH}}
+   =
+   (g_{\mathrm{MT},62}-g_{\mathrm{PH},62})
+   -
+   (g_{\mathrm{MT},31}-g_{\mathrm{PH},31}).
+   \]
+
+所有定义中负值表示公式前侧具有更低 gap。若 \(C_{\mathrm{MT}}\) 接近零，
+则 31 节点并非双树的主要瓶颈；若双树在两级容量下均优于 TR 与 PH，
+且 \(I_{\mathrm{TR}},I_{\mathrm{PH}}\) 接近零，则证据更符合角色分解本身；
+若优势只在 \(B=62\) 出现，则主实验可能受到容量约束。
+
+同时统计实际 transition/pheromone/total nodes、预算利用率、撞上上限的
+run 数、单代时间和同条件孤立推理开销。正式合同见
+`experiments/tsp100_capacity_sensitivity_3seed/study.yaml`。
+
+## 22.10 E9：Coadaptation
 
 ### Shuffled pairing
 
@@ -2712,7 +2801,7 @@ M_{ij}
 (T_{\mathrm{tr}}^i,T_{\mathrm{ph}}^j).
 \]
 
-## 22.10 E9：Local-search robustness
+## 22.11 E10：Local-search robustness
 
 主模型训练完成后，分别增加：
 
@@ -2721,7 +2810,7 @@ M_{ij}
 
 先做 test-time plug-in，不重新训练；若存在稳定收益，再追加 trained-with-LS 实验。
 
-## 22.11 E10：ACS 语义审计
+## 22.12 E11：ACS 语义审计
 
 比较：
 
@@ -2736,7 +2825,7 @@ M_{ij}
 - runtime speedup；
 - 结论排序是否改变。
 
-## 22.12 E11：效率
+## 22.13 E12：效率
 
 比较：
 

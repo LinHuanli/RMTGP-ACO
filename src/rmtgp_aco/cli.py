@@ -2148,6 +2148,79 @@ def _command_ablation_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_evaluate_capacity_study(args: argparse.Namespace) -> int:
+    """批量执行一个容量敏感性 variant×partition 测试。"""
+
+    from .capacity import evaluate_capacity_partition, load_capacity_spec
+
+    study = load_capacity_spec(args.study_config)
+    target = evaluate_capacity_partition(
+        study,
+        variant_name=args.variant,
+        partition=args.partition,
+    )
+    print(f"capacity 测试完成：{target}")
+    return 0
+
+
+def _command_benchmark_capacity_efficiency(
+    args: argparse.Namespace,
+) -> int:
+    """同条件测量 31/62 节点 champions 的孤立推理效率。"""
+
+    from .capacity import (
+        benchmark_capacity_efficiency,
+        load_capacity_spec,
+    )
+
+    study = load_capacity_spec(args.study_config)
+    target = benchmark_capacity_efficiency(
+        study,
+        variant_name=args.variant,
+        output=args.output,
+    )
+    print(f"capacity 效率测试完成：{target}")
+    return 0
+
+
+def _command_report_capacity_study(args: argparse.Namespace) -> int:
+    """生成容量、结构与交互效应的中文报告。"""
+
+    from .capacity import load_capacity_spec
+    from .capacity_report import generate_capacity_report
+
+    study = load_capacity_spec(args.study_config)
+    target = generate_capacity_report(study)
+    print(f"capacity 报告完成：{target}")
+    return 0
+
+
+def _command_run_capacity_study(args: argparse.Namespace) -> int:
+    """在多张物理 GPU 上运行或等待运行可恢复容量队列。"""
+
+    from .capacity import load_capacity_spec, run_capacity_parallel
+
+    study = load_capacity_spec(args.study_config)
+    run_capacity_parallel(
+        study,
+        physical_devices=tuple(args.physical_gpus),
+        wait=args.wait,
+        poll_seconds=args.poll_seconds,
+    )
+    print(f"capacity 队列完成：{study.output_root}")
+    return 0
+
+
+def _command_capacity_status(args: argparse.Namespace) -> int:
+    """打印容量队列、源依赖与当前训练进度。"""
+
+    from .capacity import capacity_status, load_capacity_spec
+
+    study = load_capacity_spec(args.study_config)
+    print(json.dumps(capacity_status(study), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _add_gpu_arguments(parser: argparse.ArgumentParser) -> None:
     """为可执行 ACO 的命令加入一致的 CUDA 调度覆盖参数。"""
 
@@ -2524,6 +2597,77 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_ablation.add_argument("--study-config", required=True)
     status_ablation.set_defaults(handler=_command_ablation_status)
+
+    evaluate_capacity = subparsers.add_parser(
+        "evaluate-capacity-study",
+        help="批量评测容量敏感性 study 的一个 variant×partition",
+    )
+    evaluate_capacity.add_argument("--study-config", required=True)
+    evaluate_capacity.add_argument(
+        "--variant",
+        choices=["as", "acs", "mmas"],
+        required=True,
+    )
+    evaluate_capacity.add_argument("--partition", required=True)
+    evaluate_capacity.set_defaults(
+        handler=_command_evaluate_capacity_study
+    )
+
+    efficiency_capacity = subparsers.add_parser(
+        "benchmark-capacity-efficiency",
+        help="同条件孤立测量 31/62 节点 champions 的 GPU 推理效率",
+    )
+    efficiency_capacity.add_argument("--study-config", required=True)
+    efficiency_capacity.add_argument(
+        "--variant",
+        choices=["as", "acs", "mmas"],
+        required=True,
+    )
+    efficiency_capacity.add_argument("--output", required=True)
+    efficiency_capacity.set_defaults(
+        handler=_command_benchmark_capacity_efficiency
+    )
+
+    report_capacity = subparsers.add_parser(
+        "report-capacity-study",
+        help="生成节点容量、结构与交互效应的中文报告",
+    )
+    report_capacity.add_argument("--study-config", required=True)
+    report_capacity.set_defaults(
+        handler=_command_report_capacity_study
+    )
+
+    run_capacity = subparsers.add_parser(
+        "run-capacity-study",
+        help="在多 GPU 上执行或等待执行可恢复容量敏感性队列",
+    )
+    run_capacity.add_argument("--study-config", required=True)
+    run_capacity.add_argument(
+        "--physical-gpus",
+        nargs="+",
+        type=int,
+        required=True,
+        help="runner 使用的物理 GPU indexes，例如 0 1",
+    )
+    run_capacity.add_argument(
+        "--wait",
+        action="store_true",
+        help="等待源消融完成和 GPU 释放，而不是立即报错退出",
+    )
+    run_capacity.add_argument(
+        "--poll-seconds",
+        type=int,
+        default=60,
+        help="等待依赖时的轮询间隔，范围 5--300 秒",
+    )
+    run_capacity.set_defaults(handler=_command_run_capacity_study)
+
+    status_capacity = subparsers.add_parser(
+        "capacity-status",
+        help="查看容量敏感性队列、源依赖与当前训练代数",
+    )
+    status_capacity.add_argument("--study-config", required=True)
+    status_capacity.set_defaults(handler=_command_capacity_status)
     return parser
 
 

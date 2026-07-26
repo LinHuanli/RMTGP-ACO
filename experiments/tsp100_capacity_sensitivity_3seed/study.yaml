@@ -1,0 +1,36 @@
+# 31/62 节点 × 单/双树的纯 TSP100 三种子容量敏感性 pilot。
+study_id: tsp100-capacity-sensitivity-3seed-v1
+output_root: runs/tsp100-capacity-sensitivity-3seed
+phase: pilot
+
+test_root_seed: 9001
+test_seeds: 3
+partitions:
+  - tsp50_uniform
+  - tsp100_uniform
+  - tsp500_uniform
+  - tsp1000_uniform
+  - tsp500_cluster
+  - tsp500_gaussian
+  - tsplib_le500
+
+variants:
+  as:
+    single_config: configs/as_tsp100_capacity_single_n62.yaml
+    multi_config: configs/as_tsp100_capacity_multi_n62.yaml
+    seeds: [1001, 1002, 1003]
+  acs:
+    single_config: configs/acs_tsp100_capacity_single_n62.yaml
+    multi_config: configs/acs_tsp100_capacity_multi_n62.yaml
+    seeds: [2001, 2002, 2003]
+  mmas:
+    single_config: configs/mmas_tsp100_capacity_single_n62.yaml
+    multi_config: configs/mmas_tsp100_capacity_multi_n62.yaml
+    seeds: [3001, 3002, 3003]
+
+source:
+  config: experiments/tsp100_ablation_gpu1_3seed/study.yaml
+  root: runs/tsp100-ablation-gpu1-3seed
+
+manifest: Datasets/manifest.json
+bootstrap_replicates: 10000
