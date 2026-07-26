@@ -223,7 +223,7 @@ PY
 当前锁定组合为 NumPy 2.2.6、Numba 0.61.2、PyTorch 2.10.0+cu126。
 系统 Python 中的 NumPy 2.4 不得用于本 study。
 
-后台启动：
+单卡后台启动：
 
 ```bash
 mkdir -p runs/tsp100-ablation-gpu1-3seed
@@ -232,6 +232,21 @@ CUDA_VISIBLE_DEVICES=1 nohup env PYTHONPATH=src \
   --study-config experiments/tsp100_ablation_gpu1_3seed/study.yaml \
   > runs/tsp100-ablation-gpu1-3seed/nohup.log 2>&1 &
 ```
+
+迁移到具有两张空闲 GPU 的机器后，可忽略 GPU 型号差异并从完整 artifact
+边界双卡续跑：
+
+```bash
+nohup setsid -f env -u CUDA_VISIBLE_DEVICES PYTHONPATH=src \
+  .venv/bin/python -m rmtgp_aco run-ablation-study \
+  --study-config experiments/tsp100_ablation_gpu1_3seed/study.yaml \
+  --physical-gpus 0 1 \
+  >> runs/tsp100-ablation-gpu1-3seed/nohup-parallel.log 2>&1
+```
+
+双卡 runner 对训练任务动态负载均衡。同一 `variant × partition` 的 residual
+与 replacement 测试固定在同一张卡上顺序执行，避免两个进程竞争写入共享
+baseline cache；报告仅在全部训练、测试和效率 artifact 验证通过后生成。
 
 监控：
 

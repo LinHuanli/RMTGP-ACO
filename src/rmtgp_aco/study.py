@@ -882,7 +882,7 @@ def _visible_physical_device() -> int:
 
 
 def _assert_single_gpu() -> dict[str, Any]:
-    """确保进程只看到一张 RTX 4000 Ada，配置中的 GPU0 为逻辑 index。"""
+    """确保进程只看到一张 CUDA GPU，配置中的 GPU0 为逻辑 index。"""
 
     physical_device = _visible_physical_device()
     try:
@@ -895,8 +895,6 @@ def _assert_single_gpu() -> dict[str, Any]:
     properties = cp.cuda.runtime.getDeviceProperties(0)
     raw_name = properties["name"]
     name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
-    if "RTX 4000 Ada" not in name:
-        raise RuntimeError(f"逻辑 GPU0 不是预期 RTX 4000 Ada: {name}")
     return {
         "visible": str(physical_device),
         "physical_device": physical_device,

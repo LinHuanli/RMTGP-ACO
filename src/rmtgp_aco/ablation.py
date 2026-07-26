@@ -1,4 +1,4 @@
-"""纯 TSP100 多方法消融实验的合同、批量测试与可恢复单 GPU 队列。"""
+"""纯 TSP100 多方法消融实验的合同、批量测试与可恢复 GPU 队列。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from queue import Empty, Queue
 from statistics import median
+from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Any
 
@@ -1540,18 +1542,371 @@ def _state_payload(
     }
 
 
+def _parallel_task_units(
+    tasks: list[AblationTask],
+    *,
+    kind: str,
+) -> list[tuple[AblationTask, ...]]:
+    """生成双卡调度单元；测试同一数据分区的两组必须顺序共用一张卡。"""
+
+    selected = [task for task in tasks if task.kind == kind]
+    if kind != "test":
+        return [(task,) for task in selected]
+
+    grouped: dict[tuple[str, str], list[AblationTask]] = {}
+    for task in selected:
+        meta = task.meta()
+        key = (meta["variant"], meta["partition"])
+        grouped.setdefault(key, []).append(task)
+    units: list[tuple[AblationTask, ...]] = []
+    for key, group_tasks in grouped.items():
+        by_group = {task.meta()["group"]: task for task in group_tasks}
+        if set(by_group) != set(TEST_GROUPS):
+            raise RuntimeError(
+                f"测试调度单元 {key} 未完整覆盖 {list(TEST_GROUPS)}"
+            )
+        units.append(tuple(by_group[group] for group in TEST_GROUPS))
+    return units
+
+
+def _physical_gpu_description(physical_device: int) -> dict[str, Any]:
+    """读取物理 GPU 身份，并验证单卡 CUDA 映射可用。"""
+
+    if physical_device < 0:
+        raise ValueError("物理 GPU index 不得为负数")
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "-i",
+            str(physical_device),
+            "--query-gpu=index,name,uuid,memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    fields = [field.strip() for field in result.stdout.strip().split(",", 3)]
+    if len(fields) != 4:
+        raise RuntimeError(
+            f"无法解析物理 GPU{physical_device} 的 nvidia-smi 输出"
+        )
+    probe_env = os.environ.copy()
+    probe_env["CUDA_VISIBLE_DEVICES"] = str(physical_device)
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import cupy as cp;"
+                "assert cp.cuda.runtime.getDeviceCount() == 1;"
+                "cp.zeros(1).sum().item()"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=probe_env,
+        timeout=30,
+    )
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout).strip()
+        raise RuntimeError(
+            f"物理 GPU{physical_device} 的单卡 CUDA probe 失败: {detail}"
+        )
+    return {
+        "physical_device": physical_device,
+        "logical_device": 0,
+        "logical_devices": 1,
+        "device_name": fields[1],
+        "uuid": fields[2],
+        "memory_total_mib": int(fields[3]),
+    }
+
+
+def _execute_ablation_task(
+    task: AblationTask,
+    study: AblationStudySpec,
+    *,
+    physical_device: int | None,
+) -> None:
+    """在指定物理 GPU 上执行并验证一个原子任务。"""
+
+    if (
+        physical_device is not None
+        and task.kind in {"preflight", "train", "test", "efficiency"}
+    ):
+        contention = _external_gpu_processes(physical_device)
+        if contention:
+            raise RuntimeError(
+                f"任务 {task.task_id} 启动前 GPU{physical_device} "
+                f"出现外部进程: {contention}"
+            )
+    log = study.output_root / "logs" / f"{task.task_id}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    if physical_device is not None:
+        environment["CUDA_VISIBLE_DEVICES"] = str(physical_device)
+    with log.open("a", encoding="utf-8") as handle:
+        gpu_label = (
+            f" gpu={physical_device}" if physical_device is not None else ""
+        )
+        handle.write(
+            f"\n[{datetime.now(UTC).isoformat()}] START{gpu_label} "
+            + " ".join(task.command)
+            + "\n"
+        )
+        handle.flush()
+        result = subprocess.run(
+            task.command,
+            cwd=Path.cwd(),
+            env=environment,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        handle.write(
+            f"[{datetime.now(UTC).isoformat()}] EXIT {result.returncode}\n"
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"任务 {task.task_id} 失败（exit={result.returncode}），详见 {log}"
+        )
+    if not _task_complete(task, study):
+        raise RuntimeError(f"任务 {task.task_id} 未产生完整 artifact")
+
+
+def run_ablation_parallel(
+    study: AblationStudySpec,
+    *,
+    physical_devices: tuple[int, ...],
+) -> None:
+    """在多张物理 GPU 上按依赖阶段并行执行并恢复完整消融队列。"""
+
+    if not physical_devices:
+        raise ValueError("并行 ablation 至少需要一张物理 GPU")
+    if len(set(physical_devices)) != len(physical_devices):
+        raise ValueError("并行 ablation 的物理 GPU index 不得重复")
+    repository = git_state(Path.cwd())
+    if repository["dirty"]:
+        raise RuntimeError("ablation 启动前 Git worktree 必须 clean")
+    free_bytes = shutil.disk_usage(Path.cwd()).free
+    if free_bytes < 50 * 1024**3:
+        raise RuntimeError("共享文件系统剩余空间不足 50 GiB，拒绝启动")
+
+    gpus: list[dict[str, Any]] = []
+    for physical_device in physical_devices:
+        contention = _external_gpu_processes(physical_device)
+        if contention:
+            raise RuntimeError(
+                f"物理 GPU{physical_device} 存在外部计算进程: {contention}"
+            )
+        gpus.append(_physical_gpu_description(physical_device))
+
+    study.output_root.mkdir(parents=True, exist_ok=True)
+    lock_path = study.output_root / "study.lock"
+    state_path = study.output_root / "study_state.json"
+    pid_path = study.output_root / "runner.pid"
+    reuse_path = study.output_root / "reuse_manifest.json"
+    if not reuse_path.is_file():
+        _atomic_json(reuse_path, _reuse_manifest(study))
+    tasks = build_ablation_tasks(study)
+    task_order = {task.task_id: index for index, task in enumerate(tasks)}
+    started_at = datetime.now(UTC).isoformat()
+
+    with lock_path.open("w", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("已有 ablation runner 持有锁") from exc
+        pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        completed = {
+            task.task_id for task in tasks if _task_complete(task, study)
+        }
+        workers: dict[str, dict[str, Any]] = {
+            str(device): {
+                "physical_device": device,
+                "status": "idle",
+                "current_task": None,
+                "last_completed_task": None,
+            }
+            for device in physical_devices
+        }
+        state_lock = Lock()
+        phase = "initializing"
+
+        def write_state(
+            *,
+            status: str = "running",
+            error: str | None = None,
+            completed_at: str | None = None,
+        ) -> None:
+            active = [
+                str(worker["current_task"])
+                for worker in workers.values()
+                if worker["current_task"] is not None
+            ]
+            ordered_completed = sorted(
+                completed,
+                key=lambda task_id: task_order[task_id],
+            )
+            payload: dict[str, Any] = {
+                **_state_payload(
+                    study=study,
+                    status=status,
+                    current_task=active[0] if len(active) == 1 else None,
+                    completed=ordered_completed,
+                    total_tasks=len(tasks),
+                    started_at=started_at,
+                    error=error,
+                ),
+                "mode": "parallel",
+                "phase": phase,
+                "current_tasks": active,
+                "workers": workers,
+                "gpus": gpus,
+            }
+            if completed_at is not None:
+                payload["completed_at"] = completed_at
+            _atomic_json(state_path, payload)
+
+        write_state()
+        try:
+            for phase_kind in ("preflight", "train", "test", "efficiency"):
+                phase = phase_kind
+                units = [
+                    unit
+                    for unit in _parallel_task_units(tasks, kind=phase_kind)
+                    if not all(
+                        task.task_id in completed
+                        or _task_complete(task, study)
+                        for task in unit
+                    )
+                ]
+                if not units:
+                    continue
+                work: Queue[tuple[AblationTask, ...]] = Queue()
+                for unit in units:
+                    work.put(unit)
+                stop = Event()
+                errors: list[BaseException] = []
+
+                def worker_loop(
+                    physical_device: int,
+                    *,
+                    work_queue: Queue[tuple[AblationTask, ...]] = work,
+                    stop_event: Event = stop,
+                    phase_errors: list[BaseException] = errors,
+                ) -> None:
+                    key = str(physical_device)
+                    while not stop_event.is_set():
+                        try:
+                            unit = work_queue.get_nowait()
+                        except Empty:
+                            return
+                        try:
+                            for task in unit:
+                                if task.task_id in completed or _task_complete(
+                                    task, study
+                                ):
+                                    with state_lock:
+                                        completed.add(task.task_id)
+                                    continue
+                                if stop_event.is_set():
+                                    return
+                                with state_lock:
+                                    workers[key]["status"] = "running"
+                                    workers[key]["current_task"] = task.task_id
+                                    write_state()
+                                _execute_ablation_task(
+                                    task,
+                                    study,
+                                    physical_device=physical_device,
+                                )
+                                with state_lock:
+                                    completed.add(task.task_id)
+                                    workers[key]["last_completed_task"] = task.task_id
+                                    workers[key]["current_task"] = None
+                                    workers[key]["status"] = "idle"
+                                    write_state()
+                        except BaseException as exc:
+                            with state_lock:
+                                phase_errors.append(exc)
+                                workers[key]["status"] = "failed"
+                                workers[key]["error"] = (
+                                    f"{type(exc).__name__}: {exc}"
+                                )
+                                stop_event.set()
+                        finally:
+                            work_queue.task_done()
+
+                threads = [
+                    Thread(
+                        target=worker_loop,
+                        args=(physical_device,),
+                        name=f"ablation-gpu-{physical_device}",
+                        daemon=False,
+                    )
+                    for physical_device in physical_devices
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+                if errors:
+                    raise RuntimeError(
+                        "；".join(
+                            f"{type(error).__name__}: {error}"
+                            for error in errors
+                        )
+                    )
+
+            phase = "report"
+            report = next(task for task in tasks if task.kind == "report")
+            if not _task_complete(report, study):
+                with state_lock:
+                    workers[str(physical_devices[0])]["status"] = "running"
+                    workers[str(physical_devices[0])][
+                        "current_task"
+                    ] = report.task_id
+                    write_state()
+                _execute_ablation_task(
+                    report,
+                    study,
+                    physical_device=None,
+                )
+            with state_lock:
+                completed.add(report.task_id)
+                for worker in workers.values():
+                    worker["status"] = "completed"
+                    worker["current_task"] = None
+                phase = "completed"
+                write_state(
+                    status="completed",
+                    completed_at=datetime.now(UTC).isoformat(),
+                )
+        except BaseException as exc:
+            with state_lock:
+                phase = "failed"
+                write_state(
+                    status="failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
+
+
 def run_ablation_queue(study: AblationStudySpec) -> None:
-    """在唯一可见物理 GPU1 上顺序执行、验证并恢复完整消融队列。"""
+    """在唯一可见物理 GPU 上顺序执行、验证并恢复完整消融队列。"""
 
     gpu = _assert_single_gpu()
     physical_device = int(gpu["physical_device"])
-    if physical_device != 1:
-        raise RuntimeError(
-            f"本次 ablation 合同要求物理 GPU1，实际为 GPU{physical_device}"
-        )
     contention = _external_gpu_processes(physical_device)
     if contention:
-        raise RuntimeError(f"物理 GPU1 存在外部计算进程: {contention}")
+        raise RuntimeError(
+            f"物理 GPU{physical_device} 存在外部计算进程: {contention}"
+        )
     repository = git_state(Path.cwd())
     if repository["dirty"]:
         raise RuntimeError("ablation 启动前 Git worktree 必须 clean")
@@ -1598,7 +1953,8 @@ def run_ablation_queue(study: AblationStudySpec) -> None:
                     contention = _external_gpu_processes(physical_device)
                     if contention:
                         raise RuntimeError(
-                            f"任务 {task.task_id} 启动前 GPU1 出现外部进程: "
+                            f"任务 {task.task_id} 启动前 "
+                            f"GPU{physical_device} 出现外部进程: "
                             f"{contention}"
                         )
                 _atomic_json(
@@ -1700,38 +2056,43 @@ def ablation_status(study: AblationStudySpec) -> dict[str, Any]:
             "total_tasks": len(build_ablation_tasks(study)),
         }
     )
-    current = state.get("current_task")
-    if isinstance(current, str) and current.startswith("train-"):
-        task = next(
-            (
-                task
-                for task in build_ablation_tasks(study)
-                if task.task_id == current
-            ),
-            None,
-        )
-        if task is not None:
-            metrics = task.artifact / "training_metrics.jsonl"
-            if metrics.is_file():
-                lines = [
-                    line
-                    for line in metrics.read_text(encoding="utf-8").splitlines()
-                    if line.strip()
-                ]
-                if lines:
-                    latest = json.loads(lines[-1])
-                    state["training_progress"] = {
-                        "generation": latest["generation"],
-                        "generation_wall_time_sec": latest[
-                            "generation_wall_time"
-                        ],
-                        "eta_seconds": latest["eta_seconds"],
-                        "train_delta_pp": latest["best_mean_delta_by_scale"],
-                        "validation_delta_pp": latest.get(
-                            "validation_monitor_delta_by_scale",
-                            {},
-                        ),
-                    }
+    current_tasks = state.get("current_tasks")
+    if not isinstance(current_tasks, list):
+        current = state.get("current_task")
+        current_tasks = [current] if isinstance(current, str) else []
+    progress: dict[str, Any] = {}
+    task_by_id = {
+        task.task_id: task for task in build_ablation_tasks(study)
+    }
+    for current in current_tasks:
+        if not isinstance(current, str) or not current.startswith("train-"):
+            continue
+        task = task_by_id.get(current)
+        if task is None:
+            continue
+        metrics = task.artifact / "training_metrics.jsonl"
+        if metrics.is_file():
+            lines = [
+                line
+                for line in metrics.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if lines:
+                latest = json.loads(lines[-1])
+                progress[current] = {
+                    "generation": latest["generation"],
+                    "generation_wall_time_sec": latest[
+                        "generation_wall_time"
+                    ],
+                    "eta_seconds": latest["eta_seconds"],
+                    "train_delta_pp": latest["best_mean_delta_by_scale"],
+                    "validation_delta_pp": latest.get(
+                        "validation_monitor_delta_by_scale",
+                        {},
+                    ),
+                }
+    if progress:
+        state["training_progress"] = progress
     if (study.output_root / "runner.pid").is_file():
         pid = int(
             (study.output_root / "runner.pid")

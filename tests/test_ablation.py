@@ -17,6 +17,7 @@ from rmtgp_aco.ablation import (
     ReuseStudy,
     _expected_batches,
     _expected_instances,
+    _parallel_task_units,
     build_ablation_tasks,
     load_ablation_spec,
 )
@@ -128,6 +129,24 @@ def test_repository_ablation_contract_and_task_matrix() -> None:
         "--method-profile" in task.command
         for task in tasks
         if task.kind in {"preflight", "train"}
+    )
+    test_units = _parallel_task_units(tasks, kind="test")
+    assert len(test_units) == 21
+    assert all(len(unit) == 2 for unit in test_units)
+    assert all(
+        {
+            (task.meta()["variant"], task.meta()["partition"])
+            for task in unit
+        }
+        == {
+            (
+                unit[0].meta()["variant"],
+                unit[0].meta()["partition"],
+            )
+        }
+        and {task.meta()["group"] for task in unit}
+        == {"residual", "replacement"}
+        for unit in test_units
     )
 
     spec = load_run_spec(study.variants[0].config)

@@ -141,5 +141,5 @@ PYTHONPATH=src .venv/bin/python -m rmtgp_aco ablation-status \
 
 队列共 133 个可验证任务：24 个单代 method-profile 预检、63 个新训练、
 42 个 `variant×partition×integration-group` 批量测试、3 个孤立效率测试
-和 1 个最终报告。它只允许物理 GPU1 独占运行；启动时要求 clean Git、
+和 1 个最终报告。它要求所选物理 GPU 独占运行；启动时要求 clean Git、
 至少 50 GiB 可用磁盘，并逐文件记录主 study 复用 artifact 的 SHA-256。

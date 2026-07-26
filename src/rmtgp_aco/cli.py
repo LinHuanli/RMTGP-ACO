@@ -2118,12 +2118,22 @@ def _command_report_ablation_study(args: argparse.Namespace) -> int:
 
 
 def _command_run_ablation_study(args: argparse.Namespace) -> int:
-    """在唯一可见物理 GPU1 上运行可恢复消融队列。"""
+    """在一张或多张物理 GPU 上运行可恢复消融队列。"""
 
-    from .ablation import load_ablation_spec, run_ablation_queue
+    from .ablation import (
+        load_ablation_spec,
+        run_ablation_parallel,
+        run_ablation_queue,
+    )
 
     study = load_ablation_spec(args.study_config)
-    run_ablation_queue(study)
+    if args.physical_gpus:
+        run_ablation_parallel(
+            study,
+            physical_devices=tuple(args.physical_gpus),
+        )
+    else:
+        run_ablation_queue(study)
     print(f"ablation 队列完成：{study.output_root}")
     return 0
 
@@ -2497,9 +2507,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_ablation = subparsers.add_parser(
         "run-ablation-study",
-        help="在唯一可见物理 GPU1 上执行可恢复消融队列",
+        help="在一张或多张物理 GPU 上执行可恢复消融队列",
     )
     run_ablation.add_argument("--study-config", required=True)
+    run_ablation.add_argument(
+        "--physical-gpus",
+        nargs="+",
+        type=int,
+        help="并行 runner 使用的物理 GPU indexes，例如 0 1",
+    )
     run_ablation.set_defaults(handler=_command_run_ablation_study)
 
     status_ablation = subparsers.add_parser(
