@@ -37,6 +37,7 @@ from .config import (
 )
 from .model import (
     PopulationQualityResult,
+    PopulationRunResult,
     ProblemBatch,
     RunDiagnostics,
     RunResult,
@@ -1079,6 +1080,37 @@ def solve_population_cuda(
         record_anytime=False,
     )
     return result
+
+
+def solve_population_cuda_anytime(
+    problem: ProblemBatch,
+    config: ACOConfig,
+    programs: list[tuple[TensorProgram | None, TensorProgram | None]],
+    *,
+    seed: int,
+    runtime: RuntimeConfig,
+) -> PopulationRunResult:
+    """融合评估多个锁定 program，并保留各自完整 anytime 曲线。"""
+
+    quality, anytime = _solve_population_impl(
+        problem,
+        config,
+        programs,
+        seed=seed,
+        runtime=runtime,
+        record_anytime=True,
+    )
+    assert anytime is not None
+    return PopulationRunResult(
+        best_tour=quality.best_tour,
+        best_length=quality.best_length,
+        best_iteration=quality.best_iteration,
+        anytime_best=anytime,
+        diagnostics=quality.diagnostics,
+        wall_time_sec=quality.wall_time_sec,
+        constructed_tours=quality.constructed_tours,
+        backend_metrics=quality.backend_metrics,
+    )
 
 
 def solve_cuda(

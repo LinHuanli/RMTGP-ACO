@@ -13,11 +13,18 @@ import numpy as np
 import torch
 
 from .aco import solve
-from .config import ACOConfig, ExecutionBackend, RuntimeConfig
+from .config import (
+    ACOConfig,
+    ExecutionBackend,
+    PheromoneIntegration,
+    RuntimeConfig,
+    TransitionIntegration,
+)
 from .model import RunResult
 from .sampling import EvaluationCase
 
-BASELINE_ARCHIVE_SCHEMA_VERSION = 2
+BASELINE_ARCHIVE_SCHEMA_VERSION = 3
+_READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3})
 NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v2-mmas-restart"
 TORCH_KERNEL_SEMANTIC_VERSION = "torch-generator-v1"
 CUDA_KERNEL_SEMANTIC_VERSION = "counter-rng-cuda-fp32-search-v1"
@@ -57,6 +64,7 @@ class BaselineRecord:
     scale: int
     seed: int
     config_hash: str
+    baseline_behavior_hash: str
     backend_semantic: str
     best_length: float
     reference_length: float
@@ -90,7 +98,7 @@ def records_from_result(
                 key=baseline_key(
                     coordinate_hash=coordinate_hash,
                     seed=case.seed,
-                    config_hash=config.config_hash,
+                    config_hash=config.baseline_behavior_hash,
                     backend_semantic=semantic,
                 ),
                 coordinate_hash=coordinate_hash,
@@ -98,6 +106,7 @@ def records_from_result(
                 scale=case.scale,
                 seed=case.seed,
                 config_hash=config.config_hash,
+                baseline_behavior_hash=config.baseline_behavior_hash,
                 backend_semantic=semantic,
                 best_length=float(best[index]),
                 reference_length=float(reference[index]),
@@ -149,29 +158,53 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
     source = Path(path)
     with np.load(source, allow_pickle=False) as payload:
         metadata = json.loads(str(payload["__metadata__"].item()))
-        if metadata.get("schema_version") != BASELINE_ARCHIVE_SCHEMA_VERSION:
+        schema_version = int(metadata.get("schema_version", -1))
+        if schema_version not in _READABLE_BASELINE_ARCHIVE_SCHEMAS:
             raise ValueError(f"{source}: baseline archive schema 不兼容")
         count = int(metadata["records"])
+        # NPZ 是按列独立压缩的 zip archive。若在 record 循环内反复执行
+        # payload["field"]，NumPy 会为每条记录重新解压整列；正式 baseline
+        # 有数千行且每个训练进程都要读取，因此必须先把每列解压一次。
+        fields = {
+            name: payload[name]
+            for name in BaselineRecord.__dataclass_fields__
+            if name in payload.files
+        }
+        required = set(BaselineRecord.__dataclass_fields__) - {
+            "baseline_behavior_hash"
+        }
+        missing = required - set(fields)
+        if missing:
+            raise ValueError(f"{source}: baseline archive 缺少字段 {sorted(missing)}")
         records = [
             BaselineRecord(
-                key=str(payload["key"][index]),
-                coordinate_hash=str(payload["coordinate_hash"][index]),
-                instance_id=str(payload["instance_id"][index]),
-                scale=int(payload["scale"][index]),
-                seed=int(payload["seed"][index]),
-                config_hash=str(payload["config_hash"][index]),
-                backend_semantic=str(payload["backend_semantic"][index]),
-                best_length=float(payload["best_length"][index]),
-                reference_length=float(payload["reference_length"][index]),
-                reference_gap_percent=float(payload["reference_gap_percent"][index]),
-                best_iteration=int(payload["best_iteration"][index]),
-                anytime_gap_auc=float(payload["anytime_gap_auc"][index]),
-                candidate_fallback_count=int(
-                    payload["candidate_fallback_count"][index]
+                key=str(fields["key"][index]),
+                coordinate_hash=str(fields["coordinate_hash"][index]),
+                instance_id=str(fields["instance_id"][index]),
+                scale=int(fields["scale"][index]),
+                seed=int(fields["seed"][index]),
+                config_hash=str(fields["config_hash"][index]),
+                baseline_behavior_hash=(
+                    str(fields["baseline_behavior_hash"][index])
+                    if "baseline_behavior_hash" in fields
+                    else ""
                 ),
-                uniform_fallback_count=int(payload["uniform_fallback_count"][index]),
-                bound_clip_count=int(payload["bound_clip_count"][index]),
-                mmas_restart_count=int(payload["mmas_restart_count"][index]),
+                backend_semantic=str(fields["backend_semantic"][index]),
+                best_length=float(fields["best_length"][index]),
+                reference_length=float(fields["reference_length"][index]),
+                reference_gap_percent=float(
+                    fields["reference_gap_percent"][index]
+                ),
+                best_iteration=int(fields["best_iteration"][index]),
+                anytime_gap_auc=float(fields["anytime_gap_auc"][index]),
+                candidate_fallback_count=int(
+                    fields["candidate_fallback_count"][index]
+                ),
+                uniform_fallback_count=int(
+                    fields["uniform_fallback_count"][index]
+                ),
+                bound_clip_count=int(fields["bound_clip_count"][index]),
+                mmas_restart_count=int(fields["mmas_restart_count"][index]),
             )
             for index in range(count)
         ]
@@ -194,16 +227,45 @@ class BaselineArchive:
         self.backend_semantic = backend_semantic_id(backend)
         self.require = require
         self._records: dict[str, BaselineRecord] = {}
+        # v2 archives 只保存完整 config hash。当前冻结实验的旧 archive
+        # 使用 residual/budget-residual 与 gamma=1/3 生成；这些字段在无
+        # program baseline 中不生效，因此可严格迁移到行为哈希域。
+        legacy_config = ACOConfig(
+            **{
+                **config.stable_dict(),
+                "variant": config.variant,
+                "dtype": config.dtype,
+                "transition_integration": TransitionIntegration.RESIDUAL,
+                "pheromone_integration": PheromoneIntegration.BUDGET_RESIDUAL,
+                "gamma_transition": 1.0 / 3.0,
+                "gamma_pheromone": 1.0 / 3.0,
+            }
+        )
+        compatible_v2_hashes = {
+            config.config_hash,
+            legacy_config.config_hash,
+        }
         if self.root.is_dir():
             for path in sorted(self.root.rglob("*.npz")):
                 records, _ = read_baseline_shard(path)
                 for record in records:
-                    if (
-                        record.config_hash != config.config_hash
-                        or record.backend_semantic != self.backend_semantic
+                    behavior_matches = (
+                        record.baseline_behavior_hash
+                        == config.baseline_behavior_hash
+                        if record.baseline_behavior_hash
+                        else record.config_hash in compatible_v2_hashes
+                    )
+                    if not behavior_matches or (
+                        record.backend_semantic != self.backend_semantic
                     ):
                         continue
-                    previous = self._records.setdefault(record.key, record)
+                    key = baseline_key(
+                        coordinate_hash=record.coordinate_hash,
+                        seed=record.seed,
+                        config_hash=config.baseline_behavior_hash,
+                        backend_semantic=self.backend_semantic,
+                    )
+                    previous = self._records.setdefault(key, record)
                     if not _records_equivalent(previous, record):
                         raise ValueError(f"baseline archive 冲突 key={record.key}")
         elif require:
@@ -215,7 +277,7 @@ class BaselineArchive:
             key = baseline_key(
                 coordinate_hash=coordinate_hash,
                 seed=case.seed,
-                config_hash=self.config.config_hash,
+                config_hash=self.config.baseline_behavior_hash,
                 backend_semantic=self.backend_semantic,
             )
             record = self._records.get(key)
@@ -224,7 +286,7 @@ class BaselineArchive:
                     raise KeyError(
                         "baseline cache miss: "
                         f"hash={coordinate_hash[:12]}, seed={case.seed}, "
-                        f"config={self.config.config_hash}"
+                        f"behavior={self.config.baseline_behavior_hash}"
                     )
                 return None
             values.append(record.best_length)
@@ -303,7 +365,7 @@ def precompute_baseline_cases(
                         key=baseline_key(
                             coordinate_hash=coordinate_hash,
                             seed=case.seed,
-                            config_hash=config.config_hash,
+                            config_hash=config.baseline_behavior_hash,
                             backend_semantic=semantic,
                         ),
                         coordinate_hash=coordinate_hash,
@@ -311,6 +373,7 @@ def precompute_baseline_cases(
                         scale=case.scale,
                         seed=case.seed,
                         config_hash=config.config_hash,
+                        baseline_behavior_hash=config.baseline_behavior_hash,
                         backend_semantic=semantic,
                         best_length=float(best[index]),
                         reference_length=float(reference[index]),

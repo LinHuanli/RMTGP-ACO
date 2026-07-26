@@ -101,3 +101,45 @@ v0.3（10 ants、100 iterations）历史基准，v0.5 必须重新测量：
 1001–1003、2001–2003、3001–3003，最终 paired test 独立使用 root seed
 9001 和 3 个 ACO seeds。TSP1000 只在该 pilot 中作为 test-only 补充外推，
 不能进入 schedule 或 validation。
+
+`as_tsp100_ablation_gpu1.yaml`、`acs_tsp100_ablation_gpu1.yaml` 与
+`mmas_tsp100_ablation_gpu1.yaml` 是其严格配对的消融/OOD 模板。统一合同为
+`experiments/tsp100_ablation_gpu1_3seed/study.yaml`。该 study 复用主实验
+已经锁定的 9 个 `rmtgp-full-f1` runs、schedule、baseline archive、四个
+uniform test baseline cache 与 records；新训练其余 7 个方法，共
+\(3\times7\times3=63\) 个 50-generation runs。
+
+锁定测试覆盖：
+
+- TSP50、TSP100、TSP500、TSP1000 uniform；
+- TSP500 cluster 与 Gaussian；
+- TSPLIB \(n\le500\)。
+
+核心方法为 Legacy-GP、Matched-Replace、TR-RGP、PH-RGP 与
+Core/Full × F0/F1。另对 Full-F1 做 drop-transition、drop-pheromone 和
+两次 shuffled pairing；这些 post-hoc 结果用于机制解释，不计作独立训练
+方法。质量评测把 programs 拼成 CUDA task matrix；单方法推理时间另用
+warm、固定 batch、逐 champion 的孤立 benchmark 测量，禁止把整个 campaign
+墙钟平均分摊给并行 programs。
+
+本机系统 Python 可能解析到 NumPy 2.4，而 Numba 0.61 要求 NumPy <2.3。
+正式任务必须显式使用项目锁定环境（当前为 NumPy 2.2.6、Numba 0.61.2）：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 nohup env PYTHONPATH=src \
+  .venv/bin/python -m rmtgp_aco run-ablation-study \
+  --study-config experiments/tsp100_ablation_gpu1_3seed/study.yaml \
+  > runs/tsp100-ablation-gpu1-3seed/nohup.log 2>&1 &
+```
+
+查看可恢复队列状态：
+
+```bash
+PYTHONPATH=src .venv/bin/python -m rmtgp_aco ablation-status \
+  --study-config experiments/tsp100_ablation_gpu1_3seed/study.yaml
+```
+
+队列共 133 个可验证任务：24 个单代 method-profile 预检、63 个新训练、
+42 个 `variant×partition×integration-group` 批量测试、3 个孤立效率测试
+和 1 个最终报告。它只允许物理 GPU1 独占运行；启动时要求 clean Git、
+至少 50 GiB 可用磁盘，并逐文件记录主 study 复用 artifact 的 SHA-256。

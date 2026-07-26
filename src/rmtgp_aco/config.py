@@ -193,11 +193,40 @@ class ACOConfig:
         values["dtype"] = str(self.dtype).removeprefix("torch.")
         return values
 
+    def baseline_stable_dict(self) -> dict[str, Any]:
+        """返回只描述无 GP program 时原始 ACO 行为的稳定配置。
+
+        residual 半径和两种 integration mode 只有在对应 GP program 存在时
+        才会进入求解路径。把它们放进原始 ACO cache key 会使
+        residual/replacement 消融无法共享数学上完全相同的 baseline。
+        """
+
+        values = self.stable_dict()
+        for name in (
+            "gamma_transition",
+            "gamma_pheromone",
+            "transition_integration",
+            "pheromone_integration",
+        ):
+            values.pop(name)
+        return values
+
     @property
     def config_hash(self) -> str:
         """用于 cache 和 artifact 的稳定短哈希。"""
 
         payload = json.dumps(self.stable_dict(), sort_keys=True, separators=(",", ":"))
+        return sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @property
+    def baseline_behavior_hash(self) -> str:
+        """无 GP program 的原始 ACO 行为哈希。"""
+
+        payload = json.dumps(
+            self.baseline_stable_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 

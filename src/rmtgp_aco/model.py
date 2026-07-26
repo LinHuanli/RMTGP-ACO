@@ -146,3 +146,33 @@ class PopulationQualityResult:
             raise ValueError("population best_iteration shape 不一致")
         if self.diagnostics.shape != (self.best_length.shape[0], 4):
             raise ValueError("population diagnostics 必须具有 [P,4] shape")
+
+
+@dataclass(slots=True)
+class PopulationRunResult:
+    """锁定 programs 的批量测试结果，包含完整 anytime 曲线。
+
+    与训练用 ``PopulationQualityResult`` 分离，避免训练阶段为每个
+    program×instance 保存 ``iterations`` 长度的轨迹。
+    """
+
+    best_tour: torch.Tensor
+    best_length: torch.Tensor
+    best_iteration: torch.Tensor
+    anytime_best: torch.Tensor
+    diagnostics: torch.Tensor
+    wall_time_sec: float
+    constructed_tours: int
+    backend_metrics: dict[str, float | int | str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.best_length.ndim != 2:
+            raise ValueError("population run best_length 必须具有 [P,B] shape")
+        if self.best_tour.shape[:2] != self.best_length.shape:
+            raise ValueError("population run best_tour shape 不一致")
+        if self.best_iteration.shape != self.best_length.shape:
+            raise ValueError("population run best_iteration shape 不一致")
+        if self.anytime_best.shape[:2] != self.best_length.shape:
+            raise ValueError("population run anytime_best shape 不一致")
+        if self.diagnostics.shape != (self.best_length.shape[0], 4):
+            raise ValueError("population run diagnostics 必须具有 [P,4] shape")

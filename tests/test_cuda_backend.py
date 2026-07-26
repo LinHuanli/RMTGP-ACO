@@ -12,6 +12,7 @@ from rmtgp_aco.aco_cuda import (
     cuda_available,
     cuda_device_count,
     solve_population_cuda,
+    solve_population_cuda_anytime,
 )
 from rmtgp_aco.config import (
     ACOConfig,
@@ -94,6 +95,31 @@ def test_cuda_zero_residual_recovers_internal_baseline(
     assert torch.equal(result.best_length[0], result.best_length[1])
     assert torch.equal(result.best_iteration[0], result.best_iteration[1])
     _assert_valid_population_tours(result.best_tour)
+
+
+def test_cuda_population_anytime_matches_single_program_path(
+    small_instances,
+) -> None:
+    """批量锁定模型测试必须保留与单 program 路径相同的完整轨迹。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default("as", iterations=4),
+        ants=4,
+        candidate_size=2,
+    )
+    runtime = _runtime(GPUMode.SINGLE, devices=(0,))
+    result = solve_population_cuda_anytime(
+        batch,
+        config,
+        [(None, None), (None, None)],
+        seed=211,
+        runtime=runtime,
+    )
+    assert result.anytime_best.shape == (2, 2, 4)
+    assert torch.equal(result.best_tour[0], result.best_tour[1])
+    assert torch.equal(result.best_length[0], result.best_length[1])
+    assert torch.equal(result.anytime_best[0], result.anytime_best[1])
 
 
 @pytest.mark.skipif(cuda_device_count() < 2, reason="需要两张可见 CUDA GPU")

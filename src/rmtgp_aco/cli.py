@@ -2071,6 +2071,73 @@ def _command_study_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_evaluate_ablation_study(args: argparse.Namespace) -> int:
+    """批量执行一个消融 variant×partition×integration group。"""
+
+    from .ablation import evaluate_ablation_group, load_ablation_spec
+
+    study = load_ablation_spec(args.study_config)
+    target = evaluate_ablation_group(
+        study,
+        variant_name=args.variant,
+        partition=args.partition,
+        group=args.group,
+    )
+    print(f"ablation 测试完成：{target}")
+    return 0
+
+
+def _command_benchmark_ablation_efficiency(args: argparse.Namespace) -> int:
+    """孤立测量一个 ACO 变体全部核心方法的推理效率。"""
+
+    from .ablation import (
+        benchmark_ablation_efficiency,
+        load_ablation_spec,
+    )
+
+    study = load_ablation_spec(args.study_config)
+    target = benchmark_ablation_efficiency(
+        study,
+        variant_name=args.variant,
+        output=args.output,
+    )
+    print(f"ablation 效率测试完成：{target}")
+    return 0
+
+
+def _command_report_ablation_study(args: argparse.Namespace) -> int:
+    """生成跨方法 factorial、机制与 OOD 中文报告。"""
+
+    from .ablation import load_ablation_spec
+    from .ablation_report import generate_ablation_report
+
+    study = load_ablation_spec(args.study_config)
+    target = generate_ablation_report(study)
+    print(f"ablation 报告完成：{target}")
+    return 0
+
+
+def _command_run_ablation_study(args: argparse.Namespace) -> int:
+    """在唯一可见物理 GPU1 上运行可恢复消融队列。"""
+
+    from .ablation import load_ablation_spec, run_ablation_queue
+
+    study = load_ablation_spec(args.study_config)
+    run_ablation_queue(study)
+    print(f"ablation 队列完成：{study.output_root}")
+    return 0
+
+
+def _command_ablation_status(args: argparse.Namespace) -> int:
+    """打印消融队列状态与当前训练进度。"""
+
+    from .ablation import ablation_status, load_ablation_spec
+
+    study = load_ablation_spec(args.study_config)
+    print(json.dumps(ablation_status(study), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _add_gpu_arguments(parser: argparse.ArgumentParser) -> None:
     """为可执行 ACO 的命令加入一致的 CUDA 调度覆盖参数。"""
 
@@ -2385,6 +2452,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_study.add_argument("--study-config", required=True)
     status_study.set_defaults(handler=_command_study_status)
+
+    evaluate_ablation = subparsers.add_parser(
+        "evaluate-ablation-study",
+        help="批量评测消融 study 的一个 integration group",
+    )
+    evaluate_ablation.add_argument("--study-config", required=True)
+    evaluate_ablation.add_argument(
+        "--variant",
+        choices=["as", "acs", "mmas"],
+        required=True,
+    )
+    evaluate_ablation.add_argument("--partition", required=True)
+    evaluate_ablation.add_argument(
+        "--group",
+        choices=["residual", "replacement"],
+        required=True,
+    )
+    evaluate_ablation.set_defaults(
+        handler=_command_evaluate_ablation_study
+    )
+
+    efficiency_ablation = subparsers.add_parser(
+        "benchmark-ablation-efficiency",
+        help="孤立测量消融 champions 的 GPU 推理效率",
+    )
+    efficiency_ablation.add_argument("--study-config", required=True)
+    efficiency_ablation.add_argument(
+        "--variant",
+        choices=["as", "acs", "mmas"],
+        required=True,
+    )
+    efficiency_ablation.add_argument("--output", required=True)
+    efficiency_ablation.set_defaults(
+        handler=_command_benchmark_ablation_efficiency
+    )
+
+    report_ablation = subparsers.add_parser(
+        "report-ablation-study",
+        help="生成消融、factorial、机制与 OOD 中文报告",
+    )
+    report_ablation.add_argument("--study-config", required=True)
+    report_ablation.set_defaults(handler=_command_report_ablation_study)
+
+    run_ablation = subparsers.add_parser(
+        "run-ablation-study",
+        help="在唯一可见物理 GPU1 上执行可恢复消融队列",
+    )
+    run_ablation.add_argument("--study-config", required=True)
+    run_ablation.set_defaults(handler=_command_run_ablation_study)
+
+    status_ablation = subparsers.add_parser(
+        "ablation-status",
+        help="查看消融后台任务和当前训练代数",
+    )
+    status_ablation.add_argument("--study-config", required=True)
+    status_ablation.set_defaults(handler=_command_ablation_status)
     return parser
 
 
