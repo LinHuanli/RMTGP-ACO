@@ -264,6 +264,13 @@ AS、ACS 和 MMAS 的原有控制逻辑保持不变。
 \end{tabular}
 \end{table*}
 
+DEAP 在建树、交叉和变异时只检查
+\texttt{TrField}/\texttt{PhField} 标记。
+\([B,M,K]\) 和 \([B,R,n]\) 是评估器维护的运行时形状合同。
+它们不是额外的 DEAP 静态类型。
+这一分工允许 \(B,K,R,n\) 随批量、ACO 变体和 TSP 规模变化，
+同时禁止两种语义场混入同一棵树。
+
 \(B\) 中的每个 ACO 任务绑定一个程序和一个 TSP 实例。
 评估单个个体时，\(B\) 就是实例批量。
 融合种群评估时，\(B\) 是“程序--实例”任务批量。
@@ -273,13 +280,55 @@ AS 中 \(R=M=32\)。
 ACS 中 \(R=1\)，来源为全局最优路线。
 MMAS 中 \(R=1\)；通常使用迭代最优路线，每 25 轮使用重启最优路线。
 
+\begin{table*}[t]
+\caption{两棵树在一次调用中可读取的公共运行时上下文及张量形状}
+\label{tab:runtime-context-zh}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{L{25mm}L{67mm}L{77mm}}
+\toprule
+上下文 & 原始输入及形状 & 一个输出元素的语义\\
+\midrule
+状态转移 &
+距离 \(d\)、启发式 \(\eta\) 和信息素 \(\tau\)：\([B,n,n]\)；
+当前城市 \(c\)：\([B,M]\)；
+候选城市 \(C\) 与可行掩码 \(F\)：\([B,M,K]\)；
+原始概率 \(p^0\)：\([B,M,K]\)；
+构造步 \(q\)、ACO 轮数 \(t\)、总轮数 \(T\)；
+未改进轮数 \(s\)：\([B]\) &
+\(X^{\mathrm{tr}}_{bak}\) 是任务 \(b\) 中蚂蚁 \(a\) 对候选槽 \(k\)
+得到的一个 terminal 值。候选槽通过 \(C_{bak}\) 指向实际城市。\\
+信息素增强 &
+\(d,\eta,\tau\) 与全最近邻名次：\([B,n,n]\)；
+来源路线 \(\pi^{\mathrm{src}}\)：\([B,R,n+1]\)，
+展开后的端点 \(u,v\)：\([B,R,n]\)；
+来源路线长度：\([B,R]\)；
+本轮蚁群路线：\([B,M,n+1]\)；
+蚁群路线长度：\([B,M]\)；
+\(t,T\) 与 \(s[B]\) &
+\(X^{\mathrm{ph}}_{bre}\) 是任务 \(b\) 的增强事件 \(r\) 中，
+来源路线第 \(e\) 条边得到的一个 terminal 值。\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
 根签名中的空参数列表不表示树没有输入信息。
 每个具名 terminal 都是一个零元强类型叶节点。
 运行时，该叶节点绑定到当前 ACO 上下文中的动态值。
 程序只构造表达式实际引用的 terminal。
 PyTorch 后端显式形成上述张量。
 融合 CUDA 后端按任务、蚂蚁、候选或事件边逐元素计算同样的逻辑值。
-因此，表中的 shape 是逻辑 shape，不要求所有 terminal 同时物化到显存。
+因此，表中的形状是逻辑张量形状，不要求所有 terminal 同时物化到显存。
+若一次融合调用把 \(P\) 个去重程序放到 \(I\) 个实例上，则
+\(B=P I\)。
+例如，在 TSP100 上取 \(M=32\) 和 \(K=20\) 时，
+状态转移场为 \([PI,32,20]\)。
+AS 的信息素场为 \([PI,32,100]\)。
+ACS 和 MMAS 的信息素场为 \([PI,1,100]\)。
+CPU 内核可以只保存当前候选向量或未广播标量。
+这不会改变其强类型和逻辑 shape。
 
 两棵树共享一个适应度。
 它们也共享总节点预算：
@@ -438,7 +487,7 @@ Full 使用全部八个终端。
 \(k\) 是当前可行城市数。
 
 \begin{table*}[t]
-\caption{状态转移 terminal 的运行时输入、计算和逻辑 shape}
+\caption{状态转移 terminal 的运行时输入、计算和逻辑张量形状}
 \label{tab:transition-terminals-zh}
 \centering
 \scriptsize
@@ -446,51 +495,52 @@ Full 使用全部八个终端。
 \setlength{\tabcolsep}{2.5pt}
 \begin{tabular}{L{19mm}L{28mm}L{49mm}L{62mm}L{14mm}}
 \toprule
-终端 & 输出 Type / shape & 从当前 ACO 状态读取的输入 & 计算与候选轴上的含义 & 配置\\
+终端 & Type；原生形状 \(\to\) 树输入形状 &
+从当前 ACO 状态读取的输入 & 计算与候选轴上的含义 & 配置\\
 \midrule
 \texttt{RTau} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 \(\tau[B,n,n]\)、当前城市 \([B,M]\)、候选城市与可行掩码 \([B,M,K]\) &
 提取当前城市到候选的 \(\tau\)。对每个“任务--蚂蚁”在可行 \(K\) 轴上标准化
 \(\log(\max(\tau,\epsilon))\)，再取 \(\tanh\)。 &
 Core、Full\\
 \texttt{REta} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 \(\eta[B,n,n]\)、当前城市 \([B,M]\)、候选城市与可行掩码 \([B,M,K]\) &
 提取当前城市到候选的 \(\eta\)。在可行 \(K\) 轴上做对数标准化并取
 \(\tanh\)，表示相对距离启发式强弱。 &
 Core、Full\\
 \texttt{BaseConf} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 \(\tau,\eta,\alpha,\beta\)、可行掩码，以及由
 \(s^0=\tau^\alpha\eta^\beta\) 得到的 \(p^0[B,M,K]\) &
 令 \(k\) 为可行候选数，逐候选计算
 \(\tanh[\log(p^0+\epsilon)+\log k]\)。均匀分布时为零。 &
 Core、Full\\
 \texttt{DistRank} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 距离矩阵 \(d[B,n,n]\)、当前城市、候选城市和可行掩码 &
 在每个可行 \(K\) 集合内按距离排序。
 名次 \(r\) 映射为 \(1-2(r-1)/(k-1)\)；\(k=1\) 时为零。 &
 Core、Full\\
 \texttt{Entropy} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,1]\to[B,M,K]\) &
 原始概率 \(p^0[B,M,K]\)、可行掩码和候选数 \(k[B,M,1]\) &
 沿 \(K\) 轴计算 \(2H(p^0)/\log k-1\)，再广播回全部候选；
 \(k=1\) 时为 \(-1\)。 &
 Full\\
 \texttt{ConstructProg} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([1]\to[B,M,K]\) &
 当前构造步 \(q\) 和城市数 \(n\) &
 计算 \(2q/\max(n-1,1)-1\)，并在 \(B,M,K\) 三个轴上广播。 &
 Full\\
 \texttt{ACOProg} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([1]\to[B,M,K]\) &
 当前 ACO 轮数 \(t\) 和总轮数 \(T\) &
 计算 \(2(t-1)/\max(T-1,1)-1\)，并广播到全部蚂蚁和候选。 &
 Full\\
 \texttt{Stagnation} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,1,1]\to[B,M,K]\) &
 每个任务的未改进轮数 \(s_t[B]\) 和 \(T\) &
 先计算 \(2\min(s_t/T,1)-1\)，再沿蚂蚁轴 \(M\) 和候选轴 \(K\) 广播。 &
 Full\\
@@ -528,7 +578,7 @@ Core 使用 \texttt{EdgeEta}、\texttt{EdgeTau}、\texttt{NNRank} 和
 Full 使用全部七个终端。
 
 \begin{table*}[t]
-\caption{信息素 terminal 的运行时输入、计算和逻辑 shape}
+\caption{信息素 terminal 的运行时输入、计算和逻辑张量形状}
 \label{tab:pheromone-terminals-zh}
 \centering
 \scriptsize
@@ -536,36 +586,37 @@ Full 使用全部七个终端。
 \setlength{\tabcolsep}{2.5pt}
 \begin{tabular}{L{19mm}L{28mm}L{49mm}L{62mm}L{14mm}}
 \toprule
-终端 & 输出 Type / shape & 从当前 ACO 状态读取的输入 & 计算与事件--边轴上的含义 & 配置\\
+终端 & Type；原生形状 \(\to\) 树输入形状 &
+从当前 ACO 状态读取的输入 & 计算与事件--边轴上的含义 & 配置\\
 \midrule
 \texttt{EdgeEta} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 \(\eta[B,n,n]\)、端点 \(u,v[B,R,n]\)，以及每个城市候选列表上的平均
 \(\log\eta[B,n]\) &
 用边的 \(\log\eta_{uv}\) 减去两个端点均值的平均。
 再对每个“任务--事件”沿其 \(n\) 条边标准化并取 \(\tanh\)。 &
 Core、Full\\
 \texttt{EdgeTau} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 \(\tau[B,n,n]\) 和端点 \(u,v[B,R,n]\) &
 提取每条来源边的 \(\tau_{uv}\)。
 对每个“任务--事件”沿 \(n\) 条边标准化
 \(\log(\max(\tau_{uv},\epsilon))\)，再取 \(\tanh\)。 &
 Core、Full\\
 \texttt{NNRank} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 预计算的全最近邻名次 \([B,n,n]\) 和端点 \(u,v[B,R,n]\) &
 分别将 \(u\!\to\!v\) 和 \(v\!\to\!u\) 的名次 \(r\) 映射为
 \(1-2(r-1)/\max(n-2,1)\)，再取两方向平均。 &
 Core、Full\\
 \texttt{ColonyFreq} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 本轮蚁群路线 \(\pi^{\mathrm{col}}[B,M,n+1]\) 和来源边 \(u,v\) &
 忽略方向，统计每条来源边在 \(M\) 条蚁群路线中的出现次数 \(c_e\)。
 逐边计算 \(2c_e/M-1\)。 &
 Full\\
 \texttt{SourceQuality} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,1]\to[B,R,n]\) &
 来源长度 \(L^{\mathrm{src}}[B,R]\) 和蚁群长度
 \(L^{\mathrm{col}}[B,M]\) &
 沿蚂蚁轴 \(M\) 计算 \(\overline L\) 和总体标准差 \(\sigma_L\)。
@@ -573,12 +624,12 @@ Full\\
 \(\tanh[(\overline L-L^{\mathrm{src}}_r)/(\sigma_L+\epsilon)]\)，再广播到 \(n\) 条边。 &
 Core、Full\\
 \texttt{ACOProg} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([1]\to[B,R,n]\) &
 当前 ACO 轮数 \(t\) 和总轮数 \(T\) &
 计算 \(2(t-1)/\max(T-1,1)-1\)，并广播到所有任务、事件和边。 &
 Full\\
 \texttt{Stagnation} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,1,1]\to[B,R,n]\) &
 每个任务的未改进轮数 \(s_t[B]\) 和 \(T\) &
 计算 \(2\min(s_t/T,1)-1\)，再沿事件轴 \(R\) 和边轴 \(n\) 广播。 &
 Full\\
