@@ -641,11 +641,13 @@ def write_capacity_rows(
 def write_inference_overhead_rows(
     efficiency_rows: list[dict[str, str]],
     output: Path,
+    *,
+    comment: str = "% 自动生成；每项为 isolated warm median overhead。",
 ) -> None:
     """生成 Full-F1 相对原始 ACO 的孤立 warm 推理开销。"""
 
     lookup = indexed_rows(efficiency_rows, "variant", "partition", "method")
-    lines = ["% 自动生成；每项为 isolated warm median overhead。"]
+    lines = [comment]
     for variant in VARIANT_ORDER:
         values = [
             float(
@@ -1440,6 +1442,11 @@ def main() -> None:
     write_inference_overhead_rows(
         ablation_efficiency_rows,
         output_root / "inference_overhead_rows.tex",
+    )
+    write_inference_overhead_rows(
+        ablation_efficiency_rows,
+        output_root / "inference_overhead_rows_en.tex",
+        comment="% Generated; each entry is isolated warm median overhead.",
     )
     write_capacity_node_rows(
         capacity_training_rows,
