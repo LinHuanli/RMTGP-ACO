@@ -1,6 +1,6 @@
-# 纯 TSP100 三种子 GPU1 消融与 OOD pilot
+# 纯 TSP100 三种子消融与 OOD pilot
 
-> 状态：实现完成，待后台队列产生实验结果
+> 状态：v2 selected-champion 测试合同已冻结；可从现有 artifact 断点续跑
 >
 > 合同：`experiments/tsp100_ablation_gpu1_3seed/study.yaml`
 >
@@ -18,6 +18,19 @@
 本阶段每个 `ACO variant×method` 只有 3 个 GP root seeds，是工程与方差
 pilot，不是确认性实验。任何“更好”的陈述均限于 observed contexts；冻结
 协议后仍需扩展到 30 个独立 GP runs。
+
+测试单位不是 GP population，也不是从三个 seeds 中事后挑出的“最好一次”。
+每个独立 GP run 先仅依据 validation 选择一个
+`selected_candidate.pkl`，然后三个 runs 的三个 locked champions 全部进入
+测试和层次统计：
+
+\[
+\text{method performance}
+=\{c_{r}^{\mathrm{val}}:r=1,2,3\}.
+\]
+
+因此既不会测试每代的 100 个 individuals，也不会用 test 表现重新选择
+individual 或 GP seed。
 
 ## 2. 冻结计算预算
 
@@ -77,9 +90,9 @@ h_{\mathrm{ACO}}
 baseline，同时仍拒绝 ants、iterations、candidate size 或 kernel semantic
 不一致的 cache。
 
-## 4. 批量测试架构
+## 4. Selected-champion 测试架构
 
-最终测试 partitions 为：
+主方法 RMTGP-Full-F1 的锁定最终测试 partitions 为：
 
 | Partition | 实例数 | 角色 |
 |---|---:|---|
@@ -91,20 +104,37 @@ baseline，同时仍拒绝 ants、iterations、candidate size 或 kernel semanti
 | TSP500 Gaussian | 128 | 分布外 |
 | TSPLIB \(n\le500\) | manifest 决定 | 真实 benchmark |
 
+方法、表示和机制消融的预注册作用域仅为：
+
+\[
+\mathcal P_{\mathrm{abl}}
+=\{\mathrm{TSP100\mbox{-}U},\mathrm{TSP500\mbox{-}U}\}.
+\]
+
+TSP100-U 衡量训练分布内效应，TSP500-U 衡量规模外推效应。Core/Full、
+F0/F1、residual/replacement、单树/双树以及 drop/shuffle contrasts 只在
+这两个分区进行推断。TSP50-U、TSP1000-U、cluster、Gaussian 和 TSPLIB
+只报告主方法 Full-F1；先前已经产生的“全方法 × OOD”历史 artifact 保留
+以便审计，但显式排除于 v2 汇总和显著性检验。
+
 每个 instance 使用由 root seed 9001 派生的 3 个 ACO seeds；种子只依赖
 `partition×batch×replicate`，不依赖 GP run 或方法。原始 ACO baseline 按
 `variant×partition×batch×ACO seed` 只运行一次。
 
-同一种 integration 的多个锁定 programs 被编译成 packed postfix matrix，
+同一种 integration 的多个 selected champions 被编译成 packed postfix matrix，
 一次 CUDA 调用同时计算
 
 \[
-\text{program}\times\text{instance}
+\text{selected champion}\times\text{instance}
 \]
 
 的全部 500 iterations，并返回 `[program, instance, iteration]` anytime
 轨迹。Residual 与 replacement 分成两个 campaign，因为它们的 integration
-语义不同。Quality campaign 的墙钟不能无偏分摊到单个并行 program，故
+语义不同。在每个核心分区中，residual campaign 含
+\(9\text{ conditions}\times3\text{ GP runs}=27\) 个 champions，
+replacement campaign 含 \(2\times3=6\) 个 champions；非核心分区的 final
+campaign 仅含 Full-F1 的 3 个 champions。以上数量均与 GP population
+size=100 无关。Quality campaign 的墙钟不能无偏分摊到单个并行 program，故
 最终长表把该字段标为缺失；效率另在 TSP50/100/500/1000 固定小 batch 上
 逐 champion 预热后独立运行 3 次，报告中位数、相对 ACO 开销和 tours/s。
 
@@ -126,7 +156,8 @@ D=g^{(\mathrm{first})}-g^{(\mathrm{second})};
 \qquad D<0 \Longleftrightarrow \mathrm{first\ better}.
 \]
 
-主要比较：
+以下主要比较只在
+\(\mathcal P_{\mathrm{abl}}\) 上计算：
 
 \[
 \begin{aligned}
@@ -175,11 +206,13 @@ shuffled pairing 只探索 coadaptation。
 
 描述统计先在每个 `GP run×instance` 内平均三个 ACO seeds，再报告
 mean/median gap、标准差、IQR、W/T/L、worst-10% CVaR、reference hit rate、
-anytime gap AUC 与 best iteration。TSPLIB 同时报总体与
+anytime gap AUC 与 best iteration。主方法的 TSPLIB 同时报总体与
 \(n\le100\)、\(101\le n\le200\)、\(201\le n\le500\) 三个规模带。
 
 Wilcoxon signed-rank 以 `GP run×instance` 为 block；Holm 校正在每个
-`ACO variant×RQ family` 内跨 partitions 与同族 contrasts 执行。95% CI
+`ACO variant×RQ family` 内跨两个核心 partitions 与同族 contrasts 执行。
+主方法在其余分区只给出预注册描述统计和相对原始 ACO 的 paired 描述，不将
+缺少消融对照的 OOD 结果纳入消融检验。95% CI
 联合重采样：
 
 \[
@@ -203,11 +236,13 @@ Wilcoxon signed-rank 以 `GP run×instance` 为 block；Holm 校正在每个
 
 1. 24 个 `variant×method` 单代预检；
 2. 63 个新 50-generation runs（replicate-major）；
-3. 42 个 `variant×partition×{residual,replacement}` 测试；
-4. 3 个孤立效率 benchmark；
-5. 1 个最终报告。
+3. 12 个核心 `variant×partition×{residual,replacement}` 测试；
+4. 9 个 OOD `variant×partition×final` 主方法测试；
+5. 3 个孤立效率 benchmark；
+6. 1 个最终报告。
 
-共 133 个任务。每个任务先验证 artifact 内容；训练若存在合法
+共 112 个任务。其中主 study 已完成的 TSP50/100/500/1000 Full-F1 记录
+直接逐文件复用，故无需生成重复任务。每个任务先验证 artifact 内容；训练若存在合法
 `training_state.pkl` 会自动 `--resume`，测试按原子 batch shard 恢复。
 主 runner 使用文件锁、PID、原子 `study_state.json` 和逐任务 log。
 
@@ -244,9 +279,10 @@ nohup setsid -f env -u CUDA_VISIBLE_DEVICES PYTHONPATH=src \
   >> runs/tsp100-ablation-gpu1-3seed/nohup-parallel.log 2>&1
 ```
 
-双卡 runner 对训练任务动态负载均衡。同一 `variant × partition` 的 residual
-与 replacement 测试固定在同一张卡上顺序执行，避免两个进程竞争写入共享
-baseline cache；报告仅在全部训练、测试和效率 artifact 验证通过后生成。
+双卡 runner 对训练任务动态负载均衡。同一核心
+`variant × partition` 的 residual 与 replacement 测试固定在同一张卡上
+顺序执行，避免两个进程竞争写入共享 baseline cache；final-only 任务单独
+调度。报告仅在全部作用域内训练、测试和效率 artifact 验证通过后生成。
 
 监控：
 

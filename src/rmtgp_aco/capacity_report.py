@@ -830,7 +830,9 @@ def _render_report(
         (
             "三个关键 estimand 为：(1) 同结构 B62−B31 的容量效应；"
             "(2) 固定 B 下双树−单树的结构效应；(3) difference-in-differences"
-            "，即容量增加是否改变双树相对单树的优势。"
+            "，即容量增加是否改变双树相对单树的优势。所有容量与结构"
+            " estimands 只在预注册的 TSP100-U 与 TSP500-U 核心分区计算，"
+            "不把容量消融扩展为全 OOD 测试。"
         ),
         "",
         (
@@ -869,7 +871,7 @@ def _render_report(
     lines.extend(
         [
             "",
-            "## 双树主方法的锁定测试",
+            "## 双树主方法的核心分区测试",
             "",
             "| ACO | Test | 原始 ACO gap% | 双树 B31 gap% | 双树 B62 gap% | B62−B31(pp) |",
             "|---|---|---:|---:|---:|---:|",
@@ -1043,7 +1045,7 @@ def generate_capacity_report(study: CapacityStudySpec) -> Path:
     _write_dict_csv(output / "evidence_audit.csv", audit)
 
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
         "study": export_capacity_contract(study),
         "git": git_state(Path.cwd()),
@@ -1057,6 +1059,9 @@ def generate_capacity_report(study: CapacityStudySpec) -> Path:
             "holm_family": "aco_variant_x_capacity_question_family",
             "bootstrap_hierarchy": ["gp_run", "instance", "aco_seed"],
             "bootstrap_replicates": study.bootstrap_replicates,
+            "champion_selection": "one_validation_selected_candidate_per_gp_run",
+            "best_gp_seed_selection": False,
+            "primary_capacity_partitions": list(study.partitions),
             "quality_timing": "excluded_batched_campaign_allocation",
             "efficiency_timing": "same-process-isolated-warm-program",
         },

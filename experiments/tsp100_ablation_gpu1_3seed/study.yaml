@@ -1,5 +1,5 @@
 # 三种 ACO、八个核心方法、三 GP seeds 的纯 TSP100 消融与 OOD pilot。
-study_id: tsp100-ablation-gpu1-3seed-v1
+study_id: tsp100-ablation-gpu1-3seed-v2-selected-champions
 output_root: runs/tsp100-ablation-gpu1-3seed
 phase: pilot
 
@@ -13,6 +13,12 @@ partitions:
   - tsp500_cluster
   - tsp500_gaussian
   - tsplib_le500
+
+# 所有分区仅用于主方法 Full-F1 的锁定最终测试。方法、表示、primitive
+# 与机制消融只在预注册的两个核心分区统计，禁止把全消融扩展到全部 OOD。
+ablation_partitions:
+  - tsp100_uniform
+  - tsp500_uniform
 
 methods:
   legacy: train

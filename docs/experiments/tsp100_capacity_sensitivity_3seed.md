@@ -4,7 +4,7 @@
 >
 > 输出：`runs/tsp100-capacity-sensitivity-3seed`（不进入 Git）
 >
-> 依赖：`runs/tsp100-ablation-gpu1-3seed` 必须完整完成 133/133
+> 依赖：`runs/tsp100-ablation-gpu1-3seed` 必须按 v2 合同完整完成 112/112
 
 ## 1. 研究问题
 
@@ -66,14 +66,22 @@ N_{\mathrm{tr}}+N_{\mathrm{ph}}\le31.
 同一个 root seed、逐代无放回 instance schedule、原始 ACO baseline archive、
 selection/holdout validation 和 CPU/FP64 audit。
 
+与主消融相同，每个独立 run 仅用 validation 选择一个 locked champion；
+三个 GP root seeds 的三个 champions 全部测试，不测试 GP population，也
+不从三个 seeds 中依据 test 结果挑选最好者。
+
 ## 3. 测试数据与批量执行
 
-锁定后测试与主消融完全一致：
+容量与结构消融只在主消融预注册的两个核心分区执行：
 
-- TSP50/100/500/1000 uniform；
-- TSP500 cluster；
-- TSP500 Gaussian；
-- TSPLIB \(n\le500\)。
+\[
+\mathcal P_{\mathrm{capacity}}
+=\{\mathrm{TSP100\mbox{-}U},\mathrm{TSP500\mbox{-}U}\}.
+\]
+
+这两个分区分别测量同训练分布和规模外推；容量实验不重复 TSP50、
+TSP1000、cluster、Gaussian 或 TSPLIB 的全部结构笛卡尔积。主方法的完整
+OOD 泛化由主消融 v2 的 Full-F1 final test 回答。
 
 每个 instance 使用相同的三个 paired ACO seeds：
 
@@ -88,8 +96,7 @@ ACO 行为哈希和 kernel semantic 均相同。
 
 原始 ACO baseline 不重新计算：
 
-- 四个 uniform partition 读取已完成主 study 的 test cache；
-- cluster、Gaussian 与 TSPLIB 读取主消融的共享 OOD cache。
+- TSP100-U 与 TSP500-U 读取已完成主 study 的 test cache。
 
 ## 4. 预注册指标与统计
 
@@ -163,7 +170,7 @@ seeds，因此 block 数必须为
 \text{GP root}\rightarrow\text{instance}\rightarrow\text{ACO seed}.
 \]
 
-Holm 校正在每个 `ACO variant×question family` 内跨 partition 和同族
+Holm 校正在每个 `ACO variant×question family` 内跨两个核心 partition 和同族
 contrast 执行。本实验为 3-seed pilot，不自动升级为确认性因果结论。
 
 ## 5. 复杂度与效率指标
@@ -190,11 +197,11 @@ warm-up、batch 和 ACO seeds，逐 program 孤立运行，报告：
 
 ## 6. 任务图与恢复语义
 
-冻结队列共有 61 项：
+冻结队列共有 46 项：
 
 1. 9 个 `variant×method` 单代预检；
 2. 27 个 62 节点正式训练；
-3. 21 个 `variant×partition` packed tests；
+3. 6 个 `variant×core-partition` packed tests；
 4. 3 个同条件效率 benchmark；
 5. 1 个最终统计报告。
 

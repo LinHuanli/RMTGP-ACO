@@ -109,7 +109,11 @@ v0.3（10 ants、100 iterations）历史基准，v0.5 必须重新测量：
 uniform test baseline cache 与 records；新训练其余 7 个方法，共
 \(3\times7\times3=63\) 个 50-generation runs。
 
-锁定测试覆盖：
+每个独立 GP run 只用 validation 选择一个 `selected_candidate`；三个 root
+seeds 的三个 champions 全部参与测试和统计，不测试 population，也不从
+三个 seeds 中根据 test 结果挑最好者。
+
+主方法 RMTGP-Full-F1 的锁定测试覆盖：
 
 - TSP50、TSP100、TSP500、TSP1000 uniform；
 - TSP500 cluster 与 Gaussian；
@@ -118,7 +122,9 @@ uniform test baseline cache 与 records；新训练其余 7 个方法，共
 核心方法为 Legacy-GP、Matched-Replace、TR-RGP、PH-RGP 与
 Core/Full × F0/F1。另对 Full-F1 做 drop-transition、drop-pheromone 和
 两次 shuffled pairing；这些 post-hoc 结果用于机制解释，不计作独立训练
-方法。质量评测把 programs 拼成 CUDA task matrix；单方法推理时间另用
+方法。以上方法、表示和机制消融只在 TSP100-U 与 TSP500-U 两个预注册
+核心分区进行；其余分区只测试 Full-F1。历史全 OOD 消融 artifact 不进入
+v2 统计。质量评测把 selected champions 拼成 CUDA task matrix；单方法推理时间另用
 warm、固定 batch、逐 champion 的孤立 benchmark 测量，禁止把整个 campaign
 墙钟平均分摊给并行 programs。
 
@@ -139,7 +145,7 @@ PYTHONPATH=src .venv/bin/python -m rmtgp_aco ablation-status \
   --study-config experiments/tsp100_ablation_gpu1_3seed/study.yaml
 ```
 
-队列共 133 个可验证任务：24 个单代 method-profile 预检、63 个新训练、
-42 个 `variant×partition×integration-group` 批量测试、3 个孤立效率测试
-和 1 个最终报告。它要求所选物理 GPU 独占运行；启动时要求 clean Git、
+队列共 112 个可验证任务：24 个单代 method-profile 预检、63 个新训练、
+12 个核心消融批量测试、9 个 OOD 主方法测试、3 个孤立效率测试和 1 个
+最终报告。它要求所选物理 GPU 独占运行；启动时要求 clean Git、
 至少 50 GiB 可用磁盘，并逐文件记录主 study 复用 artifact 的 SHA-256。

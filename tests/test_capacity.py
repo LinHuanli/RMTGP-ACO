@@ -39,13 +39,14 @@ def test_repository_capacity_contract_and_task_matrix() -> None:
     assert by_kind == {
         "preflight": 9,
         "train": 27,
-        "test": 21,
+        "test": 6,
         "efficiency": 3,
         "report": 1,
     }
-    assert len(tasks) == 61
+    assert len(tasks) == 46
     assert tasks[0].task_id == "preflight-as-tr-rgp-n62"
     assert tasks[-1].task_id == "report"
+    assert study.partitions == ("tsp100_uniform", "tsp500_uniform")
 
     for variant in study.variants:
         single = load_run_spec(variant.single_config).experiment.gp

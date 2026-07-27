@@ -50,8 +50,8 @@ from .study import (
     load_study_spec,
 )
 
-ABLATION_STATE_SCHEMA_VERSION = 1
-ABLATION_TEST_SCHEMA_VERSION = 1
+ABLATION_STATE_SCHEMA_VERSION = 2
+ABLATION_TEST_SCHEMA_VERSION = 2
 
 CORE_METHODS: tuple[str, ...] = (
     "legacy",
@@ -84,7 +84,16 @@ MECHANISM_METHODS: tuple[str, ...] = (
     "rmtgp-full-f1-shuffle-r1",
     "rmtgp-full-f1-shuffle-r2",
 )
-TEST_GROUPS: tuple[str, ...] = ("residual", "replacement")
+FINAL_METHOD = "rmtgp-full-f1"
+EFFICIENCY_METHODS: tuple[str, ...] = (
+    "legacy",
+    "matched-replace",
+    "tr-rgp",
+    "ph-rgp",
+    FINAL_METHOD,
+)
+TEST_GROUPS: tuple[str, ...] = ("residual", "replacement", "final")
+ABLATION_TEST_GROUPS: tuple[str, ...] = ("residual", "replacement")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +131,7 @@ class AblationStudySpec:
     test_root_seed: int
     test_seeds: int
     partitions: tuple[str, ...]
+    ablation_partitions: tuple[str, ...]
     methods: tuple[AblationMethod, ...]
     variants: tuple[AblationVariant, ...]
     reuse: ReuseStudy
@@ -206,6 +216,7 @@ def load_ablation_spec(path: str | Path) -> AblationStudySpec:
         "test_root_seed",
         "test_seeds",
         "partitions",
+        "ablation_partitions",
         "methods",
         "variants",
         "reuse",
@@ -318,6 +329,16 @@ def load_ablation_spec(path: str | Path) -> AblationStudySpec:
         absent = set(partitions) - set(load_run_spec(variant.config).data.test)
         if absent:
             raise ValueError(f"{variant.config}: 缺少 partitions {sorted(absent)}")
+    ablation_partitions = tuple(
+        str(value) for value in payload["ablation_partitions"]
+    )
+    if ablation_partitions != ("tsp100_uniform", "tsp500_uniform"):
+        raise ValueError(
+            "ablation_partitions 必须按顺序精确为 "
+            "TSP100 uniform 与 TSP500 uniform"
+        )
+    if not set(ablation_partitions).issubset(partitions):
+        raise ValueError("ablation_partitions 必须是 partitions 的子集")
 
     phase = str(payload.get("phase", "pilot"))
     if phase != "pilot":
@@ -336,6 +357,7 @@ def load_ablation_spec(path: str | Path) -> AblationStudySpec:
         test_root_seed=int(payload["test_root_seed"]),
         test_seeds=test_seeds,
         partitions=partitions,
+        ablation_partitions=ablation_partitions,
         methods=methods,
         variants=tuple(variants),
         reuse=reuse,
@@ -456,6 +478,46 @@ def _combined_champion_id(
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
+def test_methods_for_group(
+    study: AblationStudySpec,
+    *,
+    partition: str,
+    group: str,
+) -> tuple[str, ...]:
+    """返回冻结测试组的方法集合，供任务验证与报告共享。"""
+
+    if group == "final":
+        if partition in study.ablation_partitions:
+            raise ValueError("final 组不得重复测试核心消融分区")
+        return (FINAL_METHOD,)
+    if group == "replacement":
+        if partition not in study.ablation_partitions:
+            raise ValueError("replacement 组仅允许核心消融分区")
+        return REPLACEMENT_METHODS
+    if group == "residual":
+        if partition not in study.ablation_partitions:
+            raise ValueError("residual 消融组仅允许核心消融分区")
+        source_partitions = set(load_study_spec(study.reuse.config).partitions)
+        methods = tuple(
+            method
+            for method in RESIDUAL_METHODS
+            if method != FINAL_METHOD or partition not in source_partitions
+        )
+        return (*methods, *MECHANISM_METHODS)
+    raise ValueError(f"未知 test group: {group}")
+
+
+def evaluated_methods_for_partition(
+    study: AblationStudySpec,
+    partition: str,
+) -> tuple[str, ...]:
+    """返回报告在一个分区中允许出现的方法，防止跨作用域推断。"""
+
+    if partition in study.ablation_partitions:
+        return (*CORE_METHODS, *MECHANISM_METHODS)
+    return (FINAL_METHOD,)
+
+
 def _program_entries(
     study: AblationStudySpec,
     *,
@@ -463,9 +525,24 @@ def _program_entries(
     partition: str,
     group: str,
 ) -> list[ProgramEntry]:
-    """构造一个 integration group 的训练方法与 post-hoc 机制 programs。"""
+    """构造一个测试组的 selected champions；从不测试 GP population。"""
 
     variant = _variant(study, variant_name)
+    expected_methods = test_methods_for_group(
+        study,
+        partition=partition,
+        group=group,
+    )
+    if group == "final":
+        return [
+            _load_program_entry(
+                study,
+                method=FINAL_METHOD,
+                variant=variant_name,
+                root_seed=root_seed,
+            )
+            for root_seed in variant.seeds
+        ]
     if group == "replacement":
         return [
             _load_program_entry(
@@ -478,14 +555,12 @@ def _program_entries(
             for root_seed in variant.seeds
         ]
     if group != "residual":
-        raise ValueError(f"未知 test group: {group}")
+        raise AssertionError("test_methods_for_group 已验证 group")
 
-    source_partitions = set(load_study_spec(study.reuse.config).partitions)
-    include_reused_full = partition not in source_partitions
     methods = [
         method
-        for method in RESIDUAL_METHODS
-        if method != "rmtgp-full-f1" or include_reused_full
+        for method in expected_methods
+        if method not in MECHANISM_METHODS
     ]
     entries = [
         _load_program_entry(
@@ -761,6 +836,123 @@ def _test_shard_valid(
     )
 
 
+def _reuse_final_from_legacy_campaign(
+    study: AblationStudySpec,
+    *,
+    variant_name: str,
+    partition: str,
+    entries: list[ProgramEntry],
+    expected_instances: int,
+    config: Any,
+    output: Path,
+) -> bool:
+    """从已完成的旧 packed 消融中只读提取 Full-F1，避免重复测试。
+
+    旧 campaign 中每条记录已具有独立 champion、instance 与 ACO seed
+    provenance。这里只过滤完整 aggregate；部分 shards 不迁移。
+    """
+
+    legacy_output = (
+        study.output_root
+        / "test"
+        / variant_name
+        / partition
+        / "residual"
+    )
+    legacy_records_path = legacy_output / "records.csv"
+    legacy_manifest_path = legacy_output / "evaluation_manifest.json"
+    if not legacy_records_path.is_file() or not legacy_manifest_path.is_file():
+        return False
+    try:
+        legacy_manifest = json.loads(
+            legacy_manifest_path.read_text(encoding="utf-8")
+        )
+        legacy_records = read_records([legacy_records_path])
+    except (OSError, TypeError, ValueError):
+        return False
+    if (
+        legacy_manifest.get("status") != "completed"
+        or FINAL_METHOD not in set(legacy_manifest.get("methods", []))
+        or legacy_manifest.get("test_seeds") != study.test_seeds
+        or legacy_manifest.get("instances") != expected_instances
+    ):
+        return False
+
+    expected_champions = {
+        (entry.gp_root_seed, entry.champion_id) for entry in entries
+    }
+    expected_roots = {root_seed for root_seed, _ in expected_champions}
+    selected = [
+        record for record in legacy_records if record.method == FINAL_METHOD
+    ]
+    expected_rows = expected_instances * study.test_seeds * len(entries)
+    keys = {
+        (
+            record.gp_root_seed,
+            record.instance_id,
+            record.seed,
+        )
+        for record in selected
+    }
+    if (
+        len(selected) != expected_rows
+        or len(keys) != expected_rows
+        or {record.gp_root_seed for record in selected} != expected_roots
+        or {
+            (record.gp_root_seed, record.champion_id)
+            for record in selected
+        }
+        != expected_champions
+        or {record.variant for record in selected} != {variant_name}
+        or {record.partition for record in selected} != {partition}
+    ):
+        return False
+
+    selected.sort(
+        key=lambda record: (
+            record.gp_root_seed,
+            record.instance_id,
+            record.seed,
+        )
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    merged = output / "records.csv"
+    write_records(selected, merged)
+    _atomic_json(
+        output / "evaluation_manifest.json",
+        {
+            "schema_version": ABLATION_TEST_SCHEMA_VERSION,
+            "status": "completed",
+            "study_id": study.study_id,
+            "variant": variant_name,
+            "partition": partition,
+            "group": "final",
+            "methods": [FINAL_METHOD],
+            "programs": len(entries),
+            "test_root_seed": study.test_root_seed,
+            "test_seeds": study.test_seeds,
+            "instances": expected_instances,
+            "rows": expected_rows,
+            "aco_config_hash": config.config_hash,
+            "baseline_behavior_hash": config.baseline_behavior_hash,
+            "backend_semantic": backend_semantic_id(
+                load_run_spec(_variant(study, variant_name).config)
+                .experiment.runtime.aco_backend
+            ),
+            "campaigns": [],
+            "record_provenance": {
+                "mode": "filtered-completed-packed-campaign",
+                "source_records": str(legacy_records_path),
+                "source_records_sha256": _sha256_file(legacy_records_path),
+                "source_manifest": str(legacy_manifest_path),
+                "source_manifest_sha256": _sha256_file(legacy_manifest_path),
+            },
+            "completed_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    return True
+
+
 def evaluate_ablation_group(
     study: AblationStudySpec,
     *,
@@ -798,7 +990,22 @@ def evaluate_ablation_group(
     merged = output / "records.csv"
     expected_instances = _expected_instances(study, spec, partition)
     expected_rows = expected_instances * study.test_seeds * len(entries)
+    expected_methods = sorted({entry.method for entry in entries})
     manifest_path = output / "evaluation_manifest.json"
+    if (
+        group == "final"
+        and not (merged.is_file() and manifest_path.is_file())
+        and _reuse_final_from_legacy_campaign(
+            study,
+            variant_name=variant_name,
+            partition=partition,
+            entries=entries,
+            expected_instances=expected_instances,
+            config=config,
+            output=output,
+        )
+    ):
+        return merged
     if merged.is_file() and manifest_path.is_file():
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -810,6 +1017,10 @@ def evaluate_ablation_group(
             manifest.get("status") == "completed"
             and manifest.get("rows") == expected_rows
             and len(records) == expected_rows
+            and manifest.get("group") == group
+            and manifest.get("methods") == expected_methods
+            and manifest.get("programs") == len(entries)
+            and manifest.get("test_seeds") == study.test_seeds
         ):
             return merged
 
@@ -962,7 +1173,7 @@ def evaluate_ablation_group(
             "variant": variant_name,
             "partition": partition,
             "group": group,
-            "methods": sorted({entry.method for entry in entries}),
+            "methods": expected_methods,
             "programs": len(entries),
             "test_root_seed": study.test_root_seed,
             "test_seeds": study.test_seeds,
@@ -1043,7 +1254,7 @@ def benchmark_ablation_efficiency(
             baseline_times[seed] = baseline.wall_time_sec
             baseline_metrics[seed] = dict(baseline.backend_metrics)
 
-        for method in CORE_METHODS:
+        for method in EFFICIENCY_METHODS:
             shard = shard_root / method / f"{partition}.json"
             if shard.is_file():
                 try:
@@ -1140,7 +1351,7 @@ def benchmark_ablation_efficiency(
             )
 
     summaries: list[dict[str, Any]] = []
-    for method in CORE_METHODS:
+    for method in EFFICIENCY_METHODS:
         for partition in batch_sizes:
             rows = [
                 row
@@ -1171,10 +1382,11 @@ def benchmark_ablation_efficiency(
     _atomic_json(
         target,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "completed",
             "study_id": study.study_id,
             "variant": variant_name,
+            "methods": list(EFFICIENCY_METHODS),
             "timing_scope": "isolated-warm-program-median",
             "repeats_per_champion": 3,
             "champions_per_method": 3,
@@ -1215,7 +1427,7 @@ def _training_artifact_valid(
 
 
 def build_ablation_tasks(study: AblationStudySpec) -> list[AblationTask]:
-    """构造 24 个单代预检、63 个训练和批量测试/报告任务。"""
+    """构造训练、核心消融与主方法最终测试的冻结任务矩阵。"""
 
     python = sys.executable
     tasks: list[AblationTask] = []
@@ -1336,45 +1548,53 @@ def build_ablation_tasks(study: AblationStudySpec) -> list[AblationTask]:
                     )
                 )
 
+    source_partitions = set(load_study_spec(study.reuse.config).partitions)
+    test_scopes = [
+        (partition, group)
+        for partition in study.ablation_partitions
+        for group in ABLATION_TEST_GROUPS
+    ]
+    test_scopes.extend(
+        (partition, "final")
+        for partition in study.partitions
+        if partition not in source_partitions
+    )
     for variant in study.variants:
-        for partition in study.partitions:
-            for group in TEST_GROUPS:
-                artifact = (
-                    study.output_root
-                    / "test"
-                    / variant.name
-                    / partition
-                    / group
-                    / "records.csv"
+        for partition, group in test_scopes:
+            artifact = (
+                study.output_root
+                / "test"
+                / variant.name
+                / partition
+                / group
+                / "records.csv"
+            )
+            tasks.append(
+                AblationTask(
+                    task_id=f"test-{variant.name}-{partition}-{group}",
+                    command=(
+                        python,
+                        "-m",
+                        "rmtgp_aco",
+                        "evaluate-ablation-study",
+                        "--study-config",
+                        str(study.source_path),
+                        "--variant",
+                        variant.name,
+                        "--partition",
+                        partition,
+                        "--group",
+                        group,
+                    ),
+                    artifact=artifact,
+                    kind="test",
+                    metadata=(
+                        ("variant", variant.name),
+                        ("partition", partition),
+                        ("group", group),
+                    ),
                 )
-                tasks.append(
-                    AblationTask(
-                        task_id=(
-                            f"test-{variant.name}-{partition}-{group}"
-                        ),
-                        command=(
-                            python,
-                            "-m",
-                            "rmtgp_aco",
-                            "evaluate-ablation-study",
-                            "--study-config",
-                            str(study.source_path),
-                            "--variant",
-                            variant.name,
-                            "--partition",
-                            partition,
-                            "--group",
-                            group,
-                        ),
-                        artifact=artifact,
-                        kind="test",
-                        metadata=(
-                            ("variant", variant.name),
-                            ("partition", partition),
-                            ("group", group),
-                        ),
-                    )
-                )
+            )
 
     for variant in study.variants:
         artifact = (
@@ -1448,7 +1668,23 @@ def _task_complete(task: AblationTask, study: AblationStudySpec) -> bool:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
-        return payload.get("status") == "completed"
+        expected_methods = sorted(
+            test_methods_for_group(
+                study,
+                partition=meta["partition"],
+                group=meta["group"],
+            )
+        )
+        return (
+            payload.get("status") == "completed"
+            and payload.get("variant") == meta["variant"]
+            and payload.get("partition") == meta["partition"]
+            and payload.get("group") == meta["group"]
+            and payload.get("methods") == expected_methods
+            and payload.get("programs")
+            == len(expected_methods) * len(_variant(study, meta["variant"]).seeds)
+            and payload.get("test_seeds") == study.test_seeds
+        )
     if task.kind == "efficiency":
         if not task.artifact.is_file():
             return False
@@ -1456,7 +1692,11 @@ def _task_complete(task: AblationTask, study: AblationStudySpec) -> bool:
             payload = json.loads(task.artifact.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
-        return payload.get("status") == "completed"
+        return (
+            payload.get("status") == "completed"
+            and payload.get("variant") == meta["variant"]
+            and payload.get("methods") == list(EFFICIENCY_METHODS)
+        )
     if task.kind == "report":
         return task.artifact.is_file()
     return False
@@ -1547,7 +1787,7 @@ def _parallel_task_units(
     *,
     kind: str,
 ) -> list[tuple[AblationTask, ...]]:
-    """生成双卡调度单元；测试同一数据分区的两组必须顺序共用一张卡。"""
+    """生成双卡单元；核心消融成对，最终主方法任务单独调度。"""
 
     selected = [task for task in tasks if task.kind == kind]
     if kind != "test":
@@ -1561,11 +1801,16 @@ def _parallel_task_units(
     units: list[tuple[AblationTask, ...]] = []
     for key, group_tasks in grouped.items():
         by_group = {task.meta()["group"]: task for task in group_tasks}
-        if set(by_group) != set(TEST_GROUPS):
+        groups = set(by_group)
+        if groups == set(ABLATION_TEST_GROUPS):
+            order = ABLATION_TEST_GROUPS
+        elif groups == {"final"}:
+            order = ("final",)
+        else:
             raise RuntimeError(
-                f"测试调度单元 {key} 未完整覆盖 {list(TEST_GROUPS)}"
+                f"测试调度单元 {key} 的 groups 非法: {sorted(groups)}"
             )
-        units.append(tuple(by_group[group] for group in TEST_GROUPS))
+        units.append(tuple(by_group[group] for group in order))
     return units
 
 
@@ -2118,6 +2363,12 @@ def export_ablation_contract(study: AblationStudySpec) -> dict[str, Any]:
         "test_root_seed": study.test_root_seed,
         "test_seeds": study.test_seeds,
         "partitions": list(study.partitions),
+        "ablation_partitions": list(study.ablation_partitions),
+        "champion_selection": {
+            "unit": "one_validation_selected_candidate_per_gp_run",
+            "gp_runs_per_method": 3,
+            "best_seed_selection": False,
+        },
         "methods": [asdict(method) for method in study.methods],
         "variants": [
             {

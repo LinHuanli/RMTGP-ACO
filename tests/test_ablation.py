@@ -18,6 +18,7 @@ from rmtgp_aco.ablation import (
     _expected_batches,
     _expected_instances,
     _parallel_task_units,
+    _program_entries,
     build_ablation_tasks,
     load_ablation_spec,
 )
@@ -28,6 +29,7 @@ from rmtgp_aco.baseline import (
     backend_semantic_id,
     baseline_key,
 )
+from rmtgp_aco.cli import build_parser
 from rmtgp_aco.config import ACOConfig, TransitionIntegration
 from rmtgp_aco.evaluation import EvaluationRecord
 from rmtgp_aco.manifest import load_manifest
@@ -118,11 +120,11 @@ def test_repository_ablation_contract_and_task_matrix() -> None:
     assert by_kind == {
         "preflight": 24,
         "train": 63,
-        "test": 42,
+        "test": 21,
         "efficiency": 3,
         "report": 1,
     }
-    assert len(tasks) == 133
+    assert len(tasks) == 112
     assert tasks[0].task_id == "preflight-as-legacy"
     assert tasks[-1].task_id == "report"
     assert all(
@@ -131,23 +133,56 @@ def test_repository_ablation_contract_and_task_matrix() -> None:
         if task.kind in {"preflight", "train"}
     )
     test_units = _parallel_task_units(tasks, kind="test")
-    assert len(test_units) == 21
-    assert all(len(unit) == 2 for unit in test_units)
+    assert len(test_units) == 15
+    assert sum(len(unit) == 2 for unit in test_units) == 6
+    assert sum(len(unit) == 1 for unit in test_units) == 9
     assert all(
-        {
-            (task.meta()["variant"], task.meta()["partition"])
-            for task in unit
-        }
-        == {
-            (
-                unit[0].meta()["variant"],
-                unit[0].meta()["partition"],
-            )
-        }
+        len(
+            {
+                (task.meta()["variant"], task.meta()["partition"])
+                for task in unit
+            }
+        )
+        == 1
         and {task.meta()["group"] for task in unit}
-        == {"residual", "replacement"}
+        in ({"residual", "replacement"}, {"final"})
         for unit in test_units
     )
+    assert study.ablation_partitions == (
+        "tsp100_uniform",
+        "tsp500_uniform",
+    )
+    assert len(
+        _program_entries(
+            study,
+            variant_name="as",
+            partition="tsp100_uniform",
+            group="residual",
+        )
+    ) == 27
+    assert len(
+        _program_entries(
+            study,
+            variant_name="as",
+            partition="tsp100_uniform",
+            group="replacement",
+        )
+    ) == 6
+    final_entries = _program_entries(
+        study,
+        variant_name="as",
+        partition="tsp500_cluster",
+        group="final",
+    )
+    assert len(final_entries) == 3
+    assert {entry.gp_root_seed for entry in final_entries} == {1001, 1002, 1003}
+    final_task = next(
+        task
+        for task in tasks
+        if task.task_id == "test-as-tsp500_cluster-final"
+    )
+    parsed = build_parser().parse_args(final_task.command[3:])
+    assert parsed.group == "final"
 
     spec = load_run_spec(study.variants[0].config)
     expected_tsplib = sum(
@@ -239,6 +274,7 @@ def test_ablation_pairing_and_factorial_estimands_are_exact(tmp_path) -> None:
         test_root_seed=9,
         test_seeds=3,
         partitions=("tiny",),
+        ablation_partitions=("tiny",),
         methods=(),
         variants=(
             AblationVariant(

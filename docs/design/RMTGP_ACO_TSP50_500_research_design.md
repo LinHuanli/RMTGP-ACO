@@ -1,6 +1,6 @@
 # RMTGP-ACO：面向 TSP50、TSP100 与 TSP500 的 Multi-Tree GP–ACO 研究设计
 
-> **文档状态**：Design v1.3 / Protocol A v0.5（2026-07-24 候选冻结）
+> **文档状态**：Design v1.4 / Protocol A v0.5（2026-07-27 pilot 测试口径修订）
 >
 > **研究对象**：对称二维 Euclidean TSP；Ant System（AS）、Ant Colony System（ACS）和 MAX–MIN Ant System（MMAS）
 >
@@ -12,6 +12,81 @@
 > `src/rmtgp_aco`
 
 ---
+
+## v1.4：selected-champion 测试与消融作用域
+
+本节优先于后文可能产生歧义的 pilot 测试描述，但不改变 ACO、GP、训练数据、
+fitness、primitive set 或搜索预算。修订只消除两个不必要的计算扩张：
+测试 GP population，以及把全部消融方法扩展到全部 OOD partitions。
+
+### 模型选择单位
+
+每个独立 GP run \(r\) 在完成 50 代搜索后，仅根据冻结的 selection
+validation 选择一个 champion：
+
+\[
+c_r^\star
+=\arg\min_{c\in\mathcal C_r}
+\widehat g_{\mathrm{selection}}(c).
+\]
+
+该 candidate 随后接受 holdout gate 与 CPU/FP64 audit，并以
+`selected_candidate.pkl` 锁定。正式测试集合为
+
+\[
+\{c_1^\star,c_2^\star,c_3^\star\}
+\]
+
+（确认性实验则为 30 个 runs），而不是每代 population 中的所有 individuals。
+三个 GP runs 均作为模型学习方差来源保留；禁止根据 test performance 再从
+三个 seeds 中挑选一个“最好 run”。因此“测试最好的 individual”严格表示
+“测试每个 run 内由 validation 预先选择的一个 champion”，不表示用测试集
+二次选模。
+
+### 最终测试与消融测试的分工
+
+主方法 RMTGP-Full-F1 的三个 locked champions 在下列全部分区做最终评测：
+
+\[
+\mathcal P_{\mathrm{final}}
+=\{
+\mathrm{TSP50\mbox{-}U},
+\mathrm{TSP100\mbox{-}U},
+\mathrm{TSP500\mbox{-}U},
+\mathrm{TSP1000\mbox{-}U},
+\mathrm{TSP500\mbox{-}C},
+\mathrm{TSP500\mbox{-}G},
+\mathrm{TSPLIB}_{\le500}
+\}.
+\]
+
+方法、表示、primitive 与机制消融只在
+
+\[
+\mathcal P_{\mathrm{abl}}
+=\{\mathrm{TSP100\mbox{-}U},\mathrm{TSP500\mbox{-}U}\}
+\]
+
+计算。前者给出训练分布内证据，后者给出规模外推证据；这已经足以回答
+residual vs replacement、双树 vs 单树、Core vs Full、F0 vs F1 以及
+drop/shuffle 机制问题。把所有消融扩到 cluster、Gaussian、TSPLIB、
+TSP50 和 TSP1000 会显著增加计算量，却不改变这些预注册 estimands。
+已经生成的历史全 OOD 消融 artifact 保留供 provenance 审计，但不得进入
+v1.4 的描述汇总、置信区间、Wilcoxon 或 Holm family。
+
+### 统计口径
+
+每个作用域内的配对键仍为
+
+\[
+(\text{GP root seed},\text{instance},\text{ACO seed}).
+\]
+
+三个 ACO seeds 先在 `GP run×instance` block 内聚合；层次 bootstrap 保留
+`GP run→instance→ACO seed` 三层变异。消融 contrasts 只跨
+\(\mathcal P_{\mathrm{abl}}\) 校正。非核心 OOD partitions 只报告 Full-F1
+相对 paired original ACO 的质量与鲁棒性描述，不能用于声称某个消融因素在
+该分布上的因果效应。
 
 ## v1.3 / Protocol A v0.5：融合 CUDA 与完整 MMAS 重启
 
@@ -3283,12 +3358,14 @@ RTX 4000 Ada；配置中的设备 0 始终表示进程内的逻辑 GPU0。因此
 继续。整个队列使用文件锁、PID、原子 state JSON 和逐任务日志，重复启动会被
 拒绝。
 
-## 31.3 锁定后的测试
+## 31.3 锁定后的 selected-champion 测试
 
-九个 selected candidates 在
+每个 ACO 变体的三个 GP runs 各自产生一个 validation-selected candidate；
+九个主方法 champions 在
 \(\{\mathrm{TSP50},\mathrm{TSP100},\mathrm{TSP500},
-\mathrm{TSP1000}\}\) uniform partitions 上测试，每个 instance 使用 3 个
-ACO seeds。测试 root seed 固定为 9001，并由
+\mathrm{TSP1000}\}\) uniform、TSP500 cluster、TSP500 Gaussian 和
+TSPLIB \(n\le500\) 上测试。每个 instance 使用 3 个 ACO seeds。测试 root
+seed 固定为 9001，并由
 
 \[
 s_{p,b,r}=H(9001,p,b,r,\texttt{TEST})
@@ -3302,19 +3379,33 @@ champions 共享；candidate 使用原子 batch shards，从而支持精确续�
 TSP1000 永远不参与训练、validation、候选选择或 gate，仅作为补充尺度外推。
 它不能被表述为主协议的模型选择结果。
 
+消融方法也遵守“一 run 一 champion”，但只在 TSP100-U 与 TSP500-U
+执行。Residual campaign 包含对应条件的 selected champions，replacement
+campaign 单独执行；campaign 中 program 维度绝不包含 GP population 的
+100 个 individuals。TSP50-U、TSP1000-U 和三个 OOD 分区只测试主方法
+Full-F1。
+
 ## 31.4 pilot 统计
 
-每个 variant×partition 分别报告 selected candidate、baseline ACO 与 gate
+每个 variant×partition 分别报告 selected champions、baseline ACO 与 gate
 后 deployed 行为，至少包括 mean/median gap、standard deviation、四分位数、
 win/tie/loss、worst-10% CVaR、reference-hit rate、anytime gap AUC、best
 iteration、墙钟时间和 throughput。Wilcoxon 以 GP-run×instance 为 paired
-block，先在 ACO seeds 内平均，并在每个 ACO 变体的四个测试尺度内作 Holm
-校正；效应量为 paired rank-biserial。置信区间使用 GP run、instance、ACO
-seed 三层 bootstrap，重复 10,000 次。
+block，先在 ACO seeds 内平均。消融 contrasts 仅在 TSP100-U 与 TSP500-U
+组成的预注册 family 内作 Holm 校正；效应量为 paired rank-biserial。
+置信区间使用 GP run、instance、ACO seed 三层 bootstrap，重复 10,000 次。
+其余分区只给出 Full-F1 相对原始 ACO 的锁定测试汇总。
 
 由于每个 ACO 变体仅有三个 GP runs，本阶段的 \(p\) 值与区间均为探索性描述。
 Residual vs replacement、双树 vs 单树以及 terminal/function set 的因果
 结论必须由上文预注册消融回答，不能从这九个主方法 runs 单独推断。
+
+## 31.5 节点容量敏感性的测试边界
+
+31/62 节点 × 单/双树容量实验同样只使用 TSP100-U 与 TSP500-U。每个
+`variant×method×capacity×GP root seed` 只测试一个 validation-selected
+champion；三个 roots 全部保留。该实验回答容量主效应、固定容量的结构效应
+与结构 × 容量交互，不重复主方法的完整 OOD 最终测试。
 
 ---
 

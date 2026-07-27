@@ -2549,7 +2549,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_ablation.add_argument("--partition", required=True)
     evaluate_ablation.add_argument(
         "--group",
-        choices=["residual", "replacement"],
+        choices=["residual", "replacement", "final"],
         required=True,
     )
     evaluate_ablation.set_defaults(

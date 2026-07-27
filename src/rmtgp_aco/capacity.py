@@ -275,8 +275,11 @@ def load_capacity_spec(path: str | Path) -> CapacityStudySpec:
         variants.append(variant)
 
     partitions = tuple(str(value) for value in payload["partitions"])
-    if partitions != ablation.partitions:
-        raise ValueError("capacity partitions 必须与源消融顺序和内容完全一致")
+    if partitions != ablation.ablation_partitions:
+        raise ValueError(
+            "capacity partitions 必须与源消融的核心 ablation_partitions "
+            "顺序和内容完全一致"
+        )
     test_root_seed = int(payload["test_root_seed"])
     test_seeds = int(payload["test_seeds"])
     if test_root_seed != ablation.test_root_seed or test_seeds != ablation.test_seeds:
@@ -648,11 +651,15 @@ def benchmark_capacity_efficiency(
     configure_runtime(spec.experiment.runtime)
     target = Path(output)
     shard_root = target.parent / f"{variant_name}-shards"
-    batch_sizes = {
+    available_batch_sizes = {
         "tsp50_uniform": 32,
         "tsp100_uniform": 32,
         "tsp500_uniform": 8,
         "tsp1000_uniform": 4,
+    }
+    batch_sizes = {
+        partition: available_batch_sizes[partition]
+        for partition in study.partitions
     }
     all_rows: list[dict[str, Any]] = []
     for partition, batch_size in batch_sizes.items():
@@ -1259,7 +1266,7 @@ def run_capacity_parallel(
     wait: bool = False,
     poll_seconds: int = 60,
 ) -> None:
-    """在多张 GPU 上按阶段运行 61 项容量实验，可等待源队列并断点恢复。"""
+    """在多张 GPU 上按阶段运行 46 项容量实验，可等待源队列并断点恢复。"""
 
     if not physical_devices:
         raise ValueError("并行 capacity study 至少需要一张物理 GPU")
@@ -1507,6 +1514,11 @@ def export_capacity_contract(study: CapacityStudySpec) -> dict[str, Any]:
         "test_root_seed": study.test_root_seed,
         "test_seeds": study.test_seeds,
         "partitions": list(study.partitions),
+        "champion_selection": {
+            "unit": "one_validation_selected_candidate_per_gp_run",
+            "gp_runs_per_method": 3,
+            "best_seed_selection": False,
+        },
         "variants": [
             {
                 "name": variant.name,

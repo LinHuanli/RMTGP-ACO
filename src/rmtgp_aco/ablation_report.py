@@ -20,6 +20,7 @@ from .ablation import (
     CORE_METHODS,
     MECHANISM_METHODS,
     AblationStudySpec,
+    evaluated_methods_for_partition,
     export_ablation_contract,
     method_run_path,
 )
@@ -94,7 +95,7 @@ def _write_dict_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _load_records(study: AblationStudySpec) -> list[EvaluationRecord]:
-    """合并新消融结果与主 study 的 Full-F1 uniform 结果并严格验重。"""
+    """按预注册作用域合并结果，忽略历史全 OOD 消融 artifact。"""
 
     source_partitions = set(load_study_spec(study.reuse.config).partitions)
     all_records: list[EvaluationRecord] = []
@@ -102,19 +103,41 @@ def _load_records(study: AblationStudySpec) -> list[EvaluationRecord]:
         expected_roots = set(variant.seeds)
         for partition in study.partitions:
             context: list[EvaluationRecord] = []
-            for group in ("residual", "replacement"):
-                path = (
+            if partition in study.ablation_partitions:
+                paths = [
                     study.output_root
                     / "test"
                     / variant.name
                     / partition
                     / group
                     / "records.csv"
-                )
+                    for group in ("residual", "replacement")
+                ]
+            elif partition in source_partitions:
+                paths = [
+                    study.reuse.root
+                    / "test"
+                    / variant.name
+                    / partition
+                    / "records.csv"
+                ]
+            else:
+                paths = [
+                    study.output_root
+                    / "test"
+                    / variant.name
+                    / partition
+                    / "final"
+                    / "records.csv"
+                ]
+            for path in paths:
                 if not path.is_file():
-                    raise FileNotFoundError(f"消融测试结果缺失: {path}")
+                    raise FileNotFoundError(f"作用域内测试结果缺失: {path}")
                 context.extend(read_records([path]))
-            if partition in source_partitions:
+            if (
+                partition in study.ablation_partitions
+                and partition in source_partitions
+            ):
                 reused = (
                     study.reuse.root
                     / "test"
@@ -125,16 +148,17 @@ def _load_records(study: AblationStudySpec) -> list[EvaluationRecord]:
                 context.extend(read_records([reused]))
 
             methods = {record.method for record in context}
-            if methods != set(ALL_EVALUATED_METHODS):
+            expected_methods = evaluated_methods_for_partition(study, partition)
+            if methods != set(expected_methods):
                 raise ValueError(
                     f"{variant.name}/{partition}: methods={sorted(methods)}，"
-                    f"预期 {sorted(ALL_EVALUATED_METHODS)}"
+                    f"预期 {sorted(expected_methods)}"
                 )
             if {record.variant for record in context} != {variant.name}:
                 raise ValueError(f"{variant.name}/{partition}: variant provenance 错误")
             if {record.partition for record in context} != {partition}:
                 raise ValueError(f"{variant.name}/{partition}: partition provenance 错误")
-            for method in ALL_EVALUATED_METHODS:
+            for method in expected_methods:
                 roots = {
                     record.gp_root_seed
                     for record in context
@@ -327,7 +351,7 @@ def _quality_summaries(
                 for record in records
                 if record.variant == variant.name and record.partition == partition
             ]
-            for method in ALL_EVALUATED_METHODS:
+            for method in evaluated_methods_for_partition(study, partition):
                 selected = [record for record in context if record.method == method]
                 summaries.append(
                     _quality_row(
@@ -373,7 +397,10 @@ def _tsplib_band_summaries(
             ]
             if not band_records:
                 continue
-            for method in ALL_EVALUATED_METHODS:
+            for method in evaluated_methods_for_partition(
+                study,
+                "tsplib_le500",
+            ):
                 row = _quality_row(
                     variant=variant.name,
                     partition=f"tsplib:{band}",
@@ -899,7 +926,7 @@ def _paired_statistics(
     factorial_rows: list[dict[str, Any]] = []
 
     for variant in study.variants:
-        for partition in study.partitions:
+        for partition in study.ablation_partitions:
             context = [
                 record
                 for record in records
@@ -1181,14 +1208,17 @@ def _render_report(
             " ACO×方法使用 3 个独立 GP root seeds；GP population=100、"
             "50 generations；每代 32 个训练实例；每次 ACO simulation 为"
             " 32 ants×500 iterations。RMTGP-Full-F1 的 9 个已锁定 run 从"
-            "主 study 逐文件哈希复用，另外训练 63 个 run。"
+            "主 study 逐文件哈希复用，另外训练 63 个 run。每个 run 仅由"
+            " validation 选择一个 `selected_candidate`；三个 GP runs 全部"
+            "保留，禁止再挑选其中表现最好的一次。"
         ),
         "",
         (
-            "最终测试包含 TSP50/100/500/1000 uniform、TSP500 cluster、"
-            "TSP500 Gaussian 与 TSPLIB n≤500；每个 instance 使用 3 个"
-            "与 GP seed 解耦的 paired ACO seeds。TSP1000 与全部 OOD 数据"
-            "只用于锁定后测试，不参与训练、选择或 gate。"
+            "RMTGP-Full-F1 的最终测试包含 TSP50/100/500/1000 uniform、"
+            "TSP500 cluster、TSP500 Gaussian 与 TSPLIB n≤500；核心方法、"
+            "residual/replacement、terminal/function 与 post-hoc 机制"
+            "消融只在预注册的 TSP100-U 和 TSP500-U 上统计。历史目录中"
+            "其他分区的全消融结果不进入本报告。"
         ),
         "",
         (
@@ -1202,7 +1232,8 @@ def _render_report(
         (
             "这是 3-seed pilot。方向、区间和 p 值用于筛查机制与估计方差，"
             "不能替代冻结配置后的 30-run confirmatory experiment，也不能"
-            "仅凭单个 partition 的负均值宣称普遍因果优势。"
+            "把最优 GP seed 当作方法性能，或把核心分区消融外推为全部 OOD"
+            "分布上的普遍因果优势。"
         ),
         "",
         "## 方法与可识别问题",
@@ -1220,7 +1251,8 @@ def _render_report(
             "Residual 的直接 estimand 是 TR-RGP−Matched-Replace：二者都是"
             "单 transition tree，使用同一 Full/F1 primitives、相同节点总预算、"
             "相同 schedule 与 baseline，仅 integration 不同。双树增益要求"
-            " Full-F1 同时优于 TR-RGP 与 PH-RGP；不能只比较 Full-F1 与 ACO。"
+            " Full-F1 同时优于 TR-RGP 与 PH-RGP；这些 estimands 仅定义于"
+            " TSP100-U 与 TSP500-U，不能只比较 Full-F1 与 ACO。"
         ),
         "",
         "## 训练与 validation",
@@ -1418,8 +1450,9 @@ def _render_report(
             "",
             (
                 "建议表述规则：若某 contrast 的均值为负、95% CI 上界低于 0，"
-                "且跨 GP seeds、尺度与分布方向一致，可表述为“本 pilot 提供"
-                "一致支持”；否则只能表述为混合证据或未观察到稳定改善。"
+                "且在三个 GP runs 与两个预注册核心分区方向一致，可表述为"
+                "“本 pilot 提供一致支持”；否则只能表述为混合证据或未观察"
+                "到稳定改善。"
                 "最终论文的显著性主张应等待 30-run confirmatory experiment。"
             ),
             "",
@@ -1428,8 +1461,8 @@ def _render_report(
             "- `training_runs.csv`：72 个 selected champions、表达式、节点和 gate",
             "- `training_summary.csv`：variant×method 训练汇总",
             "- `training_validation_curves_all.csv` 与 `..._aggregate.csv`",
-            "- `quality_summary.csv`：全部核心方法、post-hoc 方法与原始 ACO",
-            "- `tsplib_size_band_summary.csv`：TSPLIB 三个预定义规模带",
+            "- `quality_summary.csv`：主方法全分区与核心分区消融汇总",
+            "- `tsplib_size_band_summary.csv`：主方法的 TSPLIB 预定义规模带",
             "- `primary_contrasts.csv`：RQ1/RQ2/RQ3 与上一篇 baseline",
             "- `factorial_contrasts.csv`：Core/Full × F0/F1",
             "- `mechanism_contrasts.csv`：drop-tree 与 shuffled pairing",
@@ -1474,7 +1507,7 @@ def generate_ablation_report(study: AblationStudySpec) -> Path:
     _write_dict_csv(output / "rq_evidence_audit.csv", rq_audit)
 
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
         "study": export_ablation_contract(study),
         "git": git_state(Path.cwd()),
@@ -1488,6 +1521,11 @@ def generate_ablation_report(study: AblationStudySpec) -> Path:
             "holm_family": "aco_variant_x_research_question_family",
             "bootstrap_hierarchy": ["gp_run", "instance", "aco_seed"],
             "bootstrap_replicates": study.bootstrap_replicates,
+            "champion_selection": "one_validation_selected_candidate_per_gp_run",
+            "best_gp_seed_selection": False,
+            "final_test_partitions": list(study.partitions),
+            "primary_ablation_partitions": list(study.ablation_partitions),
+            "legacy_full_ood_ablation_artifacts": "excluded_from_inference",
             "tsp1000_role": "locked-test-only-supplementary-extrapolation",
             "quality_timing": "excluded_batched_campaign_allocation",
             "efficiency_timing": "isolated-warm-program",

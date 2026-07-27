@@ -1,18 +1,13 @@
 # 31/62 节点 × 单/双树的纯 TSP100 三种子容量敏感性 pilot。
-study_id: tsp100-capacity-sensitivity-3seed-v1
+study_id: tsp100-capacity-sensitivity-3seed-v2-core-partitions
 output_root: runs/tsp100-capacity-sensitivity-3seed
 phase: pilot
 
 test_root_seed: 9001
 test_seeds: 3
 partitions:
-  - tsp50_uniform
   - tsp100_uniform
   - tsp500_uniform
-  - tsp1000_uniform
-  - tsp500_cluster
-  - tsp500_gaussian
-  - tsplib_le500
 
 variants:
   as:
