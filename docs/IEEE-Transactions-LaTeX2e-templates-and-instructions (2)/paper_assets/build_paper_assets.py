@@ -246,13 +246,13 @@ def plot_training_curves(
             generation,
             train_median,
             color=COLORS["candidate"],
-            label="Training",
+            label="Train (generation-best)",
         )
         axis.plot(
             generation,
             validation_median,
             color=COLORS["validation"],
-            label="Validation",
+            label="Validation (same program)",
         )
         axis.plot(
             generation,

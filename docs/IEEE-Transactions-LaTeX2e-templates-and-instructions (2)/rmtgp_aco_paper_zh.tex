@@ -317,6 +317,94 @@ MMAS 按原调度产生一个事件。
 零输出严格恢复原始更新。
 该残差不会改变 ACS 局部更新、MMAS 上下界或 MMAS 重启逻辑。
 
+\subsection{残差强度的设置}
+
+两个残差接口使用同一个强度 \(\gamma=1/3\)。
+一般地，残差乘数可写为
+\begin{equation}
+ m(y)=1+\gamma\tanh(y),\qquad
+ 1-\gamma\leq m(y)\leq1+\gamma .
+ \label{eq:residual-radius-zh}
+\end{equation}
+\(\gamma<1\) 可以保证乘数为正。
+当 \(\gamma=1/3\) 时，单次乘数位于 \(2/3\) 和 \(4/3\) 之间。
+两个候选获得的残差乘数之比最多为 2。
+在概率或信息素份额重新归一化后，每个原始份额最多变为原来的
+\(1/2\) 至 2 倍。
+这个范围允许 GP 改变相对偏好。
+它同时保留原规则的主导作用。
+
+\(\gamma=1/3\) 是实验前固定的保守中间值。
+它不是在测试集上选择的最优值。
+例如，\(\gamma=0.1\) 只能产生较弱修正。
+\(\gamma=0.5\) 则允许两个候选之间产生 3 倍的相对修正。
+本文对两棵树使用相同的 \(\gamma\)。
+这样可以减少一个混杂因素。
+当前消融不把 \(\gamma\) 作为研究变量。
+后续可用 \(\{0.1,1/3,0.5\}\) 做独立敏感性分析。
+
+\subsection{终端设计原则与上一篇工作的区别}
+
+上一篇 GP-ACO 的基础终端是信息素浓度和距离
+\cite{lin2025gpaco}。
+其扩展配置还加入候选集合上的平均信息素、平均距离、城市总数和
+未访问城市数。
+这些终端适合直接生成完整状态转移分数。
+本文没有原样复制该集合。
+原因是本文的树只学习残差。
+原始分数 \(s^0=\tau^\alpha\eta^\beta\) 已经保留了信息素和距离的主体关系。
+残差树不需要再次从绝对信息素和绝对距离重建该关系。
+
+\begin{table*}[t]
+\caption{上一篇 GP-ACO 终端与本文终端的关系}
+\label{tab:terminal-comparison-zh}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{L{35mm}L{58mm}L{78mm}}
+\toprule
+上一篇工作的输入 & 本文的对应信息 & 设计原因\\
+\midrule
+信息素浓度、距离 &
+\texttt{RTau}、\texttt{REta}，以及保留的原始分数 \(s^0\) &
+保留 ACO 的绝对分数结构。树只观察候选集合内的相对强弱。\\
+候选的平均信息素、平均距离 &
+\texttt{RTau}/\texttt{REta} 的组内标准化，以及
+\texttt{BaseConf}/\texttt{Entropy} &
+均值和尺度已进入标准化。后两个终端直接描述原始选择分布的集中程度。\\
+城市总数、未访问城市数 &
+\texttt{ConstructProg}、\texttt{DistRank} 和 \texttt{NNRank} &
+使用比例或名次代替原始计数。输入范围不随 TSP 规模线性变化。\\
+无信息素更新专用终端 &
+\texttt{EdgeEta}、\texttt{EdgeTau}、\texttt{ColonyFreq} 和
+\texttt{SourceQuality} &
+第二棵树在增强事件上运行。它需要边、蚁群共识和来源路线质量信息。\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+表~\ref{tab:terminal-comparison-zh} 表示信息角色的对应关系。
+它不表示两组终端在代数上等价。
+本文主动去掉绝对均值和原始城市计数。
+这些值会随信息素阶段和问题规模变化。
+原始分数和 ACO 控制状态仍保留这些影响。
+本文的假设是相对输入更容易跨规模迁移。
+Legacy-GP 对照用于检查不同表示的总体结果，但不能单独归因到某一个终端。
+
+本文使用四个设计原则。
+第一，终端只包含决策时可得到的信息。
+参考路线和参考长度不进入终端。
+第二，连续量尽量使用相对值、名次或进度比例。
+这样可以减小 TSP 规模和 ACO 阶段引起的分布漂移。
+第三，终端需要覆盖“局部边质量、原算法置信度、搜索阶段和群体反馈”
+四类信息。
+第四，终端数量必须能通过受控消融检验。
+因此，本文预先定义较小的 Core 集合和较完整的 Full 集合。
+本文不预设 Full 一定更好。
+Core/Full 实验只能识别终端组的增量作用。
+它不能证明 Core 已经最小，也不能给出每个终端的独立因果效应。
+
 \subsection{状态转移终端集合}
 
 所有连续终端都转为有界的相对值。
@@ -387,6 +475,17 @@ Full\\
 \end{tabular}
 \end{table*}
 
+\texttt{RTau} 和 \texttt{REta} 给出原始 ACO 两类证据的相对强弱。
+\texttt{BaseConf} 直接表示原始规则对单个候选的信心。
+\texttt{DistRank} 提供对尺度不敏感的局部几何次序。
+这四个量组成 Core。
+\texttt{Entropy} 描述整个选择分布是否含糊。
+\texttt{ConstructProg} 区分路线构造的早期和后期。
+\texttt{ACOProg} 区分整个搜索的早期和后期。
+\texttt{Stagnation} 表示最近是否缺少改进。
+后四个量提供上下文，但也增加搜索空间。
+因此，它们只属于 Full，并由 RQ4 检验其必要性。
+
 \subsection{信息素终端集合}
 
 表~\ref{tab:pheromone-terminals-zh} 给出信息素终端。
@@ -444,6 +543,15 @@ Full\\
 \bottomrule
 \end{tabular}
 \end{table*}
+
+\texttt{EdgeEta}、\texttt{EdgeTau} 和 \texttt{NNRank} 描述被增强边本身。
+\texttt{SourceQuality} 描述该边来自哪一条路线。
+这四个量组成 Core。
+\texttt{ColonyFreq} 描述蚁群是否重复使用该边。
+\texttt{ACOProg} 和 \texttt{Stagnation} 描述当前搜索阶段。
+后三个量属于 Full。
+该划分使 Core 同时包含几何、信息素和来源质量。
+Full 再加入群体与时间信息。
 
 两个终端集合都包含常数 \(-1,-0.5,0,0.5,1\)。
 它们还包含一个从 \(U[-1,1]\) 采样的随机常数。
@@ -528,6 +636,18 @@ Legacy-GP 使用原研究的保护除法。
 Matched-Replace 使用 Full 终端和 F1 函数。
 它将树输出经过截断和 softplus 后直接作为完整转移分数。
 
+F0 提供加、减、乘和连续保护除法。
+它可以形成平滑的低阶组合。
+F1 增加 \texttt{MIN}、\texttt{MAX} 和 \texttt{ABS}。
+这些函数可以形成简单的分段规则。
+本文不加入指数、对数和三角函数。
+终端已经完成对数变换和有界标准化。
+残差接口也会使用 \(\tanh\)。
+再次加入这些函数会扩大等价表达式空间，并增加数值风险。
+本文也不加入显式条件分支。
+\texttt{MIN} 和 \texttt{MAX} 已能表达简单门控，并且更适合融合执行。
+F0/F1 因子实验用于检查新增函数是否确有贡献。
+
 \subsection{进化过程与适应度}
 
 联合种群包含四种初始化模式。
@@ -603,9 +723,11 @@ GPU 编译器还会合并行为相同的程序。
     \STATE 载入计划中的 32 个 TSP100 训练实例
     \STATE 全部个体共享同一 ACO 种子
     \STATE 评估唯一程序并计算式~\eqref{eq:fitness-zh}
+    \STATE 记录本代适应度最小的个体，并在固定 selection 集上监测它
     \STATE 每 5 代保存前 5 个程序
     \STATE 使用强类型算子生成下一代
 \ENDFOR
+\STATE 将最后一代前 5 个程序加入候选池，并按结构去重
 \STATE 在 32 个选择实例上用一个种子筛选检查点
 \STATE 对前 5 个候选使用三个配对种子重新评估
 \STATE 在最优值 0.01 个百分点内选择更小程序
@@ -773,6 +895,82 @@ MMAS & 重启停滞上限 & 250\\
 \end{tabular}
 \end{table}
 
+表~\ref{tab:parameter-rationale-zh} 说明参数来源。
+这些参数没有使用最终测试集调优。
+GP 搜索参数主要继承上一篇工作。
+这样可以减少与 Legacy-GP 比较时的预算差异。
+ACO 参数在所有候选和 baseline 之间保持一致。
+
+\begin{table*}[t]
+\caption{主要参数的设置依据及其控制作用}
+\label{tab:parameter-rationale-zh}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.14}
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{L{35mm}L{33mm}L{66mm}L{37mm}}
+\toprule
+参数组 & 数值 & 设置依据 & 实验中的作用\\
+\midrule
+蚂蚁数 / ACO 迭代数 &
+\(32/500\) &
+32 只蚂蚁兼顾搜索多样性与批量执行，并对应一个 CUDA warp。
+500 次迭代是三个变体共用的正式预算。 &
+使 AS、ACS、MMAS 和所有 GP 个体使用相同的蚁群规模与迭代预算。\\
+候选列表 / \(\alpha,\beta\) &
+\(20/(1,2)\) &
+采用 ACOTSP 风格的候选机制和常用的启发式权重。
+候选失效时检查全部可行城市。 &
+保留可识别的 ACO 基线，不让 GP 改变基础预算。\\
+变体专用参数 &
+表~\ref{tab:variant-parameters-zh} &
+按 ACOTSP 1.03 的 AS、ACS 和 MMAS 语义固定。
+这些值不对 GP 个体单独调节。 &
+保证配对比较只改变学习规则。\\
+残差强度 &
+\(1/3,1/3\) &
+由式~\eqref{eq:residual-radius-zh} 给出正值和至多 2 倍的相对修正。
+实验前固定。 &
+限制破坏性修改，并使零树严格恢复 baseline。\\
+局部搜索 &
+关闭 &
+本研究分析状态转移和信息素规则。
+局部搜索会引入另一个强优化算子。 &
+隔离所研究机制。\\
+GP 种群 / 代数 / 算子 &
+\(100/50\)，\(0.80/0.15/0.05\) &
+继承上一篇 GP-ACO 的主要进化配置。
+精英数和锦标赛大小也保持为 10 和 4。 &
+提高与 Legacy-GP 的可比性。本文不声称这些值全局最优。\\
+深度 / 总节点预算 &
+\(5/31\) &
+控制表达式膨胀。
+单树和双树共享同一总预算。另做 62 节点容量实验。 &
+把结构比较与语法容量分开。\\
+每代实例 / 配对种子 &
+\(32/1\) &
+同代个体共享 32 个实例和一个 ACO 种子。
+每代换用新实例。 &
+用随机小批量覆盖 1,600 个训练实例，并降低个体比较噪声。\\
+Selection / gate &
+\(32/32\)，\(1/3\) 个种子 &
+候选筛选和独立 gate 使用不重叠实例。
+一个种子用于低成本筛选，三个种子用于最终选择。 &
+分离搜索、模型选择和部署审计。\\
+GP 运行 / 测试种子 &
+\(3/3\) &
+当前阶段使用三个独立进化运行。
+每个测试实例使用三个独立 ACO 种子。 &
+提供先导方差估计；不作为充分的正式重复数。\\
+搜索 / 报告精度 &
+FP32 / FP64 &
+GPU 用 FP32 提高吞吐量。
+入选路线长度在 CPU 上用 FP64 重算。 &
+把大规模搜索速度与最终计量精度分开。\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
 AS 的 GP 根种子为 1001--1003。
 ACS 的根种子为 2001--2003。
 MMAS 的根种子为 3001--3003。
@@ -811,6 +1009,35 @@ gate 部署结果是另一个操作性指标。
 当前只有三个独立 GP 运行。
 因此，显著性检验和区间只作描述性分析。
 正式确认实验计划使用 30 个独立 GP 运行。
+
+\subsection{进化曲线与最终测试口径}
+
+训练曲线不使用种群适应度的中位数。
+对每个独立 GP 运行和每一代，先选择该代适应度最小的个体。
+若适应度相同，则选择节点更少的个体。
+训练数据点是这个“代最佳个体”在该代 32 个训练实例上的平均参考差距。
+由于每代使用新的实例批量，该曲线适合观察搜索过程。
+不同代的数据点不是在同一个样本上测得。
+因此，不应把训练曲线的短期下降解释为严格的泛化改进。
+
+验证数据点使用同一个代最佳个体。
+它在固定的 32 个 selection 实例和固定的筛选种子上重新评估。
+验证曲线没有使用该代种群的中位数，也没有使用截至该代的历史最优值。
+对于 AS、ACS 和 MMAS，先分别得到三个独立 GP 运行的曲线。
+图中实线是同一代三个运行的中位数。
+阴影是三个运行的最小值和最大值。
+baseline 虚线是在相同固定验证实例和种子上的原始 ACO 结果。
+
+最终测试不直接使用最后一代个体。
+每 5 代的前 5 个个体与最后一代前 5 个个体组成候选池。
+结构重复的候选先被删除。
+候选经过一个种子的筛选、三个种子的复评和独立 gate。
+每个 GP 运行最终只产生一个入选程序。
+本文把它称为该运行的 champion。
+三个 GP 运行产生的三个 champion 全部进入科学测试。
+本文不会从三个 GP 运行中再选择测试表现最好的一个。
+每个 champion 在每个测试实例上运行三个独立 ACO 种子。
+测试集只用于最终计量，不参与个体选择。
 
 \section{工程实现与加速}
 
@@ -934,7 +1161,7 @@ Full-F1 列是学习方法的参考差距。
 \(\Delta g\) 为 Full-F1 减去 baseline。
 负值表示 Full-F1 更好。
 
-\begin{table*}[t]
+\begin{table*}[!t]
 \caption{已完成的 uniform 测试结果。区间是 \(\Delta g\) 的分层 bootstrap 95\% 区间。胜/平/负以百分比报告。}
 \label{tab:main-results-zh}
 \centering
@@ -948,17 +1175,10 @@ ACO & \(n\) & Baseline gap (\%) & Full-F1 gap (\%) & \(\Delta g\) (百分点) & 
 \end{tabular}
 \end{table*}
 
-\begin{figure*}[t]
-\centering
-\includegraphics[width=\textwidth]{training_validation_curves.pdf}
-\caption{TSP100 训练与验证曲线。曲线为三个独立 GP 运行的中位数。阴影为最小值和最大值。每代使用新的训练批量。图内坐标保留英文。}
-\label{fig:training-curves-zh}
-\end{figure*}
-
-\begin{figure*}[t]
+\begin{figure*}[!t]
 \centering
 \includegraphics[width=\textwidth]{main_gap_delta.pdf}
-\caption{Full-F1 与 baseline ACO 的参考差距之差。误差线为分层 bootstrap 95\% 区间。负值支持 Full-F1。图内坐标保留英文。}
+\caption{主结果：Full-F1 与 baseline ACO 的参考差距之差。误差线为分层 bootstrap 95\% 区间。负值支持 Full-F1。图内坐标保留英文。}
 \label{fig:main-delta-zh}
 \end{figure*}
 
@@ -983,11 +1203,22 @@ MMAS 在 TSP100 上从 4.1088\% 降至 1.8106\%。
 当前 MMAS TSP100 的胜率为 99.2\%。
 当前 MMAS TSP500 和 TSP1000 的胜率为 100\%。
 
+\subsubsection{进化过程诊断}
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{training_validation_curves.pdf}
+\caption{TSP100 训练与验证曲线。每个运行的训练点是当前代最佳个体在该代新训练批量上的结果。验证点是同一个体在固定 selection 集上的结果。实线为三个独立 GP 运行的中位数。阴影为最小值和最大值。图内坐标保留英文。}
+\label{fig:training-curves-zh}
+\end{figure*}
+
 图~\ref{fig:training-curves-zh} 中的训练曲线有明显噪声。
 原因是每一代使用新的训练批量。
 验证曲线也不保证单调下降。
 因此，最后一代不一定是最佳检查点。
 独立的候选选择过程是必要的。
+曲线中的“最佳”只发生在每一代内部。
+最终测试仍使用验证流程选出的 champion。
 
 \textbf{RQ1 的当前答案：}
 在全部 12 个已完成的先导比较中，Full-F1 的平均参考差距都低于对应的原始 ACO。
