@@ -834,9 +834,10 @@ GPU 编译器还会合并行为相同的程序。
 \subsection{研究问题}
 
 表~\ref{tab:rq-zh} 给出本文需要回答的研究问题。
-RQ1、RQ2、RQ4--RQ7 已有完整的三种子先导结果。
+RQ1、RQ2、RQ4--RQ6 已有完整的三种子先导结果。
 RQ3 的 31 节点比较已经完成。
 31/62 节点容量敏感性仍需单独报告。
+RQ7 的融合训练基准已经完成，单程序部署计时仍在运行。
 
 \begin{table*}[t]
 \caption{研究问题、对照方法和当前状态}
@@ -854,7 +855,8 @@ RQ3 & 相同总节点预算下，双树是否优于单树？ & Full-F1 与独立
 RQ4 & 改进是否依赖 Full 终端或 F1 函数？ & Core/Full 与 F0/F1 的 \(2\times2\) 因子实验 & 已完成\\
 RQ5 & 两棵树之间是否存在联合适应？ & 删除一棵树，以及跨 GP 运行打乱树配对 & 已完成\\
 RQ6 & TSP100 训练的程序能否迁移到其他规模和分布？ & TSP50/500/1000，以及 cluster、Gaussian、TSPLIB & 已完成\\
-RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 GPU 与并行 campaign & 已完成\\
+RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 GPU 与并行 campaign &
+训练已完成；部署计时中\\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -1343,35 +1345,34 @@ MMAS 在 TSP100 上从 4.1088\% 降至 1.8106\%。
 
 \subsection{RQ2：残差与完整替换}
 
-\begin{table*}[!t]
-\caption{Residual、双树和单树的配对差值。每个单元格为均值差
-[95\% 分层 bootstrap 区间]，单位为百分点。负值表示列标题中的前项更好。}
-\label{tab:ablation-primary-zh}
+\begin{table}[!t]
+\caption{Residual 与完整替换的配对差值。
+单元格为均值差 [95\% 分层 bootstrap 区间]，单位为百分点。
+负值表示 residual 更好。}
+\label{tab:residual-effects-zh}
 \centering
 \scriptsize
-\setlength{\tabcolsep}{3pt}
-\resizebox{\textwidth}{!}{%
-\begin{tabular}{llrrr}
+\setlength{\tabcolsep}{2.5pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llr}
 \toprule
-ACO & Test &
-TR-RGP \(-\) Matched-Replace &
-Full-F1 \(-\) TR-RGP &
-Full-F1 \(-\) PH-RGP\\
+ACO & Test & TR-RGP \(-\) Matched-Replace\\
 \midrule
-\input{paper_assets/ablation_primary_rows.tex}%
+\input{paper_assets/residual_effect_rows.tex}%
 \end{tabular}}
-\end{table*}
+\end{table}
 
-\begin{figure*}[!t]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=\textwidth]{ablation_primary_forest.pdf}
-\caption{Residual 接口与双树结构的主要配对差值。
+\includegraphics[width=\columnwidth]{residual_effects.pdf}
+\caption{Residual 接口与完整替换的配对差值。
 误差线为 95\% 分层 bootstrap 区间。
-负值支持图中前项。图内坐标保留英文。}
-\label{fig:ablation-primary-zh}
-\end{figure*}
+负值支持 residual。图内坐标保留英文。}
+\label{fig:residual-effects-zh}
+\end{figure}
 
-表~\ref{tab:ablation-primary-zh} 的第一项是本 RQ 的直接 estimand。
+表~\ref{tab:residual-effects-zh} 和
+图~\ref{fig:residual-effects-zh} 给出本 RQ 的直接 estimand。
 TR-RGP 与 Matched-Replace 都只有一棵状态转移树。
 两者共享 Full 终端、F1 函数、31 个节点预算、训练数据和随机计划。
 它们只改变树输出的接入方式。
@@ -1411,7 +1412,34 @@ MMAS 的证据不确定。
 
 \subsubsection{固定 31 节点的结构比较}
 
-表~\ref{tab:ablation-primary-zh} 的后两项比较 Full-F1、TR-RGP 和 PH-RGP。
+\begin{table}[!t]
+\caption{固定 31 个总节点时，双树与独立训练单树的配对差值。
+单元格为均值差 [95\% 分层 bootstrap 区间]，单位为百分点。
+负值表示双树更好。}
+\label{tab:architecture-b31-zh}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{2.5pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llrr}
+\toprule
+ACO & Test & Full-F1 \(-\) TR-RGP & Full-F1 \(-\) PH-RGP\\
+\midrule
+\input{paper_assets/architecture_effect_rows.tex}%
+\end{tabular}}
+\end{table}
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{architecture_effects.pdf}
+\caption{固定 31 个总节点时，双树与两种独立训练单树的配对差值。
+误差线为 95\% 分层 bootstrap 区间。
+负值支持双树。图内坐标保留英文。}
+\label{fig:architecture-b31-zh}
+\end{figure}
+
+表~\ref{tab:architecture-b31-zh} 和
+图~\ref{fig:architecture-b31-zh} 比较 Full-F1、TR-RGP 和 PH-RGP。
 三种方法都独立训练。
 三者共享 31 个总有效节点。
 双树的 31 个节点在两棵树之间分配。
@@ -1644,11 +1672,19 @@ ACO & TSP50 & TSP100 & TSP500 & TSP1000\\
 每个 champion 单独预热和计时。
 该计时用于描述部署开销。
 它不与 RTX 4000 Ada 的融合种群吞吐量混合。
+当前 AS、ACS 和 MMAS 的 TSP50/TSP100 已完成。
+ACS 的 TSP500 也已完成。
+七个已完成单元格的中位开销为 \(+53.83\%\) 至 \(+487.25\%\)。
+AS 和 MMAS 的已完成开销高于 ACS。
+这说明训练吞吐量提高不等于单程序部署没有额外成本。
+表中的“进行中”不是零开销，也不进入当前汇总。
+全部计时完成后，生成脚本会用冻结报告自动替换这些单元格。
 
 \textbf{RQ7 的当前答案：}
 “个体 \(\times\) 实例”融合使正式 ACO 预算下的 GP 训练可行。
 多 GPU 环境应优先并行独立 GP 运行。
-这些数值只适用于登记的 RTX 4000 Ada 工作负载。
+训练吞吐量数值只适用于登记的 RTX 4000 Ada 工作负载。
+孤立部署开销只适用于当前 RTX A5000 测量。
 其他硬件需要重新测量。
 
 \section{局限性}

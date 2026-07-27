@@ -483,6 +483,51 @@ def write_ablation_primary_rows(
     write_tex_lines(output, lines)
 
 
+def write_residual_rows(
+    primary_rows: list[dict[str, str]],
+    output: Path,
+) -> None:
+    """生成 RQ2 的 residual 与完整替换独立表。"""
+
+    lookup = indexed_rows(primary_rows, "variant", "partition", "contrast")
+    contrast = "TR-RGP − Matched-Replace"
+    lines = ["% 自动生成；负值表示 residual 接口具有更低 gap。"]
+    for variant, partition in context_order():
+        value = tex_ci(lookup[(variant, partition, contrast)])
+        lines.append(
+            f"{VARIANT_LABEL[variant]} & {PARTITION_LABEL[partition]} & "
+            f"{value} \\\\"
+        )
+    lines.append(r"\bottomrule")
+    write_tex_lines(output, lines)
+
+
+def write_architecture_rows(
+    primary_rows: list[dict[str, str]],
+    output: Path,
+) -> None:
+    """生成 RQ3 在 31 节点下的双树与单树独立表。"""
+
+    lookup = indexed_rows(primary_rows, "variant", "partition", "contrast")
+    contrasts = (
+        "RMTGP-Full-F1 − TR-RGP",
+        "RMTGP-Full-F1 − PH-RGP",
+    )
+    lines = ["% 自动生成；负值表示 31 节点双树具有更低 gap。"]
+    for variant, partition in context_order():
+        values = [
+            tex_ci(lookup[(variant, partition, contrast)])
+            for contrast in contrasts
+        ]
+        lines.append(
+            f"{VARIANT_LABEL[variant]} & {PARTITION_LABEL[partition]} & "
+            + " & ".join(values)
+            + r" \\"
+        )
+    lines.append(r"\bottomrule")
+    write_tex_lines(output, lines)
+
+
 def write_factorial_rows(
     factorial_rows: list[dict[str, str]],
     output: Path,
@@ -824,6 +869,87 @@ def plot_ablation_primary_forest(
     )
     axes[1].legend(loc="best", frameon=False)
     figure.tight_layout(w_pad=1.0)
+    figure.savefig(output)
+    plt.close(figure)
+
+
+def plot_residual_forest(
+    primary_rows: list[dict[str, str]],
+    output: Path,
+) -> None:
+    """绘制 RQ2 residual 接口的独立森林图。"""
+
+    y = np.arange(len(context_order()))
+    rows = contrast_series(
+        primary_rows,
+        contrast="TR-RGP − Matched-Replace",
+    )
+    estimate, error = errorbar_values(rows)
+    figure, axis = plt.subplots(figsize=(3.45, 2.65))
+    axis.errorbar(
+        estimate,
+        y,
+        xerr=error,
+        color="#0072B2",
+        marker="o",
+        markersize=4,
+        capsize=2.5,
+        linestyle="none",
+    )
+    style_forest_axis(
+        axis,
+        title="Residual interface",
+        xlabel=r"$\Delta g$: TR-RGP $-$ Matched-Replace (pp)",
+    )
+    figure.tight_layout()
+    figure.savefig(output)
+    plt.close(figure)
+
+
+def plot_architecture_forest(
+    primary_rows: list[dict[str, str]],
+    output: Path,
+) -> None:
+    """绘制 RQ3 在 31 节点下的双树与单树独立森林图。"""
+
+    y = np.arange(len(context_order()))
+    figure, axis = plt.subplots(figsize=(3.45, 2.65))
+    for contrast, color, marker, label, offset in (
+        (
+            "RMTGP-Full-F1 − TR-RGP",
+            "#009E73",
+            "o",
+            "Dual − TR",
+            -0.11,
+        ),
+        (
+            "RMTGP-Full-F1 − PH-RGP",
+            "#D55E00",
+            "s",
+            "Dual − PH",
+            0.11,
+        ),
+    ):
+        rows = contrast_series(primary_rows, contrast=contrast)
+        estimate, error = errorbar_values(rows)
+        axis.errorbar(
+            estimate,
+            y + offset,
+            xerr=error,
+            color=color,
+            marker=marker,
+            markersize=3.8,
+            capsize=2.3,
+            linestyle="none",
+            label=label,
+        )
+    style_forest_axis(
+        axis,
+        title="Dual versus independently trained single tree",
+        xlabel=r"$\Delta g$: Dual $-$ single tree (pp)",
+    )
+    axis.legend(loc="best", frameon=False)
+    figure.tight_layout()
     figure.savefig(output)
     plt.close(figure)
 
@@ -1283,6 +1409,14 @@ def main() -> None:
         ablation_primary_rows,
         output_root / "ablation_primary_rows.tex",
     )
+    write_residual_rows(
+        ablation_primary_rows,
+        output_root / "residual_effect_rows.tex",
+    )
+    write_architecture_rows(
+        ablation_primary_rows,
+        output_root / "architecture_effect_rows.tex",
+    )
     write_factorial_rows(
         factorial_rows,
         output_root / "factorial_effect_rows.tex",
@@ -1314,6 +1448,14 @@ def main() -> None:
     plot_ablation_primary_forest(
         ablation_primary_rows,
         output_root / "ablation_primary_forest.pdf",
+    )
+    plot_residual_forest(
+        ablation_primary_rows,
+        output_root / "residual_effects.pdf",
+    )
+    plot_architecture_forest(
+        ablation_primary_rows,
+        output_root / "architecture_effects.pdf",
     )
     plot_factorial_forest(
         factorial_rows,
