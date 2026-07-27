@@ -1,0 +1,1120 @@
+\documentclass[letterpaper,journal]{IEEEtran}
+
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+
+\graphicspath{{paper_assets/}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand{\pendingresult}{\textcolor{gray}{\textit{Pending}}}
+\newcommand{\stdrel}{\operatorname{stdrel}}
+\newcommand{\E}{\mathbb{E}}
+
+\hyphenation{RMTGP ACOTSP phero-mone}
+
+\begin{document}
+
+\title{Residual Multi-Tree Genetic Programming for Joint Adaptation of State Transition and Pheromone Update Rules in Ant Colony Optimization}
+
+\author{First Author, Second Author, and Third Author%
+\thanks{Author names, affiliations, and funding information will be added after internal review.}}
+
+\markboth{IEEE Transactions Draft, July 2026}%
+{Author \MakeLowercase{\textit{et al.}}: Residual Multi-Tree Genetic Programming for ACO}
+
+\maketitle
+
+\begin{abstract}
+Ant colony optimization uses a state transition rule and a pheromone update rule.
+Both rules are usually designed by experts.
+Genetic programming can automate this design process.
+However, direct replacement of a complete rule can remove useful structure from the original algorithm.
+Existing work has also focused mainly on state transition.
+This study proposes residual multi-tree genetic programming for ant colony optimization, called RMTGP-ACO.
+One strongly typed tree adjusts transition desirability.
+A second strongly typed tree redistributes pheromone deposits.
+Both adjustments are bounded.
+The original algorithm is recovered when both trees return zero.
+The pheromone tree also preserves the deposit budget of each reinforcement event.
+The method is applied to Ant System, Ant Colony System, and MAX--MIN Ant System.
+The current pilot uses uniform TSP100 instances for training.
+It uses three independent genetic programming runs for each ACO variant.
+The selected programs are tested on uniform TSP50, TSP100, TSP500, and TSP1000.
+Full RMTGP-ACO reduces the mean reference gap in all 12 completed variant--scale comparisons.
+The reduction ranges from 0.0736 to 7.8461 percentage points.
+A fused CUDA implementation gives a 14.626-fold single-GPU speedup over a 16-thread CPU reference on the registered benchmark.
+The present evidence is preliminary.
+The residual, terminal-set, function-set, and single-tree ablations are still in progress.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Ant colony optimization, genetic programming, hyper-heuristic, multi-tree genetic programming, residual learning, traveling salesman problem.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\IEEEPARstart{A}{nt} colony optimization (ACO) constructs solutions from a pheromone model and problem-specific heuristic information \cite{dorigo1996antsystem,dorigo2004aco}.
+Its behavior depends on two central components.
+The state transition rule selects the next solution component.
+The pheromone update rule changes the sampling model after each iteration.
+These rules are effective, but they are usually fixed by human design.
+
+Genetic programming (GP) can evolve executable rules \cite{koza1992gp,poli2008fieldguide}.
+It can therefore reduce the need for manual formula design.
+Previous GP-ACO work evolved complete state transition rules \cite{lin2025gpaco}.
+That study showed that evolved rules can transfer across traveling salesman problem (TSP) sizes and distributions.
+It also showed that global terminals can be useful.
+However, a complete replacement changes the full transition model.
+It does not preserve the original balance between pheromone and heuristic information.
+It can also produce unstable score scales.
+
+Pheromone adaptation creates a second design problem.
+Earlier work used strongly typed GP to evolve pheromone strategies \cite{tavares2011pheromone}.
+This direction is important, but joint transition and pheromone adaptation is difficult.
+The two rules act at different points in ACO.
+Their tensors also have different meanings and shapes.
+A shared untyped tree would allow invalid combinations.
+Two unrestricted trees would also receive more representational capacity than one tree.
+
+We propose residual multi-tree genetic programming for ACO, or RMTGP-ACO.
+The method uses one transition tree and one pheromone tree.
+The trees have separate strong types.
+The transition tree multiplies the original desirability by a bounded residual factor.
+The pheromone tree redistributes a fixed deposit budget over the edges that the original ACO would reinforce.
+The method retains the main semantics of Ant System (AS), Ant Colony System (ACS), and MAX--MIN Ant System (MMAS) \cite{dorigo1996antsystem,dorigo1997acs,stutzle2000mmas}.
+
+This study makes four technical contributions.
+\begin{itemize}
+    \item It defines a bounded residual interface for ACO state transition.
+    \item It defines an event-wise pheromone residual that preserves support and total deposit.
+    \item It introduces a strongly typed two-tree representation with a shared node budget.
+    \item It provides a fused GPU evaluator for the nested GP--ACO computation.
+\end{itemize}
+
+The current results form a three-run pilot.
+They answer whether the complete method improves the original ACO on uniform Euclidean TSP.
+They do not yet establish which design component causes the improvement.
+We state this boundary throughout the paper.
+
+\section{Background and Problem Definition}
+
+\subsection{Euclidean Traveling Salesman Problem}
+
+Let \(V=\{1,\ldots,n\}\) be a set of cities.
+Each city \(i\) has a coordinate \(c_i\in\mathbb{R}^2\).
+The distance between cities \(i\) and \(j\) is
+\begin{equation}
+    d_{ij}=\lVert c_i-c_j\rVert_2.
+\end{equation}
+A tour is a permutation \(\pi=(\pi_1,\ldots,\pi_n)\).
+Its length is
+\begin{equation}
+    L(\pi)=
+    \sum_{q=1}^{n-1}d_{\pi_q,\pi_{q+1}}
+    +d_{\pi_n,\pi_1}.
+\end{equation}
+The objective is to minimize \(L(\pi)\).
+
+Each dataset row contains a reference tour.
+We recompute its length in float64.
+The available files do not provide a global optimality certificate for every tour.
+We therefore use the term \emph{reference length}, denoted by \(L_i^{\mathrm{ref}}\).
+The primary quality measure is
+\begin{equation}
+    g_i(\theta)
+    =
+    100
+    \frac{L_i(\theta)-L_i^{\mathrm{ref}}}
+    {L_i^{\mathrm{ref}}}.
+    \label{eq:reference-gap}
+\end{equation}
+We call \(g_i\) the reference gap.
+
+\subsection{Baseline ACO State Transition}
+
+Let \(\tau_{ij}\) be the pheromone value of edge \((i,j)\).
+Let
+\begin{equation}
+    \eta_{ij}=\frac{1}{d_{ij}+\epsilon_d}
+\end{equation}
+be its heuristic value.
+At construction step \(q\), ant \(a\) is at city \(i\).
+Its feasible set is \(F_{a,q}\).
+The baseline desirability of city \(j\in F_{a,q}\) is
+\begin{equation}
+    s^0_{aij}=\tau_{ij}^{\alpha}\eta_{ij}^{\beta}.
+    \label{eq:baseline-score}
+\end{equation}
+
+AS and MMAS sample from the normalized score.
+ACS uses the pseudorandom proportional rule.
+It selects the maximum score with probability \(q_0\).
+Otherwise, it samples from the normalized score.
+All variants use a candidate list.
+If that list has no feasible city, the implementation uses the full feasible set.
+
+\subsection{Baseline Pheromone Update}
+
+AS evaporates all pheromone and reinforces the tours of all ants.
+For ant \(a\), the baseline deposit on a tour edge is \(1/L_a\).
+ACS applies its local update during construction.
+It then applies a global update to the global-best tour.
+MMAS reinforces one scheduled tour.
+The schedule uses iteration-best tours and restart-best tours.
+MMAS also applies dynamic pheromone bounds and restart logic.
+
+Our implementation follows the algorithmic semantics of ACOTSP 1.03 \cite{stutzle2004acotsp}.
+All three variants use 32 ants and 500 iterations in this study.
+Local search is disabled.
+
+\subsection{Previous GP-ACO Baseline}
+
+The previous study evolved one complete state transition expression \cite{lin2025gpaco}.
+We denote a matched implementation of that approach by Legacy-GP.
+Its terminals are raw pheromone, raw distance, mean pheromone, mean distance, problem size, and feasible-set size.
+It uses arithmetic primitives and a protected division that returns one when the denominator is close to zero.
+
+The present study retrains Legacy-GP under the current data, ACO budget, and random schedules.
+Published numerical results are not copied into the current paired tables.
+This rule prevents a comparison between incompatible budgets.
+
+\section{Residual Multi-Tree GP-ACO}
+
+\subsection{Overview}
+
+An RMTGP-ACO individual contains two programs:
+\begin{equation}
+    \theta=(T_{\mathrm{tr}},T_{\mathrm{ph}}).
+\end{equation}
+The transition program acts during solution construction.
+The pheromone program acts after the colony tours are available.
+Fig.~\ref{fig:framework} shows the data flow.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=4mm and 4mm,
+    box/.style={
+        draw,
+        rounded corners=1.5pt,
+        align=center,
+        minimum height=8mm,
+        text width=19mm,
+        font=\footnotesize
+    },
+    gpbox/.style={
+        box,
+        draw=blue!65!black,
+        fill=blue!5
+    },
+    basebox/.style={
+        box,
+        draw=black!65,
+        fill=black!3
+    },
+    arrow/.style={-{Latex[length=2mm]}, thick}
+]
+\node[basebox] (state) {TSP state\\and pheromone};
+\node[basebox, right=of state] (basescore) {Baseline score\\\(s^0=\tau^\alpha\eta^\beta\)};
+\node[gpbox, right=of basescore] (trtree) {Transition tree\\\(T_{\mathrm{tr}}(x)\)};
+\node[basebox, right=of trtree] (construct) {Bounded score\\and tour construction};
+\node[basebox, right=of construct] (events) {AS, ACS, or MMAS\\deposit events};
+\node[gpbox, right=of events] (phtree) {Pheromone tree\\\(T_{\mathrm{ph}}(z)\)};
+\node[basebox, right=of phtree] (update) {Budget-preserving\\pheromone update};
+
+\draw[arrow] (state) -- (basescore);
+\draw[arrow] (basescore) -- (trtree);
+\draw[arrow] (trtree) -- (construct);
+\draw[arrow] (construct) -- (events);
+\draw[arrow] (events) -- (phtree);
+\draw[arrow] (phtree) -- (update);
+\draw[arrow] (update.south) -- ++(0,-5mm) -| (state.south);
+\end{tikzpicture}
+\caption{RMTGP-ACO data flow. The blue boxes are evolved programs. The other boxes retain the semantics of the selected ACO variant.}
+\label{fig:framework}
+\end{figure*}
+
+\subsection{Strongly Typed Representation}
+
+The implementation uses strongly typed GP \cite{montana1995stgp}.
+It defines two marker types.
+\begin{align}
+    \mathrm{TrField} &\in \mathbb{R}^{B\times M\times K},\\
+    \mathrm{PhField} &\in \mathbb{R}^{B\times R\times n}.
+\end{align}
+Here, \(B\) is the instance batch size.
+\(M\) is the number of ants.
+\(K\) is the active candidate-set width.
+\(R\) is the number of deposit events.
+
+Every transition terminal returns a \(\mathrm{TrField}\).
+Every transition function maps one or two \(\mathrm{TrField}\) values to a \(\mathrm{TrField}\).
+The pheromone primitive set follows the same rule for \(\mathrm{PhField}\).
+The two marker types are different Python classes.
+DEAP therefore rejects a subtree exchange between the two roles \cite{fortin2012deap}.
+
+The two trees share one fitness.
+They also share a total size limit:
+\begin{equation}
+    N_{\mathrm{tr}}+N_{\mathrm{ph}}\leq 31.
+    \label{eq:node-budget}
+\end{equation}
+An inactive zero tree has zero effective nodes.
+Each nonzero tree has a separate maximum of 31 syntax nodes.
+Each tree also has a maximum depth of five.
+Equation~\eqref{eq:node-budget} is the active constraint in the main study.
+It prevents a two-tree individual from receiving twice the capacity of a one-tree individual.
+
+\subsection{Transition Residual}
+
+The transition tree receives the terminal field \(x_{aij}\).
+Its raw output is
+\begin{equation}
+    u_{aij}=T_{\mathrm{tr}}(x_{aij}).
+\end{equation}
+The output changes the baseline score in \eqref{eq:baseline-score}:
+\begin{align}
+    r_{aij} &= \tanh(u_{aij}),\\
+    m_{aij} &= 1+\gamma_{\mathrm{tr}}r_{aij},\\
+    \widetilde{s}_{aij} &= s^0_{aij}m_{aij},
+    \label{eq:transition-residual}
+\end{align}
+where \(\gamma_{\mathrm{tr}}=1/3\).
+The final probability is
+\begin{equation}
+    p_{aij}
+    =
+    \frac{\widetilde{s}_{aij}}
+    {\sum_{\ell\in F_{a,q}}\widetilde{s}_{ai\ell}}.
+\end{equation}
+
+This interface has four useful properties.
+First, a zero tree gives \(m_{aij}=1\).
+It exactly recovers the baseline ACO.
+Second, \(m_{aij}\in[2/3,4/3]\).
+The score remains positive.
+Third, infeasible edges remain infeasible.
+Fourth, for two feasible cities \(j\) and \(k\),
+\begin{equation}
+    \frac{m_{aij}}{m_{aik}}\in[1/2,2].
+\end{equation}
+The tree can change a local preference, but it cannot create an unbounded score ratio.
+
+\subsection{Pheromone Residual}
+
+A deposit event is
+\begin{equation}
+    r=(\pi_r,L_r,w_r).
+\end{equation}
+\(\pi_r\) is a source tour.
+\(L_r\) is its length.
+\(w_r\) is the baseline weight.
+For each edge \(e\) in \(\pi_r\), the baseline deposit is
+\begin{equation}
+    D^0_{r,e}=\frac{w_r}{L_r}.
+\end{equation}
+The total event budget is
+\begin{equation}
+    B_r=\sum_{e\in E(\pi_r)}D^0_{r,e}
+       =\frac{nw_r}{L_r}.
+\end{equation}
+
+The pheromone tree produces
+\begin{align}
+    v_{r,e} &= T_{\mathrm{ph}}(z_{r,e}),\\
+    h_{r,e} &= 1+\gamma_{\mathrm{ph}}\tanh(v_{r,e}),
+\end{align}
+where \(\gamma_{\mathrm{ph}}=1/3\).
+The final deposit is
+\begin{equation}
+    \widetilde{D}_{r,e}
+    =
+    B_r
+    \frac{D^0_{r,e}h_{r,e}}
+    {\sum_{f\in E(\pi_r)}D^0_{r,f}h_{r,f}}.
+    \label{eq:pheromone-residual}
+\end{equation}
+
+The zero tree recovers the baseline deposit.
+The reinforced edge set is unchanged.
+The event budget is also conserved:
+\begin{equation}
+    \sum_{e\in E(\pi_r)}\widetilde{D}_{r,e}=B_r.
+\end{equation}
+AS creates one event for each ant.
+ACS creates one global-best event.
+MMAS creates one event from its original update schedule.
+The residual only redistributes each event.
+It does not modify ACS local updates, MMAS bounds, or MMAS restart decisions.
+
+\subsection{Terminal Normalization}
+
+Many raw ACO values depend on the problem size and iteration.
+The main terminal set uses bounded relative values.
+For a vector \(y\) and its active mask, define
+\begin{equation}
+    \stdrel(y)
+    =
+    \tanh\left(
+    \frac{y-\operatorname{mean}(y)}
+    {\operatorname{std}(y)+10^{-8}}
+    \right).
+    \label{eq:stdrel}
+\end{equation}
+The mean and standard deviation are computed over the last active dimension.
+Masked entries receive zero.
+
+\begin{table*}[t]
+\caption{Transition terminal definitions. All outputs are broadcast to \(\mathrm{TrField}\). Core uses the first four terminals. Full uses all eight terminals.}
+\label{tab:transition-terminals}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.18}
+\begin{tabular}{L{25mm}L{66mm}L{74mm}}
+\toprule
+Terminal & Definition & Meaning and calculation domain\\
+\midrule
+\texttt{RTau} &
+\(\stdrel(\log(\max(\tau_{ij},\epsilon)))\) &
+Relative log pheromone. Statistics use the active feasible set of one ant at one construction step.\\
+\texttt{REta} &
+\(\stdrel(\log(\max(\eta_{ij},\epsilon)))\) &
+Relative log heuristic. Statistics use the same active feasible set.\\
+\texttt{BaseConf} &
+\(\tanh(\log(p^0_{aij}+\epsilon)+\log k_{a,q})\) &
+Local confidence of the baseline distribution. \(k_{a,q}=|F_{a,q}|\). A uniform baseline gives zero for every feasible city.\\
+\texttt{DistRank} &
+\(1-2(r^d_{aij}-1)/(k_{a,q}-1)\) &
+Distance rank inside the active feasible set. Rank one maps to \(1\). The farthest city maps to \(-1\). The value is zero when \(k_{a,q}=1\).\\
+\texttt{Entropy} &
+\(2H(p^0_{ai})/\log k_{a,q}-1\) &
+Normalized entropy of the baseline distribution. The value is broadcast across candidates. It is set to \(-1\) when \(k_{a,q}=1\).\\
+\texttt{ConstructProg} &
+\(2q/\max(n-1,1)-1\) &
+Progress within the construction of one tour. \(q\) is the current construction step.\\
+\texttt{ACOProg} &
+\(2(t-1)/\max(T-1,1)-1\) &
+Progress within the ACO run. \(t\) is the current ACO iteration and \(T\) is the iteration budget.\\
+\texttt{Stagnation} &
+\(2\min(s_t/T,1)-1\) &
+Progress since the last global-best improvement. The value is broadcast across ants and candidates.\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{table*}[t]
+\caption{Pheromone terminal definitions. All outputs are \(\mathrm{PhField}\). Core uses \texttt{EdgeEta}, \texttt{EdgeTau}, \texttt{NNRank}, and \texttt{SourceQuality}. Full uses all seven terminals.}
+\label{tab:pheromone-terminals}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.18}
+\begin{tabular}{L{25mm}L{67mm}L{73mm}}
+\toprule
+Terminal & Definition & Meaning and calculation domain\\
+\midrule
+\texttt{EdgeEta} &
+\(\stdrel(\log\eta_{uv}-(\mu_u^\eta+\mu_v^\eta)/2)\) &
+Relative heuristic value of event edge \((u,v)\). \(\mu_u^\eta\) is the mean log heuristic in the candidate neighborhood of \(u\). The final normalization is inside the source tour.\\
+\texttt{EdgeTau} &
+\(\stdrel(\log(\max(\tau_{uv},\epsilon)))\) &
+Relative pheromone on a source-tour edge. Statistics are computed inside one deposit event.\\
+\texttt{NNRank} &
+\(\frac12[\nu(r_{uv})+\nu(r_{vu})]\) &
+Symmetric nearest-neighbor rank. Here \(\nu(r)=1-2(r-1)/\max(n-2,1)\). Full neighbor ranks are used.\\
+\texttt{ColonyFreq} &
+\(2c_e/M-1\) &
+Frequency of edge \(e\) in the current colony. \(c_e\) is the number of ant tours that contain the undirected edge.\\
+\texttt{SourceQuality} &
+\(\tanh((\overline L-L_r)/(\sigma_L+\epsilon))\) &
+Quality of the source tour relative to the current colony. The value is broadcast to all edges of the event.\\
+\texttt{ACOProg} &
+\(2(t-1)/\max(T-1,1)-1\) &
+Progress within the ACO run.\\
+\texttt{Stagnation} &
+\(2\min(s_t/T,1)-1\) &
+Progress since the last global-best improvement.\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Both primitive sets also contain the constants
+\(-1,-0.5,0,0.5,1\).
+They contain one ephemeral random constant sampled from \(U[-1,1]\).
+An ERC mutation adds Gaussian noise with standard deviation \(0.1\).
+The result is clipped to \([-1,1]\).
+The proposed Full-F1 profile uses all terminals in
+Tables~\ref{tab:transition-terminals} and \ref{tab:pheromone-terminals}.
+It uses the F1 function profile.
+
+\subsection{Function Sets and Numerical Protection}
+
+Table~\ref{tab:functions} gives the two function profiles.
+All operations are element-wise.
+F1 extends F0.
+Protected division is
+\begin{equation}
+    \operatorname{PDIV}(x,y)
+    =
+    \frac{xy}{y^2+10^{-6}}.
+    \label{eq:pdiv}
+\end{equation}
+This form is continuous at \(y=0\).
+After each primitive, NaN is replaced by zero.
+Positive and negative infinity are replaced by \(10\) and \(-10\).
+Every result is then clipped to \([-10,10]\).
+The external residual interface applies another \(\tanh\).
+
+\begin{table}[t]
+\caption{GP function profiles}
+\label{tab:functions}
+\centering
+\footnotesize
+\begin{tabular}{lll}
+\toprule
+Profile & Binary functions & Unary functions\\
+\midrule
+F0 & ADD, SUB, MUL, PDIV & NEG\\
+F1 & F0, MIN, MAX & NEG, ABS\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Legacy-GP uses ADD, SUB, MUL, NEG, and \(\operatorname{PDIV1}\).
+Its protected division returns \(x/y\) when \(|y|>10^{-6}\).
+It returns one otherwise.
+Matched-Replace uses the Full terminals and F1.
+Its raw transition output becomes a positive score through
+\begin{equation}
+    s_{aij}=\operatorname{softplus}(\operatorname{clip}(u_{aij},-20,20))+\epsilon.
+\end{equation}
+
+\subsection{Evolutionary Search}
+
+The initial joint population contains four modes.
+Ten percent are exact baseline sentinels.
+Twenty percent activate only the transition tree.
+Twenty percent activate only the pheromone tree.
+The remaining 50 percent activate both trees.
+Active trees use ramped half-and-half initialization with depths from two to four.
+
+Elitism keeps the best ten individuals.
+The remaining offspring use crossover with probability \(0.80\), mutation with probability \(0.15\), and reproduction with probability \(0.05\).
+Tournament size is four.
+Crossover selects one active role and applies typed one-point crossover within that role.
+Mutation selects one active role.
+It uses subtree mutation with probability \(0.50\), node replacement with probability \(0.30\), and ERC perturbation with probability \(0.20\).
+An offspring that violates the depth or node limit is replaced by its valid parent.
+
+Structural hashes avoid repeated evaluation within one generation.
+The GPU evaluator also groups programs with identical compiled behavior.
+These operations do not change the fitness.
+
+For a training set \(\mathcal{I}\) and ACO seed set \(\mathcal{S}\), fitness is
+\begin{equation}
+    F(\theta)
+    =
+    \frac{1}{|\mathcal{I}||\mathcal{S}|}
+    \sum_{i\in\mathcal{I}}
+    \sum_{s\in\mathcal{S}}
+    g_{i,s}(\theta).
+    \label{eq:fitness}
+\end{equation}
+The objective minimizes the absolute reference gap.
+It does not minimize a baseline-relative value.
+It contains no parsimony penalty.
+Program size is used only to break defined ties.
+For reporting, we separately define
+\begin{equation}
+    \Delta g=g_{\mathrm{method}}-g_{\mathrm{ACO}}.
+    \label{eq:delta}
+\end{equation}
+A negative \(\Delta g\) favors the learned method.
+
+\begin{algorithm}[t]
+\caption{One RMTGP-ACO simulation}
+\label{alg:rmtgp-aco}
+\begin{algorithmic}[1]
+\REQUIRE TSP instance, ACO variant, \(T_{\mathrm{tr}}\), \(T_{\mathrm{ph}}\)
+\STATE Initialize pheromone and variant-specific search state
+\FOR{\(t=1,\ldots,T\)}
+    \FOR{each construction step \(q\)}
+        \STATE Build the active candidate set
+        \STATE Compute baseline score \(s^0=\tau^\alpha\eta^\beta\)
+        \STATE Build only the terminals used by \(T_{\mathrm{tr}}\)
+        \STATE Apply the bounded residual in \eqref{eq:transition-residual}
+        \STATE Select cities with the original variant rule
+        \STATE Apply the ACS local update when required
+    \ENDFOR
+    \STATE Compute all tour lengths and update best states
+    \STATE Build AS, ACS, or MMAS deposit events
+    \STATE Build only the terminals used by \(T_{\mathrm{ph}}\)
+    \STATE Apply the budget residual in \eqref{eq:pheromone-residual}
+    \STATE Apply variant evaporation, bounds, and restart logic
+\ENDFOR
+\RETURN Best tour; recompute its length in CPU float64
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{GP training and champion selection}
+\label{alg:gp-training}
+\begin{algorithmic}[1]
+\REQUIRE Frozen training and validation schedules
+\STATE Load or create immutable baseline ACO archives
+\STATE Initialize 100 typed two-tree individuals
+\FOR{\(h=1,\ldots,50\)}
+    \STATE Load 32 scheduled TSP100 training instances
+    \STATE Use one shared ACO seed for all individuals
+    \STATE Evaluate unique programs and assign \eqref{eq:fitness}
+    \STATE Save the top five every five generations
+    \STATE Create the next population with typed operators
+\ENDFOR
+\STATE Screen unique checkpoints on 32 selection instances with one seed
+\STATE Re-evaluate the best five with three paired seeds
+\STATE Find the minimum mean gap
+\STATE Within 0.01 percentage points, select the smaller program
+\STATE Audit this candidate on 32 disjoint gate instances
+\RETURN One selected candidate and one gate-deployed policy
+\end{algorithmic}
+\end{algorithm}
+
+\section{Experimental Methodology}
+
+\subsection{Research Questions}
+
+The study is organized around seven questions.
+\begin{description}
+    \item[RQ1:] Does Full-F1 RMTGP-ACO reduce reference gap relative to the original ACO?
+    \item[RQ2:] Is residual transition adaptation better than matched full replacement?
+    \item[RQ3:] Does a two-tree individual outperform independently trained one-tree methods under an equal total node budget?
+    \item[RQ4:] What are the effects of the terminal profile and function profile?
+    \item[RQ5:] Does joint coadaptation matter after the two trees are trained?
+    \item[RQ6:] Does a TSP100-trained individual transfer across problem sizes and distributions?
+    \item[RQ7:] How much speedup does the fused evaluator provide?
+\end{description}
+
+\subsection{Data}
+
+The training pool contains 1,280,000 uniform TSP100 instances.
+It consists of ten files with 128,000 instances each.
+A frozen schedule selects 32 different instances per generation.
+One GP run therefore sees \(32\times50=1,600\) different training instances.
+The full pool is much larger than the consumed subset.
+This design supports independent schedules for additional GP runs.
+
+The validation file contains 1,280 uniform TSP100 instances.
+Each GP run uses 32 instances for selection and 32 disjoint instances for the non-inferiority gate.
+The completed test sets contain 1,280 uniform TSP50 instances, 1,280 uniform TSP100 instances, 128 uniform TSP500 instances, and 128 uniform TSP1000 instances.
+TSP1000 is a locked-model supplementary extrapolation set.
+It is not used during evolution or model selection.
+
+The registered distribution tests contain 128 clustered TSP500 instances, 128 Gaussian TSP500 instances, and 42 TSPLIB instances with \(n\leq500\) \cite{reinelt1991tsplib}.
+Their current results are pending.
+All files are identified by a manifest and a SHA-256 checksum.
+Train, validation, and test coordinates remain separated.
+Reference-tour edges are never used as GP terminals.
+
+\begin{table}[t]
+\caption{Data used by the TSP100 pilot}
+\label{tab:data}
+\centering
+\footnotesize
+\begin{tabular}{llr}
+\toprule
+Role & Partition & Instances\\
+\midrule
+Training pool & TSP100 uniform & 1,280,000\\
+Per GP run & \(32\times50\) TSP100 & 1,600\\
+Validation & Selection / gate & \(32/32\)\\
+Test & TSP50 uniform & 1,280\\
+Test & TSP100 uniform & 1,280\\
+Test & TSP500 uniform & 128\\
+Test & TSP1000 uniform & 128\\
+Pending test & TSP500 cluster / Gaussian & \(128/128\)\\
+Pending test & TSPLIB, \(n\leq500\) & 42\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Compared Methods and Ablations}
+
+Table~\ref{tab:methods} maps each method to its scientific purpose.
+Full-F1 is the proposed main configuration.
+Core and Full refer to the terminal sets in Tables~\ref{tab:transition-terminals} and \ref{tab:pheromone-terminals}.
+F0 and F1 refer to Table~\ref{tab:functions}.
+
+\begin{table*}[t]
+\caption{Methods, controlled differences, and current result status}
+\label{tab:methods}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{L{22mm}L{24mm}L{24mm}L{24mm}L{42mm}L{15mm}}
+\toprule
+Method & Transition integration & Pheromone integration & Terminal/function profile & Main purpose & Status\\
+\midrule
+Baseline ACO & None & None & None & Original AS, ACS, or MMAS & Complete\\
+Legacy-GP & Full replacement & None & Legacy & Prior GP-ACO structure under the current budget & \pendingresult\\
+Matched-Replace & Full replacement & None & Full/F1 & Replacement control for RQ2 & \pendingresult\\
+TR-RGP & Residual & None & Full/F1 & Independent transition-only control & \pendingresult\\
+PH-RGP & None & Budget residual & Full/F1 & Independent pheromone-only control & \pendingresult\\
+RMTGP Core-F0 & Residual & Budget residual & Core/F0 & Factorial terminal/function control & \pendingresult\\
+RMTGP Core-F1 & Residual & Budget residual & Core/F1 & Factorial terminal/function control & \pendingresult\\
+RMTGP Full-F0 & Residual & Budget residual & Full/F0 & Factorial terminal/function control & \pendingresult\\
+RMTGP Full-F1 & Residual & Budget residual & Full/F1 & Proposed main method & Complete for uniform tests\\
+Drop and shuffle & Post-hoc intervention & Post-hoc intervention & Frozen Full/F1 trees & Coadaptation analysis for RQ5 & \pendingresult\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+RQ2 uses TR-RGP minus Matched-Replace as its primary estimand.
+Legacy-GP is a secondary methodological baseline.
+RQ3 compares Full-F1 with independently trained TR-RGP and PH-RGP.
+All three methods first use a total node budget of 31.
+A separate capacity study compares budgets of 31 and 62.
+RQ4 uses a \(2\times2\) factorial design.
+It estimates the terminal main effect, the function main effect, and their interaction.
+RQ5 drops each tree and shuffles independently evolved tree pairs.
+The post-hoc interventions complement the independent one-tree controls.
+They do not replace them.
+
+\subsection{ACO and GP Parameters}
+
+Table~\ref{tab:parameters} gives the common parameters.
+AS uses \(\rho=0.5\).
+ACS uses \(\rho=0.1\), \(q_0=0.9\), and \(\xi=0.1\).
+MMAS uses \(\rho=0.02\).
+Its update period is 25.
+Its \(p_{\mathrm{best}}\) value is 0.05.
+Its branch check period is 100.
+Its branch parameter is 0.05.
+Its branch threshold is 1.00001.
+Its restart stagnation limit is 250.
+ACS applies synchronous local updates.
+
+\begin{table}[t]
+\caption{Common experimental parameters}
+\label{tab:parameters}
+\centering
+\footnotesize
+\begin{tabular}{ll}
+\toprule
+Parameter & Value\\
+\midrule
+ACO ants & 32\\
+ACO iterations & 500\\
+Candidate-list size & 20\\
+\(\alpha,\beta\) & \(1,2\)\\
+\(\gamma_{\mathrm{tr}},\gamma_{\mathrm{ph}}\) & \(1/3,1/3\)\\
+Local search & Disabled\\
+GP population & 100\\
+GP generations & 50\\
+Crossover / mutation / reproduction & \(0.80/0.15/0.05\)\\
+Elites / tournament size & \(10/4\)\\
+Initial depth / maximum depth & \(2\)--\(4/5\)\\
+Total effective node budget & 31\\
+Checkpoint interval / retained count & \(5/5\)\\
+Training instances per generation & 32\\
+Selection / gate instances & \(32/32\)\\
+Screening / final validation seeds & \(1/3\)\\
+Test ACO seeds per instance & 3\\
+Independent GP runs per variant & 3\\
+CPU threads / process count & \(16/1\)\\
+CUDA block threads & 32\\
+Search / final score precision & FP32 / FP64\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The GP root seeds are 1001--1003 for AS, 2001--2003 for ACS, and 3001--3003 for MMAS.
+Final test seeds are derived from a separate root seed of 9001.
+They are independent of the GP seeds.
+All methods within a paired comparison share the same instances and ACO seeds.
+
+\subsection{Champion Selection and Reported Policy}
+
+Each generation uses one ACO seed.
+All individuals share that seed and the same 32 instances.
+This pairing reduces within-generation noise.
+The baseline ACO values are precomputed and stored in immutable archives.
+
+The validation procedure first screens checkpoints with one seed.
+It then evaluates the five best checkpoints with three seeds.
+It selects the smallest tree among candidates within 0.01 percentage points of the best mean gap.
+Only this selected individual enters the independent gate.
+The gate accepts a candidate when the one-sided 95\% upper bound of its validation delta is at most 0.10 percentage points.
+
+The main scientific analysis uses the selected candidate from each GP run.
+It retains all three GP runs.
+It does not select the best GP seed.
+The gate-deployed policy is a separate operational quantity.
+It falls back to baseline ACO when a candidate fails the gate.
+
+\subsection{Statistical Analysis}
+
+The primary response is the reference gap in \eqref{eq:reference-gap}.
+We also record worst-decile conditional value at risk, anytime gap area under the curve, best iteration, wall time, and win/tie/loss rates.
+A win means that the learned method has a smaller gap than its paired baseline.
+
+The three ACO seeds are first averaged within an instance.
+The main statistical block is then GP-run by instance.
+We use a paired Wilcoxon signed-rank test \cite{wilcoxon1945}.
+Holm correction is applied within each ACO variant and RQ family \cite{holm1979}.
+We also use a hierarchical bootstrap \cite{efron1994bootstrap}.
+It resamples GP runs, then instances, then ACO seeds.
+Each interval uses 10,000 replicates.
+
+Only three GP runs are available in this pilot.
+This count is too small for a final claim about evolutionary-run uncertainty.
+The confidence intervals and tests are therefore descriptive.
+A confirmatory study will use 30 independent GP runs.
+
+\section{Efficient Implementation}
+
+\subsection{Batched Evaluation Architecture}
+
+The nested fitness is expensive.
+One population contains 100 individuals.
+Each individual invokes ACO on 32 instances.
+Each ACO invocation constructs \(32\times500\) tours.
+A direct Python loop over individuals, instances, ants, and iterations is not practical.
+
+The implementation uses NumPy, Numba, PyTorch, DEAP, and CuPy \cite{harris2020numpy,lam2015numba,paszke2019pytorch,fortin2012deap,okuta2017cupy}.
+The CPU backend forms a population-by-instance task matrix.
+Numba compiles the inner ACO loops.
+The GPU backend goes further.
+It compiles each typed GP tree to a compact postfix program.
+It removes structurally and behaviorally duplicate programs.
+It then forms a program-by-instance task grid.
+
+One CUDA block owns one program--instance task.
+Thirty-two threads match the 32 ants.
+The block performs all 500 ACO iterations.
+It evaluates both GP programs inside the kernel.
+It also performs candidate fallback, ACS local-update multiplicities, MMAS bounds, and MMAS restart logic.
+Problem tensors and terminal-independent features remain resident on the device.
+A counter-based random generator makes task partitioning deterministic.
+
+The GPU searches in FP32.
+It returns the best tour.
+The host recomputes that tour length from the original float64 distance matrix.
+The final fitness and all paper tables therefore use CPU FP64 tour scoring.
+
+\subsection{Parallel Scheduling}
+
+One GP run uses one process and one visible GPU.
+Population-level and instance-level work are fused inside the kernel.
+This design avoids multiple Python processes competing for one GPU.
+Independent GP runs are the main multi-GPU unit.
+They are assigned to different devices.
+This campaign mode maximizes aggregate throughput.
+
+A dual-shard mode can split one generation over two GPUs.
+It reduces the latency of one run.
+Its scaling is weaker because each shard is smaller.
+The registered scheduler therefore uses independent runs when enough runs are available.
+CPU16 remains the deterministic fallback and the FP64 audit backend.
+
+\subsection{Formal Acceleration Benchmark}
+
+The formal benchmark used an Intel Xeon W-2245 CPU and two 20-GiB NVIDIA RTX 4000 Ada Generation GPUs.
+The workload used ACS, 100 requested individuals, 79 behaviorally unique programs, 16 TSP50 instances, 16 TSP100 instances, 32 ants, and 500 ACO iterations.
+One workload constructed 40,448,000 tours.
+Each mode used one cold run and three warm runs.
+Table~\ref{tab:speed} reports the warm median.
+
+\begin{table}[t]
+\caption{Formal accelerator benchmark}
+\label{tab:speed}
+\centering
+\footnotesize
+\begin{tabular}{lrrr}
+\toprule
+Mode & Time (s) & Tours/s & CPU16 ratio\\
+\midrule
+CPU8 & 397.422 & 101,776 & 0.766\\
+CPU16 & 304.325 & 132,911 & 1.000\\
+GPU0 & 20.807 & 1,943,957 & 14.626\\
+GPU1 & 20.838 & 1,941,110 & 14.605\\
+Dual shard & 12.776 & 3,165,928 & 23.820\\
+Campaign$^\dagger$ & 21.101 & 3,833,840 & 28.9\\
+\bottomrule
+\multicolumn{4}{l}{\scriptsize $^\dagger$Two concurrent workloads; ratio uses aggregate throughput.}
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{accelerator_throughput.pdf}
+\caption{Throughput on the formal accelerator benchmark. Campaign throughput is aggregated over two concurrent workloads.}
+\label{fig:throughput}
+\end{figure}
+
+Single-run dual-GPU scaling is \(20.807/12.776=1.629\).
+Concurrent campaign scaling is \(2(20.807)/21.101=1.972\).
+The first value is below the registered 1.7 scaling gate.
+The second value is above the registered 1.8 campaign gate.
+This result supports task-level multi-GPU scheduling.
+
+Average GPU utilization was about 99\%.
+Peak device memory was about 286 MiB.
+About 99.8\% of warm time was inside the CUDA kernel.
+The workload was compute-bound.
+Additional memory caching is therefore unlikely to be the main source of future speedup.
+
+The numerical quality audit used TSP50 and TSP100.
+It used 128 instances per size and three paired ACO seeds.
+Let \(\Delta_{\mathrm{num}}=g_{\mathrm{GPU}}-g_{\mathrm{CPU}}\).
+The pooled mean was \(-0.003445\) percentage points.
+The one-sided 95\% upper bound was \(0.000868\) percentage points.
+This value is below the registered 0.10 threshold.
+
+The observed mean generation times are shown in Table~\ref{tab:generation-time}.
+They include all unique population evaluations for one generation.
+They do not include final test evaluation.
+
+\begin{table}[t]
+\caption{Observed generation time across three GP runs}
+\label{tab:generation-time}
+\centering
+\footnotesize
+\begin{tabular}{lrr}
+\toprule
+Variant & Mean \(\pm\) SD (s) & Run range (s)\\
+\midrule
+\input{paper_assets/training_time_rows.tex}%
+\end{tabular}
+\end{table}
+
+\section{Results and Analysis}
+
+\subsection{RQ1: Full-F1 Versus Baseline ACO}
+
+Table~\ref{tab:main-results} reports the completed selected-candidate results.
+The baseline column contains the original ACO gap.
+The Full-F1 column contains the learned-method gap.
+The confidence interval is for \(\Delta g\).
+Negative values favor Full-F1.
+
+\begin{table*}[t]
+\caption{Selected-candidate results on completed uniform test sets. CI denotes the hierarchical bootstrap 95\% interval of \(\Delta g\). W/T/L is reported in percent.}
+\label{tab:main-results}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{lrrrrrl}
+\toprule
+ACO & \(n\) & Baseline gap (\%) & Full-F1 gap (\%) & \(\Delta g\) (pp) & 95\% CI (pp) & W/T/L\\
+\midrule
+\input{paper_assets/main_results_rows.tex}%
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{training_validation_curves.pdf}
+\caption{TSP100 training and validation curves. Lines are medians over three independent GP runs. Shaded regions show the minimum and maximum candidate values. A new training batch is used in every generation.}
+\label{fig:training-curves}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{main_gap_delta.pdf}
+\caption{Full-F1 minus baseline ACO reference gap. Error bars are hierarchical bootstrap 95\% intervals. Negative values favor Full-F1.}
+\label{fig:main-delta}
+\end{figure*}
+
+All 12 mean differences are negative.
+All 12 bootstrap intervals are below zero.
+The smallest observed reduction is 0.0736 percentage points for ACS on TSP50.
+The largest reduction is 7.8461 percentage points for AS on TSP500.
+The Holm-adjusted Wilcoxon values are at most \(9.004\times10^{-17}\).
+These test values describe the current blocks.
+They do not replace replication over more GP runs.
+
+AS improves from 1.8803\% to 1.7479\% on TSP50.
+It improves from 5.8952\% to 4.2154\% on TSP100.
+Its reductions are larger on TSP500 and TSP1000.
+They are 7.8461 and 7.3135 percentage points.
+
+ACS has smaller gains at the two smaller sizes.
+Its reduction is 0.2918 percentage points on TSP100.
+It reaches 3.2242 percentage points on TSP500.
+One of the three ACS candidates did not pass the independent deployment gate.
+The selected-candidate table retains that run because the analysis must not remove an unfavorable GP replicate.
+The operational gate-deployed result is therefore weaker than the selected-candidate result for ACS.
+
+MMAS improves from 4.1088\% to 1.8106\% on TSP100.
+Its reductions are 6.4522 and 6.6314 percentage points on TSP500 and TSP1000.
+Its TSP100 win rate is 99.2\%.
+Its TSP500 and TSP1000 win rates are 100\% in the current blocks.
+
+Fig.~\ref{fig:training-curves} shows noisy training curves.
+This behavior is expected because every generation uses a new batch.
+The validation curves are also not monotonic.
+The selected checkpoint can therefore differ from the last generation.
+The independent selection procedure is necessary.
+
+\textbf{Answer to RQ1:}
+Full-F1 has a lower mean reference gap than the corresponding original ACO in every completed pilot comparison.
+This is evidence for effectiveness.
+It is not yet evidence that the residual interface, two-tree structure, or Full/F1 primitive profile is the cause.
+
+\subsection{RQ2: Residual Versus Full Replacement}
+
+\pendingresult.
+This question requires a controlled transition-only comparison.
+The primary contrast is
+\begin{equation}
+    \Delta_{\mathrm{RQ2}}
+    =
+    g_{\mathrm{TR\mbox{-}RGP}}
+    -
+    g_{\mathrm{Matched\mbox{-}Replace}}.
+\end{equation}
+Both methods use the Full terminals and F1.
+Both use one transition tree and the same total node budget.
+They differ only in the integration interface.
+
+Legacy-GP provides a second replacement baseline.
+It uses the terminal and function design of the previous study.
+It cannot isolate the residual effect because several factors change at once.
+
+\textbf{Current answer to RQ2:}
+No conclusion is available.
+The RQ1 result cannot answer this question.
+
+\subsection{RQ3: Two Trees Versus One Tree}
+
+\pendingresult.
+The primary comparison uses Full-F1, TR-RGP, and PH-RGP.
+All methods use a total effective node budget of 31.
+The comparison therefore controls total syntax capacity.
+It does not force each active tree to use the same number of nodes.
+
+A second analysis uses budgets of 31 and 62.
+It will test whether a two-tree advantage remains when capacity is increased.
+The independent one-tree runs are the main controls.
+Dropping one tree from a trained pair is only a post-hoc mechanism test.
+
+\textbf{Current answer to RQ3:}
+No conclusion is available.
+The completed Full-F1 versus ACO comparison does not establish a two-tree advantage.
+
+\subsection{RQ4: Terminal and Function Profiles}
+
+\pendingresult.
+The factorial experiment contains Core-F0, Core-F1, Full-F0, and Full-F1.
+The terminal main effect is the average Full minus Core contrast.
+The function main effect is the average F1 minus F0 contrast.
+The interaction tests whether the F1 effect changes with the terminal profile.
+
+The Core profile contains four transition terminals and four pheromone terminals.
+The Full profile adds progress, entropy, stagnation, and colony-frequency information.
+F1 adds MIN, MAX, and ABS.
+This design can detect unnecessary primitives.
+It can also detect a dependence between the richer functions and richer terminals.
+
+\textbf{Current answer to RQ4:}
+No conclusion is available.
+The present terminal and function sets are technically valid.
+Their empirical necessity remains untested.
+
+\subsection{RQ5: Joint Coadaptation}
+
+\pendingresult.
+The mechanism analysis will evaluate three interventions.
+The first replaces the transition tree with zero.
+The second replaces the pheromone tree with zero.
+The third shuffles transition and pheromone trees across independent GP runs.
+A loss after shuffling would indicate pair-specific coadaptation.
+It would not by itself prove that joint training is better than independent single-tree training.
+
+\textbf{Current answer to RQ5:}
+No conclusion is available.
+
+\subsection{RQ6: Generalization}
+
+The completed results support scale transfer on uniform Euclidean TSP.
+Training and validation use only TSP100.
+TSP50, TSP500, and TSP1000 are unseen sizes.
+Full-F1 has a negative mean \(\Delta g\) for all three variants at every unseen size.
+The absolute reduction is generally larger at TSP500 and TSP1000.
+
+This result does not establish distribution transfer.
+Clustered TSP500, Gaussian TSP500, and TSPLIB results are pending.
+No terminal, function, or mechanism claim will be made from an out-of-distribution result alone.
+
+\textbf{Answer to RQ6:}
+The current pilot supports transfer across uniform problem sizes.
+Distribution transfer remains unanswered.
+
+\subsection{RQ7: Computational Efficiency}
+
+The fused evaluator gives a 14.626-fold single-GPU speedup over CPU16 on the registered workload.
+Dual sharding gives a 23.820-fold speedup over CPU16.
+Its scaling over one GPU is 1.629.
+Concurrent two-run campaign execution gives a 1.972-fold throughput scaling over one GPU.
+
+\textbf{Answer to RQ7:}
+Population-by-instance fusion makes full-budget GP training practical.
+Independent runs are the preferred multi-GPU unit.
+The measured ratios apply to the registered RTX 4000 Ada workload.
+They must not be transferred to another GPU model without a new benchmark.
+
+\section{Limitations and Threats to Validity}
+
+The main limitation is the number of GP runs.
+Three runs can reveal major failures.
+They cannot characterize the full variance of evolution.
+The current intervals contain substantial instance-level information but limited run-level information.
+
+Training uses only uniform TSP100.
+The present result is therefore a transfer study from one size and one distribution.
+The method has not yet been tested with local search.
+The conclusions apply only to AS, synchronous ACS, and MMAS under the reported parameters.
+
+The reference tours are valid.
+They do not all have attached global optimality certificates.
+Reference gap can therefore be negative in principle.
+The metric remains suitable for paired comparison because every method uses the same reference.
+
+GPU search uses FP32.
+CPU and GPU can follow different stochastic trajectories.
+The final length calculation is FP64, and the registered numerical non-inferiority test passes.
+This result does not imply bitwise equivalence.
+
+The current RQ1 data cannot support a causal explanation.
+Residual versus replacement, single versus dual tree, primitive profiles, and coadaptation require their registered controls.
+Those results are deliberately marked as pending.
+
+\section{Conclusion}
+
+This paper introduced RMTGP-ACO.
+The method evolves two strongly typed residual programs.
+One program changes state transition desirability.
+The other redistributes pheromone deposits.
+The interfaces preserve useful ACO invariants.
+The two trees also share a fixed total node budget.
+
+The completed pilot uses three independent GP runs for AS, ACS, and MMAS.
+Full-F1 has a lower mean reference gap than baseline ACO in every completed uniform test.
+The result holds from TSP50 to TSP1000.
+A fused CUDA evaluator reduces the cost of the nested GP--ACO computation.
+
+These findings support further evaluation.
+They do not yet show that residual integration is better than replacement.
+They also do not yet show that two trees are better than one tree.
+The pending ablation and capacity experiments are required for those conclusions.
+
+\bibliographystyle{IEEEtran}
+\bibliography{rmtgp_aco_refs}
+
+\end{document}
