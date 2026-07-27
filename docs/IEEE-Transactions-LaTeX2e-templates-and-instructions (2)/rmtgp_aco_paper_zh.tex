@@ -783,8 +783,9 @@ GPU 编译器还会合并行为相同的程序。
 \subsection{研究问题}
 
 表~\ref{tab:rq-zh} 给出本文需要回答的研究问题。
-RQ1、RQ6 的规模迁移部分和 RQ7 已有先导结果。
-其余问题需要完成登记的对照实验。
+RQ1、RQ2、RQ4--RQ7 已有完整的三种子先导结果。
+RQ3 的 31 节点比较已经完成。
+31/62 节点容量敏感性仍需单独报告。
 
 \begin{table*}[t]
 \caption{研究问题、对照方法和当前状态}
@@ -797,11 +798,11 @@ RQ1、RQ6 的规模迁移部分和 RQ7 已有先导结果。
 问题 & 问题内容 & 主要比较 & 状态\\
 \midrule
 RQ1 & Full-F1 是否降低原始 ACO 的参考差距？ & Full-F1 与 AS、ACS、MMAS baseline 配对比较 & 已完成\\
-RQ2 & 残差状态转移是否优于直接替换完整状态转移？ & TR-RGP 与 Matched-Replace & 待完成\\
-RQ3 & 相同总节点预算下，双树是否优于单树？ & Full-F1 与独立训练的 TR-RGP、PH-RGP & 待完成\\
-RQ4 & 改进是否依赖 Full 终端或 F1 函数？ & Core/Full 与 F0/F1 的 \(2\times2\) 因子实验 & 待完成\\
-RQ5 & 两棵树之间是否存在联合适应？ & 删除一棵树，以及跨 GP 运行打乱树配对 & 待完成\\
-RQ6 & TSP100 训练的程序能否迁移到其他规模和分布？ & TSP50/500/1000，以及 cluster、Gaussian、TSPLIB & 规模已完成\\
+RQ2 & 残差状态转移是否优于直接替换完整状态转移？ & TR-RGP 与 Matched-Replace & 已完成\\
+RQ3 & 相同总节点预算下，双树是否优于单树？ & Full-F1 与独立训练的 TR-RGP、PH-RGP & 容量待完成\\
+RQ4 & 改进是否依赖 Full 终端或 F1 函数？ & Core/Full 与 F0/F1 的 \(2\times2\) 因子实验 & 已完成\\
+RQ5 & 两棵树之间是否存在联合适应？ & 删除一棵树，以及跨 GP 运行打乱树配对 & 已完成\\
+RQ6 & TSP100 训练的程序能否迁移到其他规模和分布？ & TSP50/500/1000，以及 cluster、Gaussian、TSPLIB & 已完成\\
 RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 GPU 与并行 campaign & 已完成\\
 \bottomrule
 \end{tabular}
@@ -838,8 +839,8 @@ RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 
 测试 & TSP100 uniform & 1,280\\
 测试 & TSP500 uniform & 128\\
 测试 & TSP1000 uniform & 128\\
-待测 & TSP500 cluster / Gaussian & \(128/128\)\\
-待测 & TSPLIB，\(n\leq500\) & 42\\
+测试 & TSP500 cluster / Gaussian & \(128/128\)\\
+测试 & TSPLIB，\(n\leq500\) & 42\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -857,15 +858,15 @@ RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 
 方法 & 状态转移 & 信息素更新 & 终端/函数 & 用途 & 状态\\
 \midrule
 Baseline ACO & 不修改 & 不修改 & 无 & 原始 AS、ACS 或 MMAS & 已完成\\
-Legacy-GP & 完整替换 & 不修改 & 上一研究配置 & 在当前预算下复现上一篇 GP-ACO & \pendingresult\\
-Matched-Replace & 完整替换 & 不修改 & Full/F1 & RQ2 的匹配替换对照 & \pendingresult\\
-TR-RGP & 残差 & 不修改 & Full/F1 & 独立训练的状态转移单树 & \pendingresult\\
-PH-RGP & 不修改 & 预算残差 & Full/F1 & 独立训练的信息素单树 & \pendingresult\\
-Core-F0 & 残差 & 预算残差 & Core/F0 & RQ4 因子实验 & \pendingresult\\
-Core-F1 & 残差 & 预算残差 & Core/F1 & RQ4 因子实验 & \pendingresult\\
-Full-F0 & 残差 & 预算残差 & Full/F0 & RQ4 因子实验 & \pendingresult\\
-Full-F1 & 残差 & 预算残差 & Full/F1 & 本文主方法 & uniform 已完成\\
-Drop / Shuffle & 训练后干预 & 训练后干预 & 固定 Full/F1 树 & RQ5 联合适应分析 & \pendingresult\\
+Legacy-GP & 完整替换 & 不修改 & 上一研究配置 & 在当前预算下复现上一篇 GP-ACO & 已完成\\
+Matched-Replace & 完整替换 & 不修改 & Full/F1 & RQ2 的匹配替换对照 & 已完成\\
+TR-RGP & 残差 & 不修改 & Full/F1 & 独立训练的状态转移单树 & 已完成\\
+PH-RGP & 不修改 & 预算残差 & Full/F1 & 独立训练的信息素单树 & 已完成\\
+Core-F0 & 残差 & 预算残差 & Core/F0 & RQ4 因子实验 & 已完成\\
+Core-F1 & 残差 & 预算残差 & Core/F1 & RQ4 因子实验 & 已完成\\
+Full-F0 & 残差 & 预算残差 & Full/F0 & RQ4 因子实验 & 已完成\\
+Full-F1 & 残差 & 预算残差 & Full/F1 & 本文主方法 & 已完成\\
+Drop / Shuffle & 训练后干预 & 训练后干预 & 固定 Full/F1 树 & RQ5 联合适应分析 & 已完成\\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -878,6 +879,10 @@ RQ2 的主要差值是 TR-RGP 的参考差距减去 Matched-Replace 的参考差
 RQ3 比较 Full-F1、TR-RGP 和 PH-RGP。
 三种方法的总有效节点预算都为 31。
 另一个容量实验比较 31 和 62 两个总预算。
+该实验对三种结构的 62 节点条件各重新训练三个 GP 运行。
+31 节点条件复用锁定的独立训练结果。
+两个容量共享训练计划、GP 根种子、ACO 参数和测试随机流。
+容量分析只使用 TSP100-U 和 TSP500-U。
 RQ4 使用 \(2\times2\) 因子设计。
 RQ5 在训练完成后删除一棵树，或打乱不同 GP 运行产生的树配对。
 
@@ -1262,6 +1267,24 @@ MMAS 在 TSP100 上从 4.1088\% 降至 1.8106\%。
 曲线中的“最佳”只发生在每一代内部。
 最终测试仍使用验证流程选出的 champion。
 
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{ablation_validation_curves.pdf}
+\caption{全部消融方法在固定 selection 集上的验证差值曲线。
+每条线是三个 GP 运行在同一代的中位数。
+上排比较接口与树结构。
+下排比较 Core/Full \(\times\) F0/F1。
+负值表示低于原始 ACO。}
+\label{fig:ablation-validation-curves-zh}
+\end{figure*}
+
+图~\ref{fig:ablation-validation-curves-zh} 使用相同的验证口径。
+这些曲线只用于观察进化过程。
+最终比较仍使用独立选择的 champion 和锁定测试集。
+零树是合法个体。
+因此，Legacy-GP 的零差值平台表示该代由零树胜出。
+它不是缺失数据。
+
 \textbf{RQ1 的当前答案：}
 在全部 12 个已完成的先导比较中，Full-F1 的平均参考差距都低于对应的原始 ACO。
 因此，当前结果支持完整方法有效。
@@ -1269,65 +1292,228 @@ MMAS 在 TSP100 上从 4.1088\% 降至 1.8106\%。
 
 \subsection{RQ2：残差与完整替换}
 
-\pendingresult。
-主要比较是 TR-RGP 与 Matched-Replace。
-两者都使用一棵状态转移树、Full 终端、F1 函数和相同节点预算。
-唯一差异是树输出的接入方式。
-TR-RGP 修正原始分数。
-Matched-Replace 直接生成完整分数。
+\begin{table*}[!t]
+\caption{Residual、双树和单树的配对差值。每个单元格为均值差
+[95\% 分层 bootstrap 区间]，单位为百分点。负值表示列标题中的前项更好。}
+\label{tab:ablation-primary-zh}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrr}
+\toprule
+ACO & Test &
+TR-RGP \(-\) Matched-Replace &
+Full-F1 \(-\) TR-RGP &
+Full-F1 \(-\) PH-RGP\\
+\midrule
+\input{paper_assets/ablation_primary_rows.tex}%
+\end{tabular}}
+\end{table*}
 
-Legacy-GP 是辅助基线。
-它同时改变终端和函数。
-因此，Legacy-GP 不能单独识别 residual 的作用。
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{ablation_primary_forest.pdf}
+\caption{Residual 接口与双树结构的主要配对差值。
+误差线为 95\% 分层 bootstrap 区间。
+负值支持图中前项。图内坐标保留英文。}
+\label{fig:ablation-primary-zh}
+\end{figure*}
 
-\textbf{RQ2 的当前答案：}
-目前不能说明 residual 比完整替换更好。
-Full-F1 优于 baseline ACO 不能回答这个问题。
+表~\ref{tab:ablation-primary-zh} 的第一项是本 RQ 的直接 estimand。
+TR-RGP 与 Matched-Replace 都只有一棵状态转移树。
+两者共享 Full 终端、F1 函数、31 个节点预算、训练数据和随机计划。
+它们只改变树输出的接入方式。
+
+AS 的两个区间都低于零。
+对应估计为 \(-0.6058\) 和 \(-2.5584\) 个百分点。
+ACS 的两个区间都高于零。
+对应估计为 \(+0.3114\) 和 \(+5.4303\) 个百分点。
+MMAS 的两个均值为负。
+但是，两个区间都跨越零。
+TSP100 的估计为 \(-0.6795\)。
+TSP500 的估计为 \(-1.7058\)。
+
+因此，六个上下文中有两个明确支持 residual。
+另有两个明确支持完整替换。
+剩余两个方向偏向 residual，但不确定性较大。
+该结果表明接入方式与 ACO 变体存在明显交互。
+
+MMAS 的信息素上下界与本文残差都限制偏离幅度。
+但是，两者不作用于同一个变量。
+MMAS 上下界截断更新后的信息素。
+本 RQ 的状态转移残差直接修正候选分数。
+因此，不能仅凭形式相似就把二者视为同一机制。
+当前 MMAS 结果也没有显示明确的 residual 优势。
+
+Legacy-GP 同时改变终端和函数。
+它只能作为上一篇工作的辅助 baseline。
+它不能隔离 residual 本身。
+
+\textbf{RQ2 的答案：}
+当前 pilot 不支持“residual 普遍优于完整替换”。
+Residual 对 AS 有明确优势。
+完整替换对 ACS 有明确优势。
+MMAS 的证据不确定。
 
 \subsection{RQ3：双树与单树}
 
-\pendingresult。
-主要比较包含 Full-F1、独立训练的 TR-RGP 和独立训练的 PH-RGP。
+\subsubsection{固定 31 节点的结构比较}
+
+表~\ref{tab:ablation-primary-zh} 的后两项比较 Full-F1、TR-RGP 和 PH-RGP。
+三种方法都独立训练。
 三者共享 31 个总有效节点。
 双树的 31 个节点在两棵树之间分配。
 它不是每棵树各 31 个节点。
-这种设置控制了总语法容量。
 
-31 与 62 节点的容量实验用于检查结果是否依赖预算。
-训练后删除一棵树只能分析已有个体的机制。
-它不能替代独立训练的单树对照。
+Full-F1 相对 TR-RGP 有两个区间低于零。
+另外四个区间跨越零。
+没有区间支持 TR-RGP 明确优于 Full-F1。
+Full-F1 相对 PH-RGP 有三个区间低于零。
+两个区间跨越零。
+AS 的 TSP500 区间支持 PH-RGP。
+
+在六个 ACO--测试上下文中，没有一个上下文同时满足
+“Full-F1 明确优于 TR-RGP”和“Full-F1 明确优于 PH-RGP”。
+因此，固定 31 个总节点时，双树的增量证据不完整。
+
+\subsubsection{31/62 节点容量敏感性}
+
+\pendingresult。
+该实验对 TR-RGP、PH-RGP 和 Full-F1 全部重新训练。
+单树在 \(B=62\) 时可使用 62 个节点。
+双树在 \(B=62\) 时两棵树合计可使用 62 个节点。
+该设计把树的角色数与总表达容量分开。
+
+训练后删除一棵树只分析已有 Full-F1 个体。
+它不能替代上述独立训练对照。
 
 \textbf{RQ3 的当前答案：}
-目前不能说明双树优于单树。
+在 31 个总节点下，当前结果不能说明双树稳定优于两个单树。
+容量敏感性结果完成后，才能判断该结论是否由节点上限造成。
 
 \subsection{RQ4：终端与函数配置}
 
-\pendingresult。
+\begin{table*}[!t]
+\caption{Core/Full \(\times\) F0/F1 因子效应。
+单元格为均值差 [95\% 分层 bootstrap 区间]，单位为百分点。}
+\label{tab:factorial-effects-zh}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrr}
+\toprule
+ACO & Test & Full \(-\) Core & F1 \(-\) F0 &
+\((\mathrm{Full-F1}-\mathrm{Full-F0})
+-(\mathrm{Core-F1}-\mathrm{Core-F0})\)\\
+\midrule
+\input{paper_assets/factorial_effect_rows.tex}%
+\end{tabular}}
+\end{table*}
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{factorial_effects.pdf}
+\caption{Terminal 主效应、function 主效应和交互效应。
+负值表示相应增加降低参考差距。
+误差线为 95\% 分层 bootstrap 区间。}
+\label{fig:factorial-effects-zh}
+\end{figure*}
+
 因子实验包含 Core-F0、Core-F1、Full-F0 和 Full-F1。
-Full 与 Core 的平均差异表示终端主效应。
-F1 与 F0 的平均差异表示函数主效应。
+Full 与 Core 的平均差异是 terminal 主效应。
+F1 与 F0 的平均差异是 function 主效应。
 两种差异是否相互依赖由交互效应判断。
 
-Core 保留四个状态转移终端和四个信息素终端。
-Full 增加进度、熵、停滞和蚁群频率信息。
-F1 增加 \texttt{MIN}、\texttt{MAX} 和 \texttt{ABS}。
-该实验可以识别没有必要的输入或函数。
+Full \(-\) Core 没有一个区间低于零。
+四个区间跨越零。
+MMAS 的 TSP100 和 TSP500 区间高于零。
+这两项支持 Core，而不是 Full。
+F1 \(-\) F0 也没有一个区间低于零。
+五个区间跨越零。
+AS 的 TSP500 区间高于零。
+交互效应的六个区间全部跨越零。
 
-\textbf{RQ4 的当前答案：}
-现有终端和函数在类型和数值上是有效的。
-它们是否存在过度设计仍需实验回答。
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{terminal_usage_heatmap.pdf}
+\caption{九个 Full-F1 champion 对 terminal 的语法引用。
+蓝色表示表达式至少引用一次。
+该图不判断引用是否在代数化简后仍有作用。}
+\label{fig:terminal-usage-zh}
+\end{figure}
+
+图~\ref{fig:terminal-usage-zh} 给出补充的语法审计。
+状态转移树中，\texttt{BaseConf} 出现在 6/9 个 champion。
+\texttt{DistRank} 和 \texttt{ConstructProg} 均未出现。
+\texttt{Entropy}、\texttt{ACOProg} 和 \texttt{Stagnation} 各只出现一次。
+信息素树中，\texttt{EdgeTau} 出现在 6/9 个 champion。
+\texttt{ColonyFreq} 出现在 5/9 个 champion。
+\texttt{ACOProg} 和 \texttt{Stagnation} 各只出现一次。
+语法出现不等于因果贡献。
+例如，一个 terminal 可能位于相互抵消的子表达式中。
+
+\textbf{RQ4 的答案：}
+当前 pilot 没有观察到 Full terminal 集合或 F1 新函数的稳定增益。
+相反，三个上下文支持更简单的配置。
+因此，现有 Full/F1 设计可能偏复杂。
+Full-F1 的主结果仍然有效。
+但是，后续确认实验应优先检验更简洁的 Core/F0 或 Core/F1 配置。
 
 \subsection{RQ5：联合适应}
 
-\pendingresult。
-第一项干预将状态转移树替换为零。
-第二项干预将信息素树替换为零。
-第三项干预在独立 GP 运行之间打乱两棵树的配对。
-若打乱后性能下降，则说明存在配对相关的联合适应。
-该结果仍不能代替 RQ3 的独立单树训练。
+\begin{table*}[!t]
+\caption{Full-F1 的训练后组件删除与跨运行配对干预。
+单元格为均值差 [95\% 分层 bootstrap 区间]，单位为百分点。
+负值表示原始 Full-F1 配对更好。}
+\label{tab:mechanism-effects-zh}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{2.5pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrr}
+\toprule
+ACO & Test & Full \(-\) drop-TR & Full \(-\) drop-PH &
+Full \(-\) shuffle-r1 & Full \(-\) shuffle-r2\\
+\midrule
+\input{paper_assets/mechanism_rows.tex}%
+\end{tabular}}
+\end{table*}
 
-\textbf{RQ5 的当前答案：}
-目前没有结论。
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{mechanism_effects.pdf}
+\caption{训练后组件删除和跨 GP 运行树配对打乱。
+负值表示原始 Full-F1 champion 更好。
+误差线为 95\% 分层 bootstrap 区间。}
+\label{fig:mechanism-effects-zh}
+\end{figure*}
+
+第一项干预把状态转移树替换为零。
+第二项干预把信息素树替换为零。
+Full-F1 \(-\) drop-TR 的六个均值都为负。
+四个区间严格低于零。
+另外两个区间的上界为零。
+这表明状态转移树对已进化 champion 通常是必要的。
+
+Full-F1 \(-\) drop-PH 也以负值为主。
+三个区间严格低于零。
+两个区间的上界为零。
+一个区间跨越零。
+信息素树也有贡献。
+但是，它的证据没有状态转移树一致。
+
+第三项干预在不同 GP 运行之间打乱两棵树的配对。
+十二个 shuffle 区间中，只有 AS/TSP100 的 r1 区间低于零。
+其余十一个区间都跨越零。
+因此，当前数据没有显示稳定的“同一 GP 运行配对”优势。
+
+\textbf{RQ5 的答案：}
+两个组件都能对已进化 Full-F1 个体产生作用。
+状态转移树的作用更一致。
+当前没有稳定证据表明两棵树必须来自同一个 GP 运行。
+该 post-hoc 结果不能替代 RQ3 的独立单树训练。
 
 \subsection{RQ6：泛化能力}
 
@@ -1337,12 +1523,50 @@ TSP50、TSP500 和 TSP1000 都是未见规模。
 三个 ACO 变体在三个未见规模上的平均 \(\Delta g\) 都小于零。
 在 TSP500 和 TSP1000 上，绝对下降通常更大。
 
-该结果不能证明分布迁移。
-Cluster TSP500、Gaussian TSP500 和 TSPLIB 的结果仍待完成。
+\begin{table*}[!t]
+\caption{训练分布外的描述性测试结果。
+胜/平/负按 GP-run--instance block 的百分比报告。
+本表不用于 terminal/function 的因果推断。}
+\label{tab:ood-results-zh}
+\centering
+\footnotesize
+\begin{tabular}{llrrrl}
+\toprule
+ACO & Test & Baseline gap (\%) & Full-F1 gap (\%) &
+\(\Delta g\) (百分点) & 胜/平/负\\
+\midrule
+\input{paper_assets/ood_results_rows.tex}%
+\end{tabular}
+\end{table*}
 
-\textbf{RQ6 的当前答案：}
-先导结果支持相同分布下的跨规模迁移。
-分布外迁移仍无结论。
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{ood_delta.pdf}
+\caption{Cluster、Gaussian 和 TSPLIB 上的描述性平均差值。
+负值表示 Full-F1 更好。
+该图不显示确认性置信区间。}
+\label{fig:ood-delta-zh}
+\end{figure}
+
+表~\ref{tab:ood-results-zh} 给出分布迁移结果。
+九个平均差值全部小于零。
+Cluster 上的下降为 2.5182 至 6.3245 个百分点。
+Gaussian 上的下降为 2.2175 至 6.0802 个百分点。
+TSPLIB 上的下降为 0.9399 至 3.3419 个百分点。
+
+TSPLIB 的胜率低于两个合成 OOD 分布。
+AS、ACS 和 MMAS 的 TSPLIB 胜率分别为 82.5\%、77.8\% 和 93.7\%。
+这表明真实实例迁移的异质性更强。
+OOD 只评估锁定的 Full-F1 champion。
+本文不在 OOD 数据上重新选择程序。
+
+\textbf{RQ6 的答案：}
+当前 pilot 支持相同分布下的跨规模迁移。
+九个 OOD 平均差值也都支持分布迁移。
+但是，OOD 结果是描述性的。
+它不能证明 terminal、function 或 residual 的普遍因果优势。
+
+\clearpage
 
 \subsection{RQ7：计算效率}
 
@@ -1350,6 +1574,25 @@ Cluster TSP500、Gaussian TSP500 和 TSPLIB 的结果仍待完成。
 双 GPU shard 相对 CPU16 加速 23.820 倍。
 它相对单 GPU 的扩展率为 1.629。
 两个独立工作负载并行时，扩展率为 1.972。
+
+\begin{table}[t]
+\caption{Full-F1 相对原始 ACO 的孤立 warm 推理时间开销}
+\label{tab:inference-overhead-zh}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrrrr}
+\toprule
+ACO & TSP50 & TSP100 & TSP500 & TSP1000\\
+\midrule
+\input{paper_assets/inference_overhead_rows.tex}%
+\end{tabular}
+\end{table}
+
+表~\ref{tab:inference-overhead-zh} 使用当前三张 RTX A5000。
+每个 champion 单独预热和计时。
+该计时用于描述部署开销。
+它不与 RTX 4000 Ada 的融合种群吞吐量混合。
 
 \textbf{RQ7 的当前答案：}
 “个体 \(\times\) 实例”融合使正式 ACO 预算下的 GP 训练可行。
@@ -1367,7 +1610,8 @@ Cluster TSP500、Gaussian TSP500 和 TSPLIB 的结果仍待完成。
 训练只使用 uniform TSP100。
 当前结论只适用于报告的 AS、同步 ACS 和 MMAS 参数。
 本文没有启用局部搜索。
-分布迁移实验尚未完成。
+分布迁移只覆盖两个合成分布和 42 个 TSPLIB 实例。
+这些 OOD 结果只作描述性分析。
 
 参考路线均有效，但不都带有全局最优性证书。
 因此，本文谨慎使用“参考差距”。
@@ -1379,8 +1623,9 @@ CPU 与 GPU 不保证产生相同的随机轨迹。
 登记的数值非劣审计已经通过。
 该结果不表示逐位一致。
 
-RQ1 结果不能提供因果解释。
-Residual 与替换、双树与单树、函数与终端配置、联合适应都需要各自的受控实验。
+RQ1 结果本身不能提供因果解释。
+本文已分别报告 residual、树结构、函数、终端和联合适应的受控 pilot。
+但是，三个 GP 运行仍不足以支持确认性因果结论。
 
 \section{结论}
 
