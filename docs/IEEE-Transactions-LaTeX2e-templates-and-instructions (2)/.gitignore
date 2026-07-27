@@ -5,4 +5,12 @@ rmtgp_aco_paper.fdb_latexmk
 rmtgp_aco_paper.fls
 rmtgp_aco_paper.log
 rmtgp_aco_paper.out
+rmtgp_aco_paper_zh.aux
+rmtgp_aco_paper_zh.bbl
+rmtgp_aco_paper_zh.blg
+rmtgp_aco_paper_zh.fdb_latexmk
+rmtgp_aco_paper_zh.fls
+rmtgp_aco_paper_zh.log
+rmtgp_aco_paper_zh.out
+rmtgp_aco_paper_zh.xdv
 paper_assets/__pycache__/
