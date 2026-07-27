@@ -235,6 +235,10 @@ AS、ACS 和 MMAS 的原有控制逻辑保持不变。
 \texttt{TrField} 与 \texttt{PhField} 是不同的 Python 标记类。
 因此，DEAP 不允许两类树之间交换子树。
 这一限制避免了形状正确但语义错误的表达式。
+两个 \texttt{PrimitiveSetTyped} 的根签名分别为
+\texttt{TRANSITION: () -> TrField} 和
+\texttt{PHEROMONE: () -> PhField}。
+每棵树的根类型与该树内部全部子树的类型一致。
 
 \begin{table*}[t]
 \caption{两棵 GP 树的输入、输出和执行位置}
@@ -329,44 +333,53 @@ Full 使用全部八个终端。
 \(k\) 是当前可行城市数。
 
 \begin{table*}[t]
-\caption{状态转移终端。全部输出广播为 \texttt{TrField}。}
+\caption{状态转移终端的定义与强类型。全部终端的返回类型为 \texttt{TrField}。}
 \label{tab:transition-terminals-zh}
 \centering
 \footnotesize
 \renewcommand{\arraystretch}{1.18}
-\begin{tabular}{L{21mm}L{54mm}L{72mm}L{17mm}}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{L{22mm}L{22mm}L{51mm}L{56mm}L{15mm}}
 \toprule
-终端 & 计算方法 & 直观含义 & 配置\\
+终端 & 输出 Type & 计算方法 & 直观含义 & 配置\\
 \midrule
 \texttt{RTau} &
+\texttt{TrField} &
 对当前可行边的 \(\log(\max(\tau,\epsilon))\) 做标准化，再取 \(\tanh\) &
 候选边相对于当前可行集合的信息素强弱 &
 Core、Full\\
 \texttt{REta} &
+\texttt{TrField} &
 对当前可行边的 \(\log(\max(\eta,\epsilon))\) 做标准化，再取 \(\tanh\) &
 候选边相对于当前可行集合的距离启发式强弱 &
 Core、Full\\
 \texttt{BaseConf} &
+\texttt{TrField} &
 计算 \(\tanh[\log(p^0+\epsilon)+\log k]\) &
 原始分布对该候选的相对信心。均匀分布时为零 &
 Core、Full\\
 \texttt{DistRank} &
+\texttt{TrField} &
 距离名次为 \(r\) 时，计算 \(1-2(r-1)/(k-1)\)；\(k=1\) 时设零 &
 最近城市映射为 1，最远城市映射为 \(-1\) &
 Core、Full\\
 \texttt{Entropy} &
+\texttt{TrField} &
 计算 \(2H(p^0)/\log k-1\)，并广播到候选；\(k=1\) 时设为 \(-1\) &
 原始转移分布的不确定性 &
 Full\\
 \texttt{ConstructProg} &
+\texttt{TrField} &
 计算 \(2q/\max(n-1,1)-1\) &
 一条路线内部的构造进度 &
 Full\\
 \texttt{ACOProg} &
+\texttt{TrField} &
 计算 \(2(t-1)/\max(T-1,1)-1\) &
 整个 ACO 运行的迭代进度 &
 Full\\
 \texttt{Stagnation} &
+\texttt{TrField} &
 计算 \(2\min(s_t/T,1)-1\) &
 距离上一次全局最优改进的停滞程度 &
 Full\\
@@ -383,40 +396,48 @@ Core 使用 \texttt{EdgeEta}、\texttt{EdgeTau}、\texttt{NNRank} 和
 Full 使用全部七个终端。
 
 \begin{table*}[t]
-\caption{信息素终端。全部输出为 \texttt{PhField}。}
+\caption{信息素终端的定义与强类型。全部终端的返回类型为 \texttt{PhField}。}
 \label{tab:pheromone-terminals-zh}
 \centering
 \footnotesize
 \renewcommand{\arraystretch}{1.18}
-\begin{tabular}{L{21mm}L{54mm}L{72mm}L{17mm}}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{L{22mm}L{22mm}L{51mm}L{56mm}L{15mm}}
 \toprule
-终端 & 计算方法 & 直观含义 & 配置\\
+终端 & 输出 Type & 计算方法 & 直观含义 & 配置\\
 \midrule
 \texttt{EdgeEta} &
+\texttt{PhField} &
 比较边 \((u,v)\) 的对数启发式与两个端点邻域的平均值，再在来源路线内标准化 &
 该边相对于两个端点局部邻域的距离质量 &
 Core、Full\\
 \texttt{EdgeTau} &
+\texttt{PhField} &
 对来源路线内的 \(\log(\max(\tau_{uv},\epsilon))\) 做标准化 &
 该边相对于同一增强事件中其他边的信息素强弱 &
 Core、Full\\
 \texttt{NNRank} &
+\texttt{PhField} &
 将 \(u\!\to\!v\) 与 \(v\!\to\!u\) 的最近邻名次映射到 \([-1,1]\)，然后取平均 &
 无方向的局部邻近程度 &
 Core、Full\\
 \texttt{ColonyFreq} &
+\texttt{PhField} &
 边在当前蚁群中出现 \(c_e\) 次时，计算 \(2c_e/M-1\) &
 当前蚁群对该边的共同选择程度 &
 Full\\
 \texttt{SourceQuality} &
+\texttt{PhField} &
 计算 \(\tanh[(\overline L-L_r)/(\sigma_L+\epsilon)]\)，并广播到路线边 &
 来源路线相对于当前蚁群的质量 &
 Core、Full\\
 \texttt{ACOProg} &
+\texttt{PhField} &
 计算 \(2(t-1)/\max(T-1,1)-1\) &
 整个 ACO 运行的迭代进度 &
 Full\\
 \texttt{Stagnation} &
+\texttt{PhField} &
 计算 \(2\min(s_t/T,1)-1\) &
 距离上一次全局最优改进的停滞程度 &
 Full\\
@@ -426,6 +447,11 @@ Full\\
 
 两个终端集合都包含常数 \(-1,-0.5,0,0.5,1\)。
 它们还包含一个从 \(U[-1,1]\) 采样的随机常数。
+这些常数也是强类型终端。
+状态转移树中的常数返回 \texttt{TrField}。
+信息素树中的常数返回 \texttt{PhField}。
+解释器将常数分别广播到 \([B,M,K]\) 或 \([B,R,n]\)。
+因此，树内没有可以跨角色使用的无类型 scalar 终端。
 随机常数变异加入标准差为 0.1 的高斯噪声。
 变异后的值截断到 \([-1,1]\)。
 
@@ -434,24 +460,61 @@ Full\\
 表~\ref{tab:functions-zh} 给出两个函数配置。
 所有运算都逐元素执行。
 F1 在 F0 上增加 \texttt{MIN}、\texttt{MAX} 和 \texttt{ABS}。
+每个函数都注册两个相互隔离的版本。
+状态转移版本只接收并返回 \texttt{TrField}。
+信息素版本只接收并返回 \texttt{PhField}。
+同一个函数调用不能混合这两种类型。
 
-\begin{table}[t]
-\caption{GP 函数集合}
+\begin{table*}[t]
+\caption{GP 函数集合及其强类型输入输出签名}
 \label{tab:functions-zh}
 \centering
 \footnotesize
-\begin{tabular}{lll}
+\renewcommand{\arraystretch}{1.16}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{L{18mm}L{38mm}L{55mm}L{35mm}L{18mm}}
 \toprule
-配置 & 二元函数 & 一元函数\\
+函数 & 计算 & 输入 Type & 输出 Type & 配置\\
 \midrule
-F0 & ADD, SUB, MUL, PDIV & NEG\\
-F1 & F0, MIN, MAX & NEG, ABS\\
+\texttt{ADD} & \(x+y\) &
+\texttt{TrField}\(\times\)\texttt{TrField} 或
+\texttt{PhField}\(\times\)\texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F0、F1\\
+\texttt{SUB} & \(x-y\) &
+\texttt{TrField}\(\times\)\texttt{TrField} 或
+\texttt{PhField}\(\times\)\texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F0、F1\\
+\texttt{MUL} & \(xy\) &
+\texttt{TrField}\(\times\)\texttt{TrField} 或
+\texttt{PhField}\(\times\)\texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F0、F1\\
+\texttt{PDIV} & \(xy/(y^2+10^{-6})\) &
+\texttt{TrField}\(\times\)\texttt{TrField} 或
+\texttt{PhField}\(\times\)\texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F0、F1\\
+\texttt{NEG} & \(-x\) &
+\texttt{TrField} 或 \texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F0、F1\\
+\texttt{MIN} & \(\min(x,y)\) &
+\texttt{TrField}\(\times\)\texttt{TrField} 或
+\texttt{PhField}\(\times\)\texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F1\\
+\texttt{MAX} & \(\max(x,y)\) &
+\texttt{TrField}\(\times\)\texttt{TrField} 或
+\texttt{PhField}\(\times\)\texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F1\\
+\texttt{ABS} & \(|x|\) &
+\texttt{TrField} 或 \texttt{PhField} &
+\texttt{TrField} 或 \texttt{PhField} & F1\\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
 
-保护除法定义为
-\(\operatorname{PDIV}(x,y)=xy/(y^2+10^{-6})\)。
+例如，状态转移版本的 \texttt{ADD} 签名为
+\((\texttt{TrField},\texttt{TrField})\to\texttt{TrField}\)。
+信息素版本的签名为
+\((\texttt{PhField},\texttt{PhField})\to\texttt{PhField}\)。
+\texttt{PDIV} 的计算见表~\ref{tab:functions-zh}。
 它在 \(y=0\) 附近连续。
 每次函数计算后，NaN 被替换为零。
 正负无穷被替换为 \(10\) 和 \(-10\)。
@@ -460,6 +523,8 @@ F1 & F0, MIN, MAX & NEG, ABS\\
 
 Legacy-GP 使用原研究的保护除法。
 当分母绝对值不大于 \(10^{-6}\) 时，它返回 1。
+它的 \texttt{PDIV1} 签名为
+\((\texttt{TrField},\texttt{TrField})\to\texttt{TrField}\)。
 Matched-Replace 使用 Full 终端和 F1 函数。
 它将树输出经过截断和 softplus 后直接作为完整转移分数。
 
