@@ -15,3 +15,9 @@ replicate，不用于一个 run 内的 task sharding。
 结果写入 `runs/tsp100-instance-budget-single-gpu`。训练效果以冻结
 validation 的最终候选 gap、相对 baseline 的 delta、非劣门和 CPU FP64
 audit 为准。训练 batch 上的每代最优 gap 仅用于描述优化轨迹。
+
+训练完成后，`scripts/evaluate_instance_budget_parallel.py` 只加载九个
+`selected_candidate.pkl`。它把一个原始 ACO baseline 与九个最终候选组成
+10-program batch，并使用 128-instance batch 和确定性双 GPU LPT 分片。
+测试不会重新评测 GP population。三个训练预算共享每个
+partition×instance×ACO-seed 的 baseline 和随机流。
