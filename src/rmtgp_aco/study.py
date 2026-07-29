@@ -330,7 +330,8 @@ def _cache_metadata(
         "seed": seed,
         "aco_config_hash": spec.experiment.aco.config_hash,
         "backend_semantic": backend_semantic_id(
-            spec.experiment.runtime.aco_backend
+            spec.experiment.runtime.aco_backend,
+            spec.experiment.runtime,
         ),
         "instance_ids": list(batch.instance_ids),
         "coordinate_hashes": list(batch.coordinate_hashes),
@@ -590,7 +591,8 @@ def evaluate_study_partition(
             "aco_config_hash": spec.experiment.aco.config_hash,
             "backend": spec.experiment.runtime.aco_backend.value,
             "backend_semantic": backend_semantic_id(
-                spec.experiment.runtime.aco_backend
+                spec.experiment.runtime.aco_backend,
+                spec.experiment.runtime,
             ),
             "selected_candidate_tested": True,
             "deployment_decisions": decisions,

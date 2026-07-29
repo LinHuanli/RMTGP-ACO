@@ -32,15 +32,39 @@ python -m pytest
 python -m rmtgp_aco --help
 ```
 
+RTX PRO 5000 Blackwell 节点使用独立 Python 3.12 环境。PyTorch 必须从官方
+CUDA 13.2 wheel 索引安装：
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip setuptools wheel
+.venv/bin/python -m pip install \
+  torch==2.12.1 --index-url https://download.pytorch.org/whl/cu132
+.venv/bin/python -m pip install \
+  -c constraints-py312.txt -e '.[dev,cuda]'
+.venv/bin/python -m pip check
+```
+
+运行 CUDA 任务前可核对环境：
+
+```bash
+.venv/bin/python -c \
+  'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name())'
+```
+
 集群正式环境使用 `constraints-py312.txt` 固定 NumPy/Numba/llvmlite
-兼容组合。Protocol A v0.5 的科学预算固定为 32 只蚂蚁、500 个 ACO
-iterations。默认正式配置仍使用单进程、16-thread Numba float64 CPU
-后端；另提供融合 CUDA 候选后端，在 GPU 上 FP32 搜索、返回 tour 后由 CPU
-FP64 精确计分。RTX 4000 Ada 上的正式质量门、单卡速度门和双卡 campaign
-吞吐门均已通过；单 run 双卡扩展为 1.629×，未达到预注册的 1.7×。因此
-大规模实验默认采用“一张 GPU 一个独立 run”的 campaign 调度，dual shard
-仅用于确实需要降低单代延迟的运行。CPU 配置继续作为 float64 oracle 和
-fallback，不因加速后端加入而改写科学协议。
+兼容组合。当前 Blackwell 环境为 Python 3.12、PyTorch 2.12.1+cu132、
+CuPy 14.1.1 和系统 CUDA 13.3。Protocol A v0.5 的科学预算固定为 32 只
+蚂蚁、500 个 ACO iterations。
+
+`cuda_tiled_v2` 把 program×instance×ant×candidate 四层工作平铺到 GPU，
+并把当代 GP 树生成为 CUDA 表达式。RTX PRO 5000 Blackwell 上的最终
+profile 为 FP32-fast、8 candidate lanes 和无 register cap。所有返回 tour
+仍由 CPU FP64 精确计分。128×2 scales×3 seeds 的 paired 非劣质量门已经
+通过。单卡相对旧融合内核加速约 2.98 倍；双卡相对旧单卡约 5.20 倍。
+双卡扩展为 1.742×。实现与门控结果见
+[`docs/performance/cuda_v2_pro5000_blackwell_20260730.md`](docs/performance/cuda_v2_pro5000_blackwell_20260730.md)。
+CPU 后端继续作为 float64 oracle 和 fallback。
 
 仓库中的 `references/ACOTSP-1.03` 是算法语义参考，保留其原始许可证。
 
@@ -235,8 +259,9 @@ seeds，再分别要求 TSP50、TSP100 和 pooled 的单侧 95% 上界不超过
   candidate list、offset cache、phase 隔离的冻结 schedule；
 - `aco.py`：AS、同步 ACS、MMAS 的 PyTorch batch 实现；
 - `aco_numba.py`：确定性标量 oracle 与 population×instance 并行内核；
-- `aco_cuda.py` / `cuda/aco_fused.cu`：问题驻留、FP32 融合搜索、单/双 GPU
-  cost-balanced shard 和 CPU FP64 tour 计分；
+- `aco_cuda.py` / `cuda/aco_fused.cu` / `cuda/aco_tiled_v2.cu`：问题驻留、
+  生成式 GP、FP32-fast tiled 搜索、单/双 GPU cost-balanced shard 和
+  CPU FP64 tour 计分；
 - `program.py` / `genetic.py`：DEAP Strongly Typed 双树、postfix tensor
   interpreter 和角色保持遗传算子；
 - `baseline.py` / `training.py`：不可变 baseline archive、absolute reference

@@ -30,6 +30,42 @@ class ExecutionBackend(StrEnum):
     NUMBA = "numba"
     NUMBA_BATCH = "numba_batch"
     CUDA_FUSED_FP32 = "cuda_fused_fp32"
+    CUDA_TILED_V2 = "cuda_tiled_v2"
+
+
+class CudaProvider(StrEnum):
+    """CUDA v2 kernel 的实现方式。"""
+
+    RAW_CUDA = "raw_cuda"
+    CUTILE = "cutile"
+    AUTO = "auto"
+
+
+class CudaPrecision(StrEnum):
+    """CUDA v2 搜索过程的数值 profile。
+
+    所有 profile 返回的 tour 均由 CPU float64 距离矩阵重新计分。
+    ``fp16_mixed`` 和 ``bf16_mixed`` 只压缩静态只读表，动态信息素、
+    GP primitive 和概率归约仍使用 float32。
+    """
+
+    FP64 = "fp64"
+    FP32 = "fp32"
+    FP32_FAST = "fp32_fast"
+    FP16_MIXED = "fp16_mixed"
+    BF16_MIXED = "bf16_mixed"
+    FP16_SEARCH = "fp16_search"
+    FP8_E4M3 = "fp8_e4m3"
+    NVFP4 = "nvfp4"
+    AUTO = "auto"
+
+
+class CudaTaskOrder(StrEnum):
+    """population×instance task 在网格中的线性顺序。"""
+
+    PROGRAM_MAJOR = "program_major"
+    INSTANCE_MAJOR = "instance_major"
+    AUTO = "auto"
 
 
 class GPUMode(StrEnum):
@@ -327,6 +363,14 @@ class RuntimeConfig:
     gpu_block_threads: int = 0
     gpu_memory_fraction: float = 0.80
     gpu_task_chunk_size: int = 0
+    cuda_provider: CudaProvider = CudaProvider.RAW_CUDA
+    cuda_precision: CudaPrecision = CudaPrecision.FP32_FAST
+    cuda_candidate_lanes: int = 8
+    cuda_register_cap: int = 0
+    cuda_task_order: CudaTaskOrder = CudaTaskOrder.INSTANCE_MAJOR
+    cuda_generated_gp: bool = True
+    cuda_graph_replay: bool = False
+    cuda_tuning_manifest: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -335,6 +379,21 @@ class RuntimeConfig:
             ExecutionBackend(self.aco_backend),
         )
         object.__setattr__(self, "gpu_mode", GPUMode(self.gpu_mode))
+        object.__setattr__(
+            self,
+            "cuda_provider",
+            CudaProvider(self.cuda_provider),
+        )
+        object.__setattr__(
+            self,
+            "cuda_precision",
+            CudaPrecision(self.cuda_precision),
+        )
+        object.__setattr__(
+            self,
+            "cuda_task_order",
+            CudaTaskOrder(self.cuda_task_order),
+        )
         object.__setattr__(
             self,
             "gpu_devices",
@@ -360,13 +419,29 @@ class RuntimeConfig:
             raise ValueError("gpu_memory_fraction 必须位于 (0, 0.8]，至少保留 20%")
         if self.gpu_task_chunk_size < 0:
             raise ValueError("gpu_task_chunk_size 不得为负")
-        if self.aco_backend is ExecutionBackend.CUDA_FUSED_FP32:
+        if self.cuda_candidate_lanes not in {0, 1, 4, 8, 16, 32}:
+            raise ValueError("cuda_candidate_lanes 必须为 0/1/4/8/16/32")
+        if self.cuda_register_cap not in {0, 64, 80, 96, 112, 128}:
+            raise ValueError("cuda_register_cap 必须为 0/64/80/96/112/128")
+        if self.cuda_provider is CudaProvider.CUTILE and (
+            self.cuda_precision
+            not in {
+                CudaPrecision.FP32,
+                CudaPrecision.FP32_FAST,
+                CudaPrecision.AUTO,
+            }
+        ):
+            raise ValueError("cuTile prototype 当前只支持 fp32/fp32_fast/auto")
+        if self.aco_backend in {
+            ExecutionBackend.CUDA_FUSED_FP32,
+            ExecutionBackend.CUDA_TILED_V2,
+        }:
             if self.processes != 1:
-                raise ValueError("CUDA fused 后端使用单进程，processes 必须为 1")
+                raise ValueError("CUDA 后端使用单进程，processes 必须为 1")
             if self.gpu_mode is GPUMode.CPU:
-                raise ValueError("CUDA fused 后端不能使用 gpu_mode=cpu")
+                raise ValueError("CUDA 后端不能使用 gpu_mode=cpu")
             if not self.gpu_devices:
-                raise ValueError("CUDA fused 后端至少需要一个 gpu_devices")
+                raise ValueError("CUDA 后端至少需要一个 gpu_devices")
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,6 +485,9 @@ class ExperimentConfig:
         runtime_values["aco_backend"] = self.runtime.aco_backend.value
         runtime_values["gpu_mode"] = self.runtime.gpu_mode.value
         runtime_values["gpu_devices"] = list(self.runtime.gpu_devices)
+        runtime_values["cuda_provider"] = self.runtime.cuda_provider.value
+        runtime_values["cuda_precision"] = self.runtime.cuda_precision.value
+        runtime_values["cuda_task_order"] = self.runtime.cuda_task_order.value
         return {
             "experiment_id": self.experiment_id,
             "root_seed": self.root_seed,

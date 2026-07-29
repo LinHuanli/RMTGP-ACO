@@ -14,9 +14,12 @@ from rmtgp_aco.aco_cuda import (
     solve_population_cuda,
     solve_population_cuda_anytime,
 )
+from rmtgp_aco.aco_numba import _pack_programs
 from rmtgp_aco.config import (
     ACOConfig,
     ACOVariant,
+    CudaPrecision,
+    CudaTaskOrder,
     ExecutionBackend,
     ExperimentConfig,
     GPConfig,
@@ -52,6 +55,27 @@ def _runtime(
         gpu_devices=devices,
         gpu_task_chunk_size=chunk_size,
         gpu_block_threads=block_threads,
+    )
+
+
+def _runtime_v2(
+    *,
+    precision: CudaPrecision = CudaPrecision.FP32_FAST,
+    lanes: int = 8,
+    chunk_size: int = 0,
+    task_order: CudaTaskOrder = CudaTaskOrder.INSTANCE_MAJOR,
+    generated_gp: bool = True,
+) -> RuntimeConfig:
+    return RuntimeConfig(
+        aco_backend=ExecutionBackend.CUDA_TILED_V2,
+        gpu_mode=GPUMode.SINGLE,
+        gpu_devices=(0,),
+        gpu_task_chunk_size=chunk_size,
+        cuda_precision=precision,
+        cuda_candidate_lanes=lanes,
+        cuda_register_cap=0,
+        cuda_task_order=task_order,
+        cuda_generated_gp=generated_gp,
     )
 
 
@@ -210,6 +234,192 @@ def test_cuda_mmas_full_restart_is_audited(small_instances) -> None:
         runtime=_runtime(GPUMode.SINGLE, devices=(0,)),
     )
     assert int(result.diagnostics[0, 3].item()) > 0
+
+
+@pytest.mark.parametrize("variant", list(ACOVariant))
+def test_cuda_v2_zero_residual_and_repeatability(
+    variant,
+    small_instances,
+) -> None:
+    """tiled v2 必须保留 zero residual 语义并可精确重复。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default(variant, iterations=4),
+        ants=32,
+        candidate_size=2,
+    )
+    transition_pset, pheromone_pset = create_primitive_sets()
+    zero_transition = compile_tree(
+        constant_zero_tree(transition_pset, "ZERO_TR"),
+        role="transition",
+    )
+    zero_pheromone = compile_tree(
+        constant_zero_tree(pheromone_pset, "ZERO_PH"),
+        role="pheromone",
+    )
+    programs = [(None, None), (zero_transition, zero_pheromone)]
+    first = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=177,
+        runtime=_runtime_v2(),
+    )
+    repeated = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=177,
+        runtime=_runtime_v2(chunk_size=1),
+    )
+    assert torch.equal(first.best_tour[0], first.best_tour[1])
+    assert torch.equal(first.best_length[0], first.best_length[1])
+    assert torch.equal(first.best_tour, repeated.best_tour)
+    assert torch.equal(first.best_length, repeated.best_length)
+    assert torch.equal(first.best_iteration, repeated.best_iteration)
+    assert torch.equal(first.diagnostics, repeated.diagnostics)
+    _assert_valid_population_tours(first.best_tour)
+
+
+@pytest.mark.parametrize(
+    "precision",
+    [
+        CudaPrecision.FP32_FAST,
+        CudaPrecision.FP16_MIXED,
+        CudaPrecision.BF16_MIXED,
+        CudaPrecision.FP16_SEARCH,
+    ],
+)
+def test_cuda_v2_precision_profiles_return_valid_tours(
+    precision,
+    small_instances,
+) -> None:
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default("acs", iterations=3),
+        ants=32,
+        candidate_size=2,
+    )
+    result = solve_population_cuda(
+        batch,
+        config,
+        [(None, None)],
+        seed=313,
+        runtime=_runtime_v2(precision=precision),
+    )
+    _assert_valid_population_tours(result.best_tour)
+    assert torch.isfinite(result.best_length).all()
+    assert result.backend_metrics["precision"] == precision.value
+
+
+@pytest.mark.parametrize("variant", list(ACOVariant))
+def test_cuda_v2_generated_gp_is_bitwise_interpreter_equivalent(
+    variant,
+    small_instances,
+) -> None:
+    """生成式 GP 只能改变执行方式，不得改变任一搜索状态。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default(variant, iterations=4),
+        ants=32,
+        candidate_size=2,
+    )
+    transition_pset, pheromone_pset = create_primitive_sets()
+    transition = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "MAX(PDIV(ADD(RTau, REta), BaseConf), DistRank)",
+            transition_pset,
+        ),
+        role="transition",
+    )
+    pheromone = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "MAX(EdgeEta, ColonyFreq)",
+            pheromone_pset,
+        ),
+        role="pheromone",
+    )
+    programs = [(None, None), (transition, pheromone)]
+    interpreted = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=419,
+        runtime=_runtime_v2(generated_gp=False),
+    )
+    generated = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=419,
+        runtime=_runtime_v2(generated_gp=True),
+    )
+    assert torch.equal(interpreted.best_tour, generated.best_tour)
+    assert torch.equal(interpreted.best_length, generated.best_length)
+    assert torch.equal(interpreted.best_iteration, generated.best_iteration)
+    assert torch.equal(interpreted.diagnostics, generated.diagnostics)
+
+
+def test_cuda_v2_interpreter_sizes_stack_for_both_trees(
+    small_instances,
+) -> None:
+    """pheromone tree 比 transition tree 深时也不能越界。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default("acs", iterations=4),
+        ants=32,
+        candidate_size=2,
+    )
+    transition_pset, pheromone_pset = create_primitive_sets()
+    transition = compile_tree(
+        gp.PrimitiveTree.from_string("RTau", transition_pset),
+        role="transition",
+    )
+    pheromone = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "ADD(EdgeEta, ADD(EdgeTau, "
+            "ADD(NNRank, ADD(ColonyFreq, SourceQuality))))",
+            pheromone_pset,
+        ),
+        role="pheromone",
+    )
+    transition_depth = _pack_programs(
+        [transition],
+        role="transition",
+    ).stack_size
+    pheromone_depth = _pack_programs(
+        [pheromone],
+        role="pheromone",
+    ).stack_size
+    assert pheromone_depth > transition_depth
+    programs = [(transition, pheromone)]
+    interpreted = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=421,
+        runtime=_runtime_v2(
+            precision=CudaPrecision.FP32,
+            generated_gp=False,
+        ),
+    )
+    generated = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=421,
+        runtime=_runtime_v2(
+            precision=CudaPrecision.FP32,
+            generated_gp=True,
+        ),
+    )
+    assert torch.equal(interpreted.best_tour, generated.best_tour)
+    assert torch.equal(interpreted.best_length, generated.best_length)
+    assert torch.equal(interpreted.best_iteration, generated.best_iteration)
+    assert torch.equal(interpreted.diagnostics, generated.diagnostics)
 
 
 def test_cuda_backend_connects_to_population_fitness(small_instances) -> None:

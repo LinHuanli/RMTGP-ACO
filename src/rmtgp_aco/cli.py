@@ -28,10 +28,14 @@ from .artifacts import (
 )
 from .baseline import (
     BaselineArchive,
+    backend_semantic_id,
     precompute_baseline_cases,
     write_baseline_shard,
 )
 from .config import (
+    CudaPrecision,
+    CudaProvider,
+    CudaTaskOrder,
     ExecutionBackend,
     GPUMode,
     PheromoneIntegration,
@@ -197,6 +201,14 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
     gpu_mode = getattr(args, "gpu_mode", None)
     gpu_block_threads = getattr(args, "gpu_block_threads", None)
     gpu_task_chunk_size = getattr(args, "gpu_task_chunk_size", None)
+    cuda_provider = getattr(args, "cuda_provider", None)
+    cuda_precision = getattr(args, "cuda_precision", None)
+    cuda_candidate_lanes = getattr(args, "cuda_candidate_lanes", None)
+    cuda_register_cap = getattr(args, "cuda_register_cap", None)
+    cuda_task_order = getattr(args, "cuda_task_order", None)
+    cuda_generated_gp = getattr(args, "cuda_generated_gp", None)
+    cuda_graph_replay = getattr(args, "cuda_graph_replay", None)
+    cuda_tuning_manifest = getattr(args, "cuda_tuning_manifest", None)
     runtime_updates: dict[str, object] = {}
     if gpu_devices is not None:
         runtime_updates["gpu_devices"] = tuple(gpu_devices)
@@ -206,6 +218,22 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
         runtime_updates["gpu_block_threads"] = gpu_block_threads
     if gpu_task_chunk_size is not None:
         runtime_updates["gpu_task_chunk_size"] = gpu_task_chunk_size
+    if cuda_provider is not None:
+        runtime_updates["cuda_provider"] = CudaProvider(cuda_provider)
+    if cuda_precision is not None:
+        runtime_updates["cuda_precision"] = CudaPrecision(cuda_precision)
+    if cuda_candidate_lanes is not None:
+        runtime_updates["cuda_candidate_lanes"] = cuda_candidate_lanes
+    if cuda_register_cap is not None:
+        runtime_updates["cuda_register_cap"] = cuda_register_cap
+    if cuda_task_order is not None:
+        runtime_updates["cuda_task_order"] = CudaTaskOrder(cuda_task_order)
+    if cuda_generated_gp is not None:
+        runtime_updates["cuda_generated_gp"] = cuda_generated_gp
+    if cuda_graph_replay is not None:
+        runtime_updates["cuda_graph_replay"] = cuda_graph_replay
+    if cuda_tuning_manifest is not None:
+        runtime_updates["cuda_tuning_manifest"] = cuda_tuning_manifest
     if runtime_updates:
         experiment = replace(
             experiment,
@@ -582,6 +610,10 @@ def _command_precompute_baselines(args: argparse.Namespace) -> int:
             "replicate_id": args.replicate_id,
             "variant": spec.experiment.aco.variant.value,
             "aco_config_hash": spec.experiment.aco.config_hash,
+            "backend_semantic": backend_semantic_id(
+                spec.experiment.runtime.aco_backend,
+                spec.experiment.runtime,
+            ),
             "splits": sorted(selected_splits),
         },
     )
@@ -793,6 +825,15 @@ def _command_benchmark_accelerators(args: argparse.Namespace) -> int:
         return summary
     spec = _apply_runtime_overrides(load_run_spec(args.config), args)
     experiment = spec.experiment
+    selected_cuda_backend = (
+        experiment.runtime.aco_backend
+        if experiment.runtime.aco_backend
+        in {
+            ExecutionBackend.CUDA_FUSED_FP32,
+            ExecutionBackend.CUDA_TILED_V2,
+        }
+        else ExecutionBackend.CUDA_FUSED_FP32
+    )
     gpu_devices = tuple(experiment.runtime.gpu_devices)
     target_gpu_devices.update(gpu_devices)
     if args.iterations is not None:
@@ -835,10 +876,10 @@ def _command_benchmark_accelerators(args: argparse.Namespace) -> int:
         backend_metrics: list[dict[str, float | int | str]] = []
         started = perf_counter()
         for case in cases:
-            if (
-                runtime.aco_backend
-                is ExecutionBackend.CUDA_FUSED_FP32
-            ):
+            if runtime.aco_backend in {
+                ExecutionBackend.CUDA_FUSED_FP32,
+                ExecutionBackend.CUDA_TILED_V2,
+            }:
                 from .aco_cuda import solve_population_cuda
 
                 result = solve_population_cuda(
@@ -909,7 +950,10 @@ def _command_benchmark_accelerators(args: argparse.Namespace) -> int:
     def measure(label: str, runtime) -> tuple[dict[str, object], list]:
         monitor_stop = monitor_thread = None
         monitor_samples: list[dict[str, float | int]] = []
-        if runtime.aco_backend is ExecutionBackend.CUDA_FUSED_FP32:
+        if runtime.aco_backend in {
+            ExecutionBackend.CUDA_FUSED_FP32,
+            ExecutionBackend.CUDA_TILED_V2,
+        }:
             from .aco_cuda import (
                 clear_cuda_kernel_cache,
                 clear_cuda_problem_cache,
@@ -1013,7 +1057,7 @@ def _command_benchmark_accelerators(args: argparse.Namespace) -> int:
             )
         runtime = replace(
             experiment.runtime,
-            aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+            aco_backend=selected_cuda_backend,
             processes=1,
             gpu_mode=GPUMode.SINGLE,
             gpu_devices=(device,),
@@ -1024,7 +1068,7 @@ def _command_benchmark_accelerators(args: argparse.Namespace) -> int:
             raise ValueError("dual benchmark 至少需要两个 gpu_devices")
         runtime = replace(
             experiment.runtime,
-            aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+            aco_backend=selected_cuda_backend,
             processes=1,
             gpu_mode=GPUMode.DUAL,
             gpu_devices=gpu_devices[:2],
@@ -1047,7 +1091,7 @@ def _command_benchmark_accelerators(args: argparse.Namespace) -> int:
         runtimes = [
             replace(
                 experiment.runtime,
-                aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+                aco_backend=selected_cuda_backend,
                 processes=1,
                 gpu_mode=GPUMode.SINGLE,
                 gpu_devices=(device,),
@@ -1299,6 +1343,15 @@ def _command_validate_cuda_quality(args: argparse.Namespace) -> int:
         raise ValueError("实例、seed、individual、batch 和 thread 数必须为正")
     spec = _apply_runtime_overrides(load_run_spec(args.config), args)
     experiment = spec.experiment
+    selected_cuda_backend = (
+        experiment.runtime.aco_backend
+        if experiment.runtime.aco_backend
+        in {
+            ExecutionBackend.CUDA_FUSED_FP32,
+            ExecutionBackend.CUDA_TILED_V2,
+        }
+        else ExecutionBackend.CUDA_FUSED_FP32
+    )
     validation_pools = pools_from_paths(spec.data.validation_paths())
     missing = set(experiment.validation_scales) - set(validation_pools)
     if missing:
@@ -1319,7 +1372,7 @@ def _command_validate_cuda_quality(args: argparse.Namespace) -> int:
 
     gpu_runtime = replace(
         experiment.runtime,
-        aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+        aco_backend=selected_cuda_backend,
         processes=1,
     )
     cpu_values: dict[int, list[np.ndarray]] = {}
@@ -1492,7 +1545,10 @@ def _command_validate_cuda_quality(args: argparse.Namespace) -> int:
     )
     payload = {
         "schema_version": 1,
-        "contract": "gpu-fp32-search-cpu-fp64-score",
+        "contract": (
+            f"gpu-{gpu_runtime.cuda_precision.value}-search-"
+            "cpu-fp64-score"
+        ),
         "statistical_unit": "program-instance (ACO seeds aggregated first)",
         "experiment_id": experiment.experiment_id,
         "root_seed": experiment.root_seed,
@@ -1513,6 +1569,17 @@ def _command_validate_cuda_quality(args: argparse.Namespace) -> int:
         "gpu_devices": list(gpu_runtime.gpu_devices),
         "gpu_mode": gpu_runtime.gpu_mode.value,
         "gpu_block_threads": gpu_runtime.gpu_block_threads or 32,
+        "gpu_backend": gpu_runtime.aco_backend.value,
+        "gpu_backend_semantic": backend_semantic_id(
+            gpu_runtime.aco_backend,
+            gpu_runtime,
+        ),
+        "cuda_provider": gpu_runtime.cuda_provider.value,
+        "cuda_precision": gpu_runtime.cuda_precision.value,
+        "cuda_candidate_lanes": gpu_runtime.cuda_candidate_lanes,
+        "cuda_register_cap": gpu_runtime.cuda_register_cap,
+        "cuda_task_order": gpu_runtime.cuda_task_order.value,
+        "cuda_generated_gp": gpu_runtime.cuda_generated_gp,
         "variant": experiment.aco.variant.value,
         "instances_per_scale": args.instances_per_scale,
         "seeds": args.seeds,
@@ -1537,12 +1604,63 @@ def _command_validate_cuda_quality(args: argparse.Namespace) -> int:
     return 0 if passed else 1
 
 
+def _command_probe_cuda_precision(args: argparse.Namespace) -> int:
+    """运行不改变正式 solver 的 Blackwell 低精度存储探针。"""
+
+    from .cuda_probe import probe_cuda_precisions
+
+    payload = probe_cuda_precisions(
+        device=args.device,
+        elements=args.elements,
+        repetitions=args.repetitions,
+        repeats=args.repeats,
+        seed=args.seed,
+    )
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    print(rendered)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered + "\n", encoding="utf-8")
+    return 0
+
+
+def _command_benchmark_cutile(args: argparse.Namespace) -> int:
+    """比较规则 candidate-score 子核上的 raw CUDA 与 cuTile。"""
+
+    from .cuda_cutile import benchmark_cutile_candidate_scores
+
+    payload = benchmark_cutile_candidate_scores(
+        device=args.device,
+        tasks=args.tasks,
+        ants=args.ants,
+        candidates=args.candidates,
+        repeats=args.repeats,
+        seed=args.seed,
+    )
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    print(rendered)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered + "\n", encoding="utf-8")
+    return 0
+
+
 def _command_benchmark_training(args: argparse.Namespace) -> int:
     """用正式每代计算规模执行 1--3 代、但不做 validation/checkpoint。"""
 
     if not 1 <= args.generations <= 3:
         raise ValueError("benchmark-training 的 --generations 仅允许 1--3")
     spec = _apply_runtime_overrides(load_run_spec(args.config), args)
+    if args.baseline_policy is not None:
+        spec = replace(
+            spec,
+            data=replace(
+                spec.data,
+                baseline_policy=args.baseline_policy,
+            ),
+        )
     training_paths = spec.data.training_paths()
     validation_paths = spec.data.validation_paths()
     if not args.skip_manifest_check:
@@ -1588,6 +1706,7 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
             spec.experiment.aco,
             spec.experiment.runtime.aco_backend,
             require=(spec.data.baseline_policy == "require"),
+            runtime=spec.experiment.runtime,
         )
         if baseline_path is not None
         else None
@@ -1709,6 +1828,22 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
         "requested_generations": args.generations,
         "cpu_threads": spec.experiment.runtime.cpu_threads,
         "backend": spec.experiment.runtime.aco_backend.value,
+        "backend_semantic": backend_semantic_id(
+            spec.experiment.runtime.aco_backend,
+            spec.experiment.runtime,
+        ),
+        "cuda_provider": spec.experiment.runtime.cuda_provider.value,
+        "cuda_precision": spec.experiment.runtime.cuda_precision.value,
+        "cuda_candidate_lanes": (
+            spec.experiment.runtime.cuda_candidate_lanes
+        ),
+        "cuda_register_cap": spec.experiment.runtime.cuda_register_cap,
+        "cuda_task_order": spec.experiment.runtime.cuda_task_order.value,
+        "cuda_generated_gp": spec.experiment.runtime.cuda_generated_gp,
+        "cuda_graph_replay": spec.experiment.runtime.cuda_graph_replay,
+        "cuda_tuning_manifest": (
+            spec.experiment.runtime.cuda_tuning_manifest
+        ),
         "total_seconds": perf_counter() - benchmark_started,
         "records": records,
     }
@@ -1821,6 +1956,7 @@ def _command_train(args: argparse.Namespace) -> int:
             spec.experiment.aco,
             spec.experiment.runtime.aco_backend,
             require=(spec.data.baseline_policy == "require"),
+            runtime=spec.experiment.runtime,
         )
         if baseline_path is not None
         else None
@@ -2239,6 +2375,44 @@ def _add_gpu_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="0/省略表示按 20%% 显存保留策略自动分块",
     )
+    parser.add_argument(
+        "--cuda-provider",
+        choices=[provider.value for provider in CudaProvider],
+    )
+    parser.add_argument(
+        "--cuda-precision",
+        choices=[precision.value for precision in CudaPrecision],
+    )
+    parser.add_argument(
+        "--cuda-candidate-lanes",
+        type=int,
+        choices=[0, 1, 4, 8, 16, 32],
+    )
+    parser.add_argument(
+        "--cuda-register-cap",
+        type=int,
+        choices=[0, 64, 80, 96, 112, 128],
+    )
+    parser.add_argument(
+        "--cuda-task-order",
+        choices=[order.value for order in CudaTaskOrder],
+    )
+    parser.add_argument(
+        "--cuda-generated-gp",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="把当代 GP programs 生成为 CUDA 表达式；默认读取配置",
+    )
+    parser.add_argument(
+        "--cuda-graph-replay",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="重放固定 ACO kernel launch graph；默认读取配置",
+    )
+    parser.add_argument(
+        "--cuda-tuning-manifest",
+        help="已通过质量门的 CUDA v2 tuning manifest",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2345,6 +2519,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     accelerator_benchmark.add_argument("--output")
     accelerator_benchmark.add_argument("--cpu-threads", type=int)
+    accelerator_benchmark.add_argument(
+        "--backend",
+        choices=[
+            ExecutionBackend.CUDA_FUSED_FP32.value,
+            ExecutionBackend.CUDA_TILED_V2.value,
+        ],
+    )
     _add_gpu_arguments(accelerator_benchmark)
     accelerator_benchmark.set_defaults(
         handler=_command_benchmark_accelerators
@@ -2363,8 +2544,40 @@ def build_parser() -> argparse.ArgumentParser:
     cuda_quality.add_argument("--tolerance-pp", type=float, default=0.10)
     cuda_quality.add_argument("--root-seed", type=int)
     cuda_quality.add_argument("--output")
+    cuda_quality.add_argument(
+        "--backend",
+        choices=[
+            ExecutionBackend.CUDA_FUSED_FP32.value,
+            ExecutionBackend.CUDA_TILED_V2.value,
+        ],
+    )
     _add_gpu_arguments(cuda_quality)
     cuda_quality.set_defaults(handler=_command_validate_cuda_quality)
+
+    precision_probe = subparsers.add_parser(
+        "probe-cuda-precision",
+        help="探测 FP64/FP32/FP16/BF16/FP8/NVFP4 的读取成本和量化误差",
+    )
+    precision_probe.add_argument("--device", type=int, default=0)
+    precision_probe.add_argument("--elements", type=int, default=1 << 22)
+    precision_probe.add_argument("--repetitions", type=int, default=8)
+    precision_probe.add_argument("--repeats", type=int, default=5)
+    precision_probe.add_argument("--seed", type=int, default=20260730)
+    precision_probe.add_argument("--output")
+    precision_probe.set_defaults(handler=_command_probe_cuda_precision)
+
+    cutile_benchmark = subparsers.add_parser(
+        "benchmark-cutile",
+        help="配对比较规则 candidate-score 子核的 raw CUDA 与 cuTile",
+    )
+    cutile_benchmark.add_argument("--device", type=int, default=0)
+    cutile_benchmark.add_argument("--tasks", type=int, default=2528)
+    cutile_benchmark.add_argument("--ants", type=int, default=32)
+    cutile_benchmark.add_argument("--candidates", type=int, default=20)
+    cutile_benchmark.add_argument("--repeats", type=int, default=20)
+    cutile_benchmark.add_argument("--seed", type=int, default=20260730)
+    cutile_benchmark.add_argument("--output")
+    cutile_benchmark.set_defaults(handler=_command_benchmark_cutile)
 
     training_benchmark = subparsers.add_parser(
         "benchmark-training",
@@ -2373,6 +2586,11 @@ def build_parser() -> argparse.ArgumentParser:
     training_benchmark.add_argument("--config", required=True)
     training_benchmark.add_argument("--schedule")
     training_benchmark.add_argument("--baseline-archive")
+    training_benchmark.add_argument(
+        "--baseline-policy",
+        choices=["compute", "require"],
+        help="短跑时覆盖配置中的 baseline cache 策略",
+    )
     training_benchmark.add_argument("--generations", type=int, default=3)
     training_benchmark.add_argument("--output")
     training_benchmark.add_argument("--manifest", default="Datasets/manifest.json")

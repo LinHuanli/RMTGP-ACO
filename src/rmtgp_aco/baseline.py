@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 
@@ -15,6 +16,8 @@ import torch
 from .aco import solve
 from .config import (
     ACOConfig,
+    CudaPrecision,
+    CudaProvider,
     ExecutionBackend,
     PheromoneIntegration,
     RuntimeConfig,
@@ -28,16 +31,66 @@ _READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3})
 NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v2-mmas-restart"
 TORCH_KERNEL_SEMANTIC_VERSION = "torch-generator-v1"
 CUDA_KERNEL_SEMANTIC_VERSION = "counter-rng-cuda-fp32-search-v1"
+CUDA_V2_KERNEL_SEMANTIC_VERSION = (
+    "counter-rng-cuda-tiled-v2-search-v2"
+)
 
 
-def backend_semantic_id(backend: ExecutionBackend | str) -> str:
-    """把调度不同但数值语义相同的 Numba 后端映射到同一 cache 域。"""
+@lru_cache(maxsize=16)
+def _cuda_v2_manifest_profile(path_text: str) -> tuple[str, str, int]:
+    """读取不可变 tuning manifest 的数值 profile。"""
+
+    path = Path(path_text)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if int(payload.get("schema_version", -1)) != 1:
+        raise ValueError("CUDA tuning manifest schema_version 必须为 1")
+    if payload.get("backend") != ExecutionBackend.CUDA_TILED_V2.value:
+        raise ValueError("CUDA tuning manifest 不是 cuda_tiled_v2")
+    selected = payload["selected"]
+    provider = CudaProvider(selected["provider"]).value
+    precision = CudaPrecision(selected["precision"]).value
+    lanes = int(selected["candidate_lanes"])
+    if lanes not in {1, 4, 8, 16, 32}:
+        raise ValueError("CUDA tuning manifest candidate_lanes 非法")
+    return provider, precision, lanes
+
+
+def _cuda_v2_profile(runtime: RuntimeConfig | None) -> tuple[str, str, int]:
+    """解析会改变 CUDA v2 搜索轨迹的 runtime 字段。
+
+    tuning manifest 的 selected 字段优先于 YAML/CLI 默认值。这里只读取
+    profile；求解器仍负责核对实际 GPU 名称和 compute capability。
+    """
+
+    selected_runtime = runtime or RuntimeConfig(
+        aco_backend=ExecutionBackend.CUDA_TILED_V2
+    )
+    provider = selected_runtime.cuda_provider.value
+    precision = selected_runtime.cuda_precision.value
+    lanes = selected_runtime.cuda_candidate_lanes or 8
+    if selected_runtime.cuda_tuning_manifest is not None:
+        path = str(Path(selected_runtime.cuda_tuning_manifest).resolve())
+        provider, precision, lanes = _cuda_v2_manifest_profile(path)
+    return provider, precision, lanes
+
+
+def backend_semantic_id(
+    backend: ExecutionBackend | str,
+    runtime: RuntimeConfig | None = None,
+) -> str:
+    """返回数值语义 cache 域，而不是仅返回调度后端名称。"""
 
     selected = ExecutionBackend(backend)
     if selected in {ExecutionBackend.NUMBA, ExecutionBackend.NUMBA_BATCH}:
         return NUMBA_KERNEL_SEMANTIC_VERSION
     if selected is ExecutionBackend.CUDA_FUSED_FP32:
         return CUDA_KERNEL_SEMANTIC_VERSION
+    if selected is ExecutionBackend.CUDA_TILED_V2:
+        provider, precision, lanes = _cuda_v2_profile(runtime)
+        return (
+            f"{CUDA_V2_KERNEL_SEMANTIC_VERSION}-"
+            f"{provider}-{precision}-lanes{lanes}"
+        )
     return TORCH_KERNEL_SEMANTIC_VERSION
 
 
@@ -82,10 +135,11 @@ def records_from_result(
     result: RunResult,
     config: ACOConfig,
     backend: ExecutionBackend | str,
+    runtime: RuntimeConfig | None = None,
 ) -> list[BaselineRecord]:
     """把一个 batch RunResult 展开为可随机访问的 archive rows。"""
 
-    semantic = backend_semantic_id(backend)
+    semantic = backend_semantic_id(backend, runtime)
     reference = case.batch.reference_length.detach().cpu().numpy()
     best = result.best_length.detach().cpu().numpy()
     anytime = result.anytime_best.detach().cpu().numpy()
@@ -221,10 +275,11 @@ class BaselineArchive:
         backend: ExecutionBackend | str,
         *,
         require: bool,
+        runtime: RuntimeConfig | None = None,
     ) -> None:
         self.root = Path(root)
         self.config = config
-        self.backend_semantic = backend_semantic_id(backend)
+        self.backend_semantic = backend_semantic_id(backend, runtime)
         self.require = require
         self._records: dict[str, BaselineRecord] = {}
         # v2 archives 只保存完整 config hash。当前冻结实验的旧 archive
@@ -331,8 +386,12 @@ def precompute_baseline_cases(
         if selected in {
             ExecutionBackend.NUMBA_BATCH,
             ExecutionBackend.CUDA_FUSED_FP32,
+            ExecutionBackend.CUDA_TILED_V2,
         }:
-            if selected is ExecutionBackend.CUDA_FUSED_FP32:
+            if selected in {
+                ExecutionBackend.CUDA_FUSED_FP32,
+                ExecutionBackend.CUDA_TILED_V2,
+            }:
                 from .aco_cuda import solve_population_cuda
 
                 if runtime is None:
@@ -354,7 +413,7 @@ def precompute_baseline_cases(
                     seed=case.seed,
                     threads=threads,
                 )
-            semantic = backend_semantic_id(selected)
+            semantic = backend_semantic_id(selected, runtime)
             reference = case.batch.reference_length.detach().cpu().numpy()
             best = quality.best_length[0].detach().cpu().numpy()
             gap = 100.0 * (best - reference) / reference
@@ -394,5 +453,13 @@ def precompute_baseline_cases(
             backend=backend,
             runtime=runtime,
         )
-        records.extend(records_from_result(case, result, config, backend))
+        records.extend(
+            records_from_result(
+                case,
+                result,
+                config,
+                backend,
+                runtime,
+            )
+        )
     return records

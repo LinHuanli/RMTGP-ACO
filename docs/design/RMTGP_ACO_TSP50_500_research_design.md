@@ -3409,6 +3409,31 @@ champion；三个 roots 全部保留。该实验回答容量主效应、固定�
 
 ---
 
+## 32. Blackwell CUDA v2 执行合同
+
+后续 GPU 训练使用 `cuda_tiled_v2`。一个 task 对应一个语义
+program×instance。每个 construction block 使用 32 ants×8 candidate
+lanes，即 256 个 threads。GP postfix programs 在每代生成为 CUDA 标量
+表达式。单卡和双卡必须产生相同的 tour、best iteration 和诊断计数。
+
+RTX PRO 5000 Blackwell 的已门控 profile 为 raw CUDA、FP32-fast、
+8 candidate lanes、无 register cap、instance-major 和生成式 GP。搜索结束
+后，fitness 仍由 CPU 使用原始 FP64 distance matrix 计算。最终 profile 已在
+TSP50/TSP100 各 128 个 instances、3 个 ACO seeds 上通过 0.10 pp 的单侧
+非劣质量门。FP16、BF16、FP8、NVFP4 和 cuTile 不进入正式 solver。原因不是
+硬件不支持，而是它们没有同时提供完整 solver 加速和质量保证。
+
+硬件绑定参数见
+`configs/cuda_tuning/rtx_pro5000_blackwell_sm120_v1.json`。完整的结构扫描、
+精度门、双卡扩展和三算法 3 代短跑见
+`docs/performance/cuda_v2_pro5000_blackwell_20260730.md`。该执行合同只改变
+工程实现。它不改变 ACO 参数、GP fitness、数据 schedule 或实验统计单位。
+baseline archive 的 kernel semantic ID 同时编码 CUDA provider、搜索精度
+和 candidate lanes。任何可能改变归约或选择轨迹的 profile 变化都必须重新
+预计算 baseline。
+
+---
+
 # 参考文献
 
 [1] M. Dorigo, V. Maniezzo, and A. Colorni, “Ant system: Optimization by a colony of cooperating agents,” *IEEE Transactions on Systems, Man, and Cybernetics, Part B*, vol. 26, no. 1, pp. 29–41, 1996.

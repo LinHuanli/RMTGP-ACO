@@ -16,6 +16,7 @@ build/
 dist/
 *.egg-info/
 .venv/
+.venv-*/
 venv/
 
 # Numba、PyTorch 和通用计算缓存

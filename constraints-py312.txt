@@ -1,4 +1,5 @@
-# 2026-07-23 正式 CPU 训练环境；NumPy 2.3 与 Numba 0.61 不兼容。
+# 2026-07-30 Blackwell GPU-first 环境。
+# NumPy 2.3 与 Numba 0.61 不兼容，因此继续固定已验证的兼容组合。
 numpy==2.2.6
 numba==0.61.2
 llvmlite==0.44.0
@@ -6,5 +7,9 @@ scipy==1.17.1
 deap==1.4.4
 matplotlib==3.10.9
 PyYAML==6.0.2
-# 仅在安装 `.[cuda]` 时生效；与节点 CUDA 12.6 配套。
-cupy-cuda12x==13.6.0
+# PyTorch 从官方 cu132 index 安装，供 RTX PRO 5000 Blackwell 使用。
+torch==2.12.1
+# 自定义 kernel 使用系统 CUDA 13.3；cuTile 使用同一套 TileIR 工具链。
+cupy-cuda13x==14.1.1
+cuda-python==13.3.1
+cuda-tile==1.5.0

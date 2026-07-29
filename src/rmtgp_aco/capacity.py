@@ -627,7 +627,10 @@ def evaluate_capacity_partition(
             "rows": expected_rows,
             "aco_config_hash": config.config_hash,
             "baseline_behavior_hash": config.baseline_behavior_hash,
-            "backend_semantic": backend_semantic_id(spec.experiment.runtime.aco_backend),
+            "backend_semantic": backend_semantic_id(
+                spec.experiment.runtime.aco_backend,
+                spec.experiment.runtime,
+            ),
             "campaigns": campaigns,
             "completed_at": datetime.now(UTC).isoformat(),
         },

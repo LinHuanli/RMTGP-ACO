@@ -25,7 +25,7 @@ import yaml
 from deap import tools
 
 from .aco import solve
-from .baseline import BaselineArchive
+from .baseline import BaselineArchive, backend_semantic_id
 from .config import ExecutionBackend, ExperimentConfig, GPUMode
 from .genetic import (
     RMTGPIndividual,
@@ -182,7 +182,10 @@ class BaselineCache:
     ) -> tuple[object, ...]:
         return (
             experiment.aco.config_hash,
-            experiment.runtime.aco_backend.value,
+            backend_semantic_id(
+                experiment.runtime.aco_backend,
+                experiment.runtime,
+            ),
             tuple(case.batch.instance_ids),
             case.seed,
         )
@@ -425,10 +428,10 @@ def _batched_population_breakdowns(
 ) -> tuple[list[FitnessBreakdown], int]:
     """用一个 population×instance native 边界计算全部训练 fitness。"""
 
-    if (
-        experiment.runtime.aco_backend
-        is ExecutionBackend.CUDA_FUSED_FP32
-    ):
+    if experiment.runtime.aco_backend in {
+        ExecutionBackend.CUDA_FUSED_FP32,
+        ExecutionBackend.CUDA_TILED_V2,
+    }:
         from .aco_cuda import solve_population_cuda
 
         def solve_population(case, programs):
@@ -518,10 +521,10 @@ def _batched_validation_data(
 ) -> dict[str, ValidationData]:
     """批量计算 validation absolute/baseline/delta gaps。"""
 
-    if (
-        experiment.runtime.aco_backend
-        is ExecutionBackend.CUDA_FUSED_FP32
-    ):
+    if experiment.runtime.aco_backend in {
+        ExecutionBackend.CUDA_FUSED_FP32,
+        ExecutionBackend.CUDA_TILED_V2,
+    }:
         from .aco_cuda import solve_population_cuda
 
         def solve_population(case, programs):
@@ -739,11 +742,15 @@ class EvaluationPool:
             in {
                 ExecutionBackend.NUMBA_BATCH,
                 ExecutionBackend.CUDA_FUSED_FP32,
+                ExecutionBackend.CUDA_TILED_V2,
             }
         ):
             if (
                 self.experiment.runtime.aco_backend
-                is ExecutionBackend.CUDA_FUSED_FP32
+                in {
+                    ExecutionBackend.CUDA_FUSED_FP32,
+                    ExecutionBackend.CUDA_TILED_V2,
+                }
             ):
                 from .aco_cuda import solve_population_cuda
 
@@ -866,6 +873,7 @@ class EvaluationPool:
             in {
                 ExecutionBackend.NUMBA_BATCH,
                 ExecutionBackend.CUDA_FUSED_FP32,
+                ExecutionBackend.CUDA_TILED_V2,
             }
         ):
             breakdowns, constructed_tours = _batched_population_breakdowns(
@@ -944,6 +952,7 @@ class EvaluationPool:
             in {
                 ExecutionBackend.NUMBA_BATCH,
                 ExecutionBackend.CUDA_FUSED_FP32,
+                ExecutionBackend.CUDA_TILED_V2,
             }
         ):
             return _batched_validation_data(
@@ -1996,10 +2005,10 @@ def train(
     cpu_fp64_audit: ValidationSelection | None = None
     passed_noninferiority = validation.passed_noninferiority
     champion = validation.champion
-    if (
-        experiment.runtime.aco_backend
-        is ExecutionBackend.CUDA_FUSED_FP32
-    ):
+    if experiment.runtime.aco_backend in {
+        ExecutionBackend.CUDA_FUSED_FP32,
+        ExecutionBackend.CUDA_TILED_V2,
+    }:
         selected_candidate = next(
             candidate
             for candidate in checkpoints

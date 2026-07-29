@@ -1276,11 +1276,14 @@ def solve(
     """
 
     selected = ExecutionBackend(backend)
-    if selected is ExecutionBackend.CUDA_FUSED_FP32:
+    if selected in {
+        ExecutionBackend.CUDA_FUSED_FP32,
+        ExecutionBackend.CUDA_TILED_V2,
+    }:
         from .aco_cuda import solve_cuda
 
         selected_runtime = runtime or RuntimeConfig(
-            aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
+            aco_backend=selected,
         )
         return solve_cuda(
             problem,

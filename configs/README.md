@@ -102,6 +102,12 @@ v0.3（10 ants、100 iterations）历史基准，v0.5 必须重新测量：
 9001 和 3 个 ACO seeds。TSP1000 只在该 pilot 中作为 test-only 补充外推，
 不能进入 schedule 或 validation。
 
+RTX PRO 5000 Blackwell 的 CUDA v2 硬件绑定调优清单为
+`cuda_tuning/rtx_pro5000_blackwell_sm120_v1.json`。它选择 raw CUDA、
+FP32-fast、8 candidate lanes、无 register cap、instance-major 和生成式
+GP。清单会检查设备名称与 compute capability。不同 GPU 必须重新运行
+结构、精度和质量门，不能直接修改清单中的硬件字段。
+
 `as_tsp100_ablation_gpu1.yaml`、`acs_tsp100_ablation_gpu1.yaml` 与
 `mmas_tsp100_ablation_gpu1.yaml` 是其严格配对的消融/OOD 模板。统一合同为
 `experiments/tsp100_ablation_gpu1_3seed/study.yaml`。该 study 复用主实验

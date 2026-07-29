@@ -6,6 +6,9 @@
 from .config import (
     ACOConfig,
     ACOVariant,
+    CudaPrecision,
+    CudaProvider,
+    CudaTaskOrder,
     ExecutionBackend,
     ExperimentConfig,
     GPConfig,
@@ -18,6 +21,9 @@ from .config import (
 __all__ = [
     "ACOConfig",
     "ACOVariant",
+    "CudaPrecision",
+    "CudaProvider",
+    "CudaTaskOrder",
     "ExecutionBackend",
     "ExperimentConfig",
     "GPUMode",

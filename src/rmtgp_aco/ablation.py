@@ -918,6 +918,9 @@ def _reuse_final_from_legacy_campaign(
     output.mkdir(parents=True, exist_ok=True)
     merged = output / "records.csv"
     write_records(selected, merged)
+    variant_runtime = load_run_spec(
+        _variant(study, variant_name).config
+    ).experiment.runtime
     _atomic_json(
         output / "evaluation_manifest.json",
         {
@@ -936,8 +939,8 @@ def _reuse_final_from_legacy_campaign(
             "aco_config_hash": config.config_hash,
             "baseline_behavior_hash": config.baseline_behavior_hash,
             "backend_semantic": backend_semantic_id(
-                load_run_spec(_variant(study, variant_name).config)
-                .experiment.runtime.aco_backend
+                variant_runtime.aco_backend,
+                variant_runtime,
             ),
             "campaigns": [],
             "record_provenance": {
@@ -1182,7 +1185,8 @@ def evaluate_ablation_group(
             "aco_config_hash": config.config_hash,
             "baseline_behavior_hash": config.baseline_behavior_hash,
             "backend_semantic": backend_semantic_id(
-                spec.experiment.runtime.aco_backend
+                spec.experiment.runtime.aco_backend,
+                spec.experiment.runtime,
             ),
             "campaigns": campaigns,
             "completed_at": datetime.now(UTC).isoformat(),

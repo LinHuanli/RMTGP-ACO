@@ -30,7 +30,13 @@ from rmtgp_aco.baseline import (
     baseline_key,
 )
 from rmtgp_aco.cli import build_parser
-from rmtgp_aco.config import ACOConfig, TransitionIntegration
+from rmtgp_aco.config import (
+    ACOConfig,
+    CudaPrecision,
+    ExecutionBackend,
+    RuntimeConfig,
+    TransitionIntegration,
+)
 from rmtgp_aco.evaluation import EvaluationRecord
 from rmtgp_aco.manifest import load_manifest
 from rmtgp_aco.spec import load_run_spec
@@ -46,6 +52,60 @@ def test_baseline_behavior_hash_ignores_gp_only_integration_fields() -> None:
     )
     assert residual.config_hash != replacement.config_hash
     assert residual.baseline_behavior_hash == replacement.baseline_behavior_hash
+
+
+def test_cuda_v2_has_an_independent_baseline_semantic_domain() -> None:
+    """v2 的归约轨迹不同，不得误读 legacy CUDA baseline cache。"""
+
+    legacy = backend_semantic_id(ExecutionBackend.CUDA_FUSED_FP32)
+    tiled_v2 = backend_semantic_id(ExecutionBackend.CUDA_TILED_V2)
+    assert tiled_v2 != legacy
+
+
+def test_cuda_v2_baseline_semantic_tracks_precision_and_lanes() -> None:
+    """可能改变选择轨迹的 profile 不得共享 baseline archive。"""
+
+    base = RuntimeConfig(
+        aco_backend=ExecutionBackend.CUDA_TILED_V2,
+        cuda_precision=CudaPrecision.FP32_FAST,
+        cuda_candidate_lanes=8,
+    )
+    standard = replace(base, cuda_precision=CudaPrecision.FP32)
+    four_lanes = replace(base, cuda_candidate_lanes=4)
+    semantics = {
+        backend_semantic_id(ExecutionBackend.CUDA_TILED_V2, runtime)
+        for runtime in (base, standard, four_lanes)
+    }
+    assert len(semantics) == 3
+
+
+def test_cuda_v2_baseline_semantic_uses_manifest_selection(tmp_path) -> None:
+    manifest = tmp_path / "tuning.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "backend": ExecutionBackend.CUDA_TILED_V2.value,
+                "selected": {
+                    "provider": "raw_cuda",
+                    "precision": "fp32_fast",
+                    "candidate_lanes": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = RuntimeConfig(
+        aco_backend=ExecutionBackend.CUDA_TILED_V2,
+        cuda_precision=CudaPrecision.FP32,
+        cuda_candidate_lanes=4,
+        cuda_tuning_manifest=str(manifest),
+    )
+    semantic = backend_semantic_id(
+        ExecutionBackend.CUDA_TILED_V2,
+        runtime,
+    )
+    assert semantic.endswith("raw_cuda-fp32_fast-lanes8")
 
 
 def test_v2_baseline_archive_is_reindexed_by_behavior(tmp_path) -> None:

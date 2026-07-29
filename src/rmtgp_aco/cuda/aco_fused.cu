@@ -7,6 +7,10 @@
 #include <cuda_runtime.h>
 #include <math_constants.h>
 
+#ifndef RMTGP_GENERATED_GP
+#define RMTGP_GENERATED_GP 0
+#endif
+
 // NVRTC 在部分集群环境中没有可见的系统 stdint.h；固定宽度类型在这里
 // 显式定义，ABI 与 NumPy/CuPy 传入 dtype 对齐。
 typedef signed char int8_t;
@@ -178,6 +182,13 @@ __device__ float evaluate_program(
     }
     return sanitize(stack[0]);
 }
+
+#if RMTGP_GENERATED_GP
+__device__ float evaluate_pheromone_generated(
+    int program,
+    const float* terminals
+);
+#endif
 
 __device__ CandidateStats candidate_stats(
     const float* distances,
@@ -741,6 +752,7 @@ __device__ void prepare_source_deposits(
     float epsilon_numeric,
     int pheromone_mode,
     float gamma_pheromone,
+    int program_index,
     bool program_active,
     const int8_t* opcodes,
     const float* float_arguments,
@@ -863,6 +875,12 @@ __device__ void prepare_source_deposits(
                 );
             }
         }
+#if RMTGP_GENERATED_GP
+        const float raw = evaluate_pheromone_generated(
+            program_index,
+            terminals
+        );
+#else
         const float raw = evaluate_program(
             opcodes,
             float_arguments,
@@ -870,6 +888,7 @@ __device__ void prepare_source_deposits(
             program_length,
             terminals
         );
+#endif
         if (pheromone_mode == 3) {
             deposit = base_deposit * (
                 softplus_clipped(raw) + epsilon_numeric
@@ -1269,6 +1288,7 @@ extern "C" __global__ void fused_aco(
                     epsilon_numeric,
                     pheromone_mode,
                     gamma_pheromone,
+                    program,
                     ph_active[program] != 0,
                     ph_ops,
                     ph_fargs,
