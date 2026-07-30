@@ -61,13 +61,19 @@ nohup .venv/bin/python scripts/run_2opt_signal_campaign.py \
   > runs/tsp100-2opt-signal-v2/pilot-nohup.log 2>&1 &
 ```
 
-确认性训练固定 3 个独立 GP seeds。默认使用 combined fitness、
-\(\gamma=1/3\)，不自动加入 `Origin`。其他冻结决定必须通过显式 decisions
-JSON 输入：
+确认性训练固定 3 个独立 GP seeds。训练 horizon 固定为 500 次 ACO
+迭代。审计显示，继续增加到 5000 次会显著压缩 final-gap 信号；MMAS
+baseline 在该 horizon 已全部命中最优。最终测试仍独立使用 5000 次迭代。
+
+三个变体均使用 combined fitness，且不在主配置中加入 `Origin`。AS 使用
+\(\gamma=1/3\)。ACS 和 MMAS 使用更保守的 \(\gamma=1/6\)。这些冻结决定
+记录在 `formal_decisions.json` 中：
 
 ```bash
 nohup .venv/bin/python scripts/run_2opt_signal_formal.py \
-  --physical-gpus 0 1 --iterations 5000 --origin-mode none \
+  --physical-gpus 0 1 --iterations 500 \
+  --decisions experiments/tsp100_2opt_signal_v2/formal_decisions.json \
+  --origin-mode decisions \
   > runs/tsp100-2opt-signal-v2/formal-nohup.log 2>&1 &
 ```
 

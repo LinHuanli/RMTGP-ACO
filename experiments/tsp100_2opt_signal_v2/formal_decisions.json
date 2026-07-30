@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "training_iterations": 500,
+  "decision_basis": {
+    "audit": "64 residual programs, 16 TSP100 validation instances, 5 paired ACO seeds, horizons 500/2000/5000",
+    "pilot": "3 generations, population 100, 128 TSP100 training instances per generation",
+    "policy": "Use the combined basin/final objective. Select the smallest residual radius that preserves a useful basin improvement without degrading the final gap. Keep Origin as an ablation because its final-gap benefit was not consistent."
+  },
+  "variants": {
+    "as": {
+      "fitness_mode": "paired_combined_ucb",
+      "gamma": 0.3333333333333333,
+      "origin": false
+    },
+    "acs": {
+      "fitness_mode": "paired_combined_ucb",
+      "gamma": 0.16666666666666666,
+      "origin": false
+    },
+    "mmas": {
+      "fitness_mode": "paired_combined_ucb",
+      "gamma": 0.16666666666666666,
+      "origin": false
+    }
+  }
+}

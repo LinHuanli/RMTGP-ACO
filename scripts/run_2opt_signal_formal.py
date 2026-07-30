@@ -19,6 +19,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv" / "bin" / "python"
 TEMPLATE = ROOT / "experiments" / "tsp100_2opt_signal_v2" / "config.yaml"
+DECISIONS = (
+    ROOT
+    / "experiments"
+    / "tsp100_2opt_signal_v2"
+    / "formal_decisions.json"
+)
 RUN_ROOT = ROOT / "runs" / "tsp100-2opt-signal-v2" / "formal"
 AUDIT_ROOT = ROOT / "runs" / "tsp100-2opt-signal-v2" / "audit"
 MANIFEST = ROOT / "Datasets" / "manifest.json"
@@ -410,8 +416,8 @@ def _dispatch(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--physical-gpus", type=int, nargs="+", default=(0, 1))
-    parser.add_argument("--decisions", type=Path)
-    parser.add_argument("--iterations", type=int, default=5000)
+    parser.add_argument("--decisions", type=Path, default=DECISIONS)
+    parser.add_argument("--iterations", type=int, default=500)
     parser.add_argument(
         "--origin-mode",
         choices=["decisions", "none", "audit-gate"],
