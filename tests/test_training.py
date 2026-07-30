@@ -16,6 +16,7 @@ from rmtgp_aco.config import (
     FitnessMode,
     GPConfig,
     LocalSearch,
+    RacingConfig,
     RuntimeConfig,
     SelectionMode,
 )
@@ -125,6 +126,8 @@ def test_baseline_anchor_is_unique_and_never_enters_breeding_pool() -> None:
         FitnessMode.PAIRED_FINAL_UCB,
         FitnessMode.PAIRED_BASIN_UCB,
         FitnessMode.PAIRED_COMBINED_UCB,
+        FitnessMode.PAIRED_ANYTIME_UCB,
+        FitnessMode.PAIRED_FINAL_ANYTIME_UCB,
     ],
 )
 def test_population_fitness_modes_keep_exact_zero_baseline_anchor(
@@ -195,6 +198,127 @@ def test_population_fitness_modes_keep_exact_zero_baseline_anchor(
         assert breakdown.baseline_basin_gap_by_scale
     else:
         assert breakdown.mean_basin_gap_by_scale == {}
+    if fitness_mode.uses_anytime:
+        assert breakdown.mean_anytime_delta_by_scale[5] == 0.0
+        assert breakdown.mean_anytime_gap_by_scale
+        assert breakdown.baseline_anytime_gap_by_scale
+    else:
+        assert breakdown.mean_anytime_gap_by_scale == {}
+
+
+def test_multifidelity_racing_records_both_stages(tmp_path) -> None:
+    cases = in_memory_cases(
+        {
+            5: [
+                make_instance(5, 51),
+                make_instance(5, 52),
+                make_instance(5, 53),
+                make_instance(5, 54),
+            ]
+        },
+        seed=1901,
+        candidate_size=2,
+    )
+    experiment = ExperimentConfig(
+        experiment_id="racing-tiny",
+        root_seed=88,
+        aco=replace(
+            ACOConfig.acotsp_local_search_default(
+                "as",
+                local_search=LocalSearch.TWO_OPT,
+                iterations=3,
+            ),
+            ants=3,
+            candidate_size=2,
+            local_search_candidate_size=2,
+        ),
+        gp=GPConfig(
+            population_size=8,
+            generations=2,
+            elite_size=1,
+            tournament_size=2,
+            initial_min_depth=1,
+            initial_max_depth=2,
+            max_depth=3,
+            checkpoint_interval=1,
+            checkpoint_top_k=2,
+            baseline_anchor=True,
+            fitness_mode=FitnessMode.PAIRED_FINAL_ANYTIME_UCB,
+        ),
+        runtime=RuntimeConfig(
+            aco_backend=ExecutionBackend.NUMBA_BATCH,
+            cpu_threads=2,
+        ),
+        racing=RacingConfig(
+            enabled=True,
+            screen_instances_per_scale=2,
+            finalists=3,
+            exploration_finalists=1,
+            preserved_elites=1,
+            screen_horizon_schedule=((1, 1), (2, 2)),
+        ),
+        train_scales=(5,),
+        validation_scales=(5,),
+        test_scales=(5,),
+        validation_seeds=1,
+        training_horizon_schedule=((1, 2), (2, 3)),
+        cpu_fp64_final_audit=False,
+    )
+    result = train(
+        experiment,
+        lambda _generation: cases,
+        cases,
+        output_directory=tmp_path / "racing",
+    )
+    assert len(result.history) == 2
+    assert [
+        record.racing_screen_iterations for record in result.history
+    ] == [1, 2]
+    assert [
+        record.racing_high_iterations for record in result.history
+    ] == [2, 3]
+    assert all(record.racing_screen_instances == 2 for record in result.history)
+    assert all(record.racing_high_instances == 4 for record in result.history)
+    assert all(
+        len(record.racing_finalist_hashes) == 3
+        for record in result.history
+    )
+    assert all(
+        len(record.racing_screen_fitness_by_hash) >= 3
+        and len(record.racing_high_fitness_by_hash) == 3
+        for record in result.history
+    )
+    assert all(record.best_mean_anytime_delta_by_scale for record in result.history)
+    assert result.checkpoints
+
+    interrupted = tmp_path / "racing-resume"
+
+    def stop_after_first(record) -> None:
+        if record.generation == 1:
+            raise RuntimeError("stop racing")
+
+    with pytest.raises(RuntimeError, match="stop racing"):
+        train(
+            experiment,
+            lambda _generation: cases,
+            cases,
+            output_directory=interrupted,
+            progress_callback=stop_after_first,
+        )
+    resumed = train(
+        experiment,
+        lambda _generation: cases,
+        cases,
+        output_directory=interrupted,
+        resume_from=interrupted,
+    )
+    assert [
+        (record.best_hash, record.racing_finalist_hashes)
+        for record in resumed.history
+    ] == [
+        (record.best_hash, record.racing_finalist_hashes)
+        for record in result.history
+    ]
 
 
 def test_training_horizon_schedule_is_recorded(tmp_path) -> None:

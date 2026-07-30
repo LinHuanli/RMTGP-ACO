@@ -2,8 +2,17 @@
 
 本项目遵循语义化版本。研究设计的统计结论冻结标签与软件版本标签分开。
 
-## Unreleased — 2026-07-25
+## Unreleased — 2026-07-31
 
+- 新增 paired Anytime+Final UCB fitness。CUDA 训练只在设备端累加每个
+  program×instance 的 best-so-far 均值，不保存完整曲线；Numba、baseline
+  archive schema 6 和逐代 metrics 使用相同定义；
+- 新增 TSP500 两阶段多保真 racing：全种群 8-instance screen、32 个
+  finalists 的 16-instance high-fidelity 复评、跨代高保真 elite、确定性
+  exploration、保真度优先繁殖和逐代 screen/high 全量分数审计；
+- 新增 64-program TSP500 学习信号门控、72 小时实测投影与冻结降载规则，
+  以及 TSP100 matched control、3×3 正式调度和 TSP100/TSP500 5000-iteration
+  跨规模最终测试；
 - 新增纯 TSP100 的 AS/ACS/MMAS 单 GPU0 三种子完整预算配置与可恢复后台
   study 队列；九个训练 run 按 replicate-major 顺序独占一张 RTX 4000 Ada；
 - 每代记录 train/validation 的 reference gap%、paired baseline delta、代时和

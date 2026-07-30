@@ -2219,6 +2219,7 @@ def _solve_population_quality_kernel(
     )
     diagnostics = np.empty((population, batch, 8), dtype=np.int64)
     basin_mean_lengths = np.empty((population, batch), dtype=np.float64)
+    anytime_mean_lengths = np.empty((population, batch), dtype=np.float64)
     pre_basin_mean_lengths = np.empty((population, batch), dtype=np.float64)
     edge_retention = np.empty((population, batch), dtype=np.float64)
     final_colony_tours = np.empty(
@@ -2242,7 +2243,7 @@ def _solve_population_quality_kernel(
                 best_tour,
                 best_length,
                 best_iteration,
-                _,
+                task_anytime,
                 task_diagnostics,
                 basin_mean_length,
                 pre_basin_mean_length,
@@ -2303,6 +2304,9 @@ def _solve_population_quality_kernel(
             best_tours[individual, batch_index] = best_tour
             diagnostics[individual, batch_index] = task_diagnostics
             basin_mean_lengths[individual, batch_index] = basin_mean_length
+            anytime_mean_lengths[individual, batch_index] = np.mean(
+                task_anytime
+            )
             pre_basin_mean_lengths[individual, batch_index] = (
                 pre_basin_mean_length
             )
@@ -2318,6 +2322,7 @@ def _solve_population_quality_kernel(
         best_iterations,
         diagnostics,
         basin_mean_lengths,
+        anytime_mean_lengths,
         pre_basin_mean_lengths,
         edge_retention,
         final_colony_tours,
@@ -2471,6 +2476,7 @@ def solve_population_numba(
         best_iterations,
         diagnostics,
         basin_mean_lengths,
+        anytime_mean_lengths,
         pre_basin_mean_lengths,
         edge_retention,
         final_colony_tours,
@@ -2546,6 +2552,7 @@ def solve_population_numba(
         best_iterations = best_iterations[inverse]
         diagnostics = diagnostics[inverse]
         basin_mean_lengths = basin_mean_lengths[inverse]
+        anytime_mean_lengths = anytime_mean_lengths[inverse]
         pre_basin_mean_lengths = pre_basin_mean_lengths[inverse]
         edge_retention = edge_retention[inverse]
         final_colony_tours = final_colony_tours[inverse]
@@ -2568,6 +2575,7 @@ def solve_population_numba(
             if basin_top_q > 0
             else None
         ),
+        anytime_mean_length=torch.from_numpy(anytime_mean_lengths),
         pre_basin_mean_length=(
             torch.from_numpy(pre_basin_mean_lengths)
             if audit_local_search

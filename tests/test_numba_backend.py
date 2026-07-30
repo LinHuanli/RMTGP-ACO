@@ -170,6 +170,37 @@ def test_population_backend_merges_residual_scalar_introns(
     )
 
 
+def test_population_anytime_mean_matches_full_curve(small_instances) -> None:
+    """训练标量必须等于逐轮 global-best-so-far 曲线的算术均值。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "as",
+            local_search=LocalSearch.TWO_OPT,
+            iterations=4,
+        ),
+        ants=4,
+        candidate_size=2,
+        local_search_candidate_size=2,
+    )
+    quality = solve_population_numba(
+        batch,
+        config,
+        [(None, None)],
+        seed=991,
+        threads=2,
+    )
+    full = solve(batch, config, seed=991, backend="numba")
+    assert quality.anytime_mean_length is not None
+    torch.testing.assert_close(
+        quality.anytime_mean_length[0],
+        full.anytime_best.mean(dim=1),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
 def test_numba_mmas_full_restart_is_audited(small_instances) -> None:
     batch = make_problem_batch(small_instances, candidate_size=2)
     config = replace(

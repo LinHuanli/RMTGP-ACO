@@ -8,7 +8,7 @@ from copy import deepcopy
 from functools import partial
 from hashlib import sha256
 
-from deap import base, gp, tools
+from deap import base, gp
 
 from .config import GPConfig
 from .program import (
@@ -87,6 +87,20 @@ class RMTGPIndividual(list):
 
     def clone(self) -> RMTGPIndividual:
         return deepcopy(self)
+
+
+def _clear_evaluation_metadata(individual: RMTGPIndividual) -> None:
+    """树发生遗传变更后，移除只属于 parent genotype 的评价证据。"""
+
+    for name in (
+        "fitness_breakdown",
+        "racing_screen_breakdown",
+        "racing_screen_score",
+        "racing_high_breakdown",
+        "racing_high_score",
+        "racing_fidelity_tier",
+    ):
+        individual.metadata.pop(name, None)
 
 
 def is_baseline_individual(individual: RMTGPIndividual) -> bool:
@@ -249,8 +263,10 @@ def mate_role_preserving(
         second = backup_second
     if first_changed:
         first.metadata["baseline_passthrough"] = False
+        _clear_evaluation_metadata(first)
     if second_changed:
         second.metadata["baseline_passthrough"] = False
+        _clear_evaluation_metadata(second)
     if first.fitness.valid:
         del first.fitness.values
     if second.fitness.valid:
@@ -291,6 +307,7 @@ def mutate_role_preserving(
         individual = backup
     else:
         individual.metadata["baseline_passthrough"] = False
+        _clear_evaluation_metadata(individual)
     if individual.fitness.valid:
         del individual.fitness.values
     return (individual,)
@@ -301,6 +318,8 @@ def evolve_generation(
     transition_pset: gp.PrimitiveSetTyped,
     pheromone_pset: gp.PrimitiveSetTyped,
     config: GPConfig,
+    *,
+    selection_key: Callable[[RMTGPIndividual], tuple[object, ...]] | None = None,
 ) -> list[RMTGPIndividual]:
     """根据预注册概率产生下一代，并可保留不可繁殖的 baseline anchor。"""
 
@@ -322,10 +341,26 @@ def evolve_generation(
     if not breeding_pool:
         raise ValueError("可繁殖的 GP 个体集合不得为空")
 
-    ranked = sorted(
-        breeding_pool,
-        key=lambda item: (item.fitness.values, item.total_nodes),
+    rank_key = (
+        selection_key
+        if selection_key is not None
+        else lambda item: (item.fitness.values, item.total_nodes)
     )
+    ranked = sorted(breeding_pool, key=rank_key)
+
+    def tournament(count: int) -> list[RMTGPIndividual]:
+        """按可选多保真次序执行有放回 tournament。"""
+
+        return [
+            min(
+                (
+                    random.choice(breeding_pool)
+                    for _ in range(config.tournament_size)
+                ),
+                key=rank_key,
+            )
+            for _ in range(count)
+        ]
     elite_count = min(config.elite_size, target_size)
     elites = [item.clone() for item in ranked[:elite_count]]
     offspring: list[RMTGPIndividual] = []
@@ -333,20 +368,12 @@ def evolve_generation(
     while len(elites) + len(offspring) < target_size:
         draw = random.random()
         if draw < config.crossover_probability:
-            parents = tools.selTournament(
-                breeding_pool,
-                2,
-                tournsize=config.tournament_size,
-            )
+            parents = tournament(2)
             child_a, child_b = (parents[0].clone(), parents[1].clone())
             child_a, child_b = mate_role_preserving(child_a, child_b, config)
             offspring.extend([child_a, child_b])
         elif draw < config.crossover_probability + config.mutation_probability:
-            parent = tools.selTournament(
-                breeding_pool,
-                1,
-                tournsize=config.tournament_size,
-            )[0]
+            parent = tournament(1)[0]
             child = parent.clone()
             (child,) = mutate_role_preserving(
                 child,
@@ -356,11 +383,7 @@ def evolve_generation(
             )
             offspring.append(child)
         else:
-            parent = tools.selTournament(
-                breeding_pool,
-                1,
-                tournsize=config.tournament_size,
-            )[0]
+            parent = tournament(1)[0]
             offspring.append(parent.clone())
 
     result = (elites + offspring)[:target_size]

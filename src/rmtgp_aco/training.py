@@ -67,6 +67,13 @@ class FitnessBreakdown:
     mean_basin_gap_by_scale: dict[int, float] = field(default_factory=dict)
     baseline_basin_gap_by_scale: dict[int, float] = field(default_factory=dict)
     mean_basin_delta_by_scale: dict[int, float] = field(default_factory=dict)
+    mean_anytime_gap_by_scale: dict[int, float] = field(default_factory=dict)
+    baseline_anytime_gap_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    mean_anytime_delta_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
     fitness_delta_by_scale: dict[int, float] = field(default_factory=dict)
 
 
@@ -89,14 +96,28 @@ class PopulationEvaluationResult:
     baseline_wall_time: float
     evaluation_wall_time: float
     constructed_tours: int = 0
+    racing_screen_evaluated_unique: int = 0
+    racing_high_evaluated_unique: int = 0
+    racing_screen_iterations: int = 0
+    racing_high_iterations: int = 0
+    racing_screen_instances: int = 0
+    racing_high_instances: int = 0
+    racing_finalist_hashes: tuple[str, ...] = ()
+    racing_screen_fitness_by_hash: dict[str, float] = field(
+        default_factory=dict
+    )
+    racing_high_fitness_by_hash: dict[str, float] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class BaselineMeasurement:
-    """一个 case 的原始 ACO final 与可选 top-q basin 统计（均在 CPU）。"""
+    """一个 case 的原始 ACO final、basin 与 anytime 统计（均在 CPU）。"""
 
     best_length: torch.Tensor
     basin_mean_length: torch.Tensor | None = None
+    anytime_mean_length: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -162,7 +183,30 @@ class GenerationRecord:
     best_mean_basin_delta_by_scale: dict[int, float] = field(
         default_factory=dict
     )
+    best_mean_anytime_gap_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    baseline_mean_anytime_gap_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    best_mean_anytime_delta_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
     best_fitness_delta_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    racing_enabled: bool = False
+    racing_screen_evaluated_unique: int = 0
+    racing_high_evaluated_unique: int = 0
+    racing_screen_iterations: int = 0
+    racing_high_iterations: int = 0
+    racing_screen_instances: int = 0
+    racing_high_instances: int = 0
+    racing_finalist_hashes: tuple[str, ...] = ()
+    racing_screen_fitness_by_hash: dict[str, float] = field(
+        default_factory=dict
+    )
+    racing_high_fitness_by_hash: dict[str, float] = field(
         default_factory=dict
     )
 
@@ -246,6 +290,7 @@ class BaselineCache:
                 if experiment.gp.fitness_mode.uses_basin
                 else 0
             ),
+            experiment.gp.fitness_mode.uses_anytime,
         )
 
     def get_measurement_cpu(
@@ -256,7 +301,11 @@ class BaselineCache:
         cached = self._values.get(self.key(case, experiment))
         if cached is not None:
             return cached
-        if self.archive is not None:
+        if (
+            self.archive is not None
+            and self.archive.config.baseline_behavior_hash
+            == experiment.aco.baseline_behavior_hash
+        ):
             archived = self.archive.lookup(case)
             if archived is not None:
                 basin = None
@@ -267,10 +316,18 @@ class BaselineCache:
                     )
                     if basin is None:
                         return None
+                anytime = None
+                if experiment.gp.fitness_mode.uses_anytime:
+                    anytime = self.archive.lookup_anytime_mean_length(case)
+                    if anytime is None:
+                        return None
                 self._values[self.key(case, experiment)] = BaselineMeasurement(
                     best_length=archived.detach().cpu(),
                     basin_mean_length=(
                         None if basin is None else basin.detach().cpu()
+                    ),
+                    anytime_mean_length=(
+                        None if anytime is None else anytime.detach().cpu()
                     ),
                 )
                 return self._values[self.key(case, experiment)]
@@ -292,6 +349,7 @@ class BaselineCache:
         experiment: ExperimentConfig,
         value: torch.Tensor,
         basin_mean_length: torch.Tensor | None = None,
+        anytime_mean_length: torch.Tensor | None = None,
     ) -> None:
         self._values[self.key(case, experiment)] = BaselineMeasurement(
             best_length=value.detach().cpu(),
@@ -299,6 +357,11 @@ class BaselineCache:
                 None
                 if basin_mean_length is None
                 else basin_mean_length.detach().cpu()
+            ),
+            anytime_mean_length=(
+                None
+                if anytime_mean_length is None
+                else anytime_mean_length.detach().cpu()
             ),
         )
 
@@ -309,7 +372,10 @@ class BaselineCache:
     ) -> BaselineMeasurement:
         value = self.get_measurement_cpu(case, experiment)
         if value is None:
-            if experiment.gp.fitness_mode.uses_basin:
+            if (
+                experiment.gp.fitness_mode.uses_basin
+                or experiment.gp.fitness_mode.uses_anytime
+            ):
                 programs = [(None, None)]
                 if experiment.runtime.aco_backend in {
                     ExecutionBackend.CUDA_FUSED_FP32,
@@ -323,7 +389,11 @@ class BaselineCache:
                         programs,
                         seed=case.seed,
                         runtime=experiment.runtime,
-                        basin_top_q=experiment.gp.basin_top_q,
+                        basin_top_q=(
+                            experiment.gp.basin_top_q
+                            if experiment.gp.fitness_mode.uses_basin
+                            else 0
+                        ),
                     )
                 elif (
                     experiment.runtime.aco_backend
@@ -337,19 +407,43 @@ class BaselineCache:
                         programs,
                         seed=case.seed,
                         threads=experiment.runtime.cpu_threads,
-                        basin_top_q=experiment.gp.basin_top_q,
+                        basin_top_q=(
+                            experiment.gp.basin_top_q
+                            if experiment.gp.fitness_mode.uses_basin
+                            else 0
+                        ),
                     )
                 else:
                     raise ValueError(
-                        "basin fitness 要求 numba_batch 或 CUDA population 后端"
+                        "basin/anytime fitness 要求 numba_batch 或 "
+                        "CUDA population 后端"
                     )
-                if result.basin_mean_length is None:
+                if (
+                    experiment.gp.fitness_mode.uses_basin
+                    and result.basin_mean_length is None
+                ):
                     raise RuntimeError("population 后端未返回 basin_mean_length")
+                if (
+                    experiment.gp.fitness_mode.uses_anytime
+                    and result.anytime_mean_length is None
+                ):
+                    raise RuntimeError(
+                        "population 后端未返回 anytime_mean_length"
+                    )
                 self.put(
                     case,
                     experiment,
                     result.best_length[0],
-                    result.basin_mean_length[0],
+                    (
+                        result.basin_mean_length[0]
+                        if result.basin_mean_length is not None
+                        else None
+                    ),
+                    (
+                        result.anytime_mean_length[0]
+                        if result.anytime_mean_length is not None
+                        else None
+                    ),
                 )
             else:
                 result = solve(
@@ -558,9 +652,12 @@ def _score_with_explicit_baselines(
             baseline_length.to(case.batch.device)
         )
         references.setdefault(case.scale, []).append(case.batch.reference_length)
-    if experiment.gp.fitness_mode.uses_basin:
+    if (
+        experiment.gp.fitness_mode.uses_basin
+        or experiment.gp.fitness_mode.uses_anytime
+    ):
         raise ValueError(
-            "basin fitness 要求 population-batched evaluator"
+            "basin/anytime fitness 要求 population-batched evaluator"
         )
     if experiment.gp.fitness_mode.is_paired:
         return paired_ucb_fitness(
@@ -680,6 +777,8 @@ def _batched_population_breakdowns(
     baseline: dict[int, list[torch.Tensor]] = {}
     candidate_basin: dict[int, list[torch.Tensor]] = {}
     baseline_basin: dict[int, list[torch.Tensor]] = {}
+    candidate_anytime: dict[int, list[torch.Tensor]] = {}
+    baseline_anytime: dict[int, list[torch.Tensor]] = {}
     references: dict[int, list[torch.Tensor]] = {}
     constructed_tours = 0
     for case, baseline_value in zip(cases, baseline_values, strict=True):
@@ -699,6 +798,20 @@ def _batched_population_breakdowns(
             )
             baseline_basin.setdefault(case.scale, []).append(
                 baseline_value.basin_mean_length.detach().cpu()
+            )
+        if experiment.gp.fitness_mode.uses_anytime:
+            if (
+                result.anytime_mean_length is None
+                or baseline_value.anytime_mean_length is None
+            ):
+                raise RuntimeError(
+                    "anytime fitness 缺少 candidate/baseline anytime 统计"
+                )
+            candidate_anytime.setdefault(case.scale, []).append(
+                result.anytime_mean_length
+            )
+            baseline_anytime.setdefault(case.scale, []).append(
+                baseline_value.anytime_mean_length.detach().cpu()
             )
         references.setdefault(case.scale, []).append(
             case.batch.reference_length.detach().cpu()
@@ -726,6 +839,21 @@ def _batched_population_breakdowns(
                 100.0 * (baseline_basin_length - reference) / reference
             )
             basin_delta = basin_gap - baseline_basin_gap
+        anytime_gap: torch.Tensor | None = None
+        baseline_anytime_gap: torch.Tensor | None = None
+        anytime_delta: torch.Tensor | None = None
+        if experiment.gp.fitness_mode.uses_anytime:
+            anytime_length = torch.cat(candidate_anytime[scale], dim=1)
+            baseline_anytime_length = torch.cat(
+                baseline_anytime[scale]
+            ).unsqueeze(0)
+            anytime_gap = 100.0 * (
+                anytime_length - reference
+            ) / reference
+            baseline_anytime_gap = 100.0 * (
+                baseline_anytime_length - reference
+            ) / reference
+            anytime_delta = anytime_gap - baseline_anytime_gap
 
         mode = experiment.gp.fitness_mode
         if mode in {
@@ -741,6 +869,15 @@ def _batched_population_breakdowns(
             weight = experiment.gp.basin_weight
             fitness_observation = (
                 weight * basin_delta + (1.0 - weight) * final_delta
+            )
+        elif mode is FitnessMode.PAIRED_ANYTIME_UCB:
+            assert anytime_delta is not None
+            fitness_observation = anytime_delta
+        elif mode is FitnessMode.PAIRED_FINAL_ANYTIME_UCB:
+            assert anytime_delta is not None
+            weight = experiment.gp.anytime_weight
+            fitness_observation = (
+                weight * anytime_delta + (1.0 - weight) * final_delta
             )
         else:
             fitness_observation = candidate_gap
@@ -787,6 +924,20 @@ def _batched_population_breakdowns(
                         dim=1
                     ).expand(len(individuals)),
                     "basin_delta_mean": basin_delta.mean(dim=1),
+                }
+            )
+        if anytime_gap is not None:
+            assert (
+                baseline_anytime_gap is not None
+                and anytime_delta is not None
+            )
+            scale_values[scale].update(
+                {
+                    "anytime_mean": anytime_gap.mean(dim=1),
+                    "baseline_anytime_mean": baseline_anytime_gap.mean(
+                        dim=1
+                    ).expand(len(individuals)),
+                    "anytime_delta_mean": anytime_delta.mean(dim=1),
                 }
             )
 
@@ -866,6 +1017,25 @@ def _batched_population_breakdowns(
                     scale: float(values["basin_delta_mean"][index].item())
                     for scale, values in scale_values.items()
                     if "basin_delta_mean" in values
+                },
+                mean_anytime_gap_by_scale={
+                    scale: float(values["anytime_mean"][index].item())
+                    for scale, values in scale_values.items()
+                    if "anytime_mean" in values
+                },
+                baseline_anytime_gap_by_scale={
+                    scale: float(
+                        values["baseline_anytime_mean"][index].item()
+                    )
+                    for scale, values in scale_values.items()
+                    if "baseline_anytime_mean" in values
+                },
+                mean_anytime_delta_by_scale={
+                    scale: float(
+                        values["anytime_delta_mean"][index].item()
+                    )
+                    for scale, values in scale_values.items()
+                    if "anytime_delta_mean" in values
                 },
                 fitness_delta_by_scale=fitness_delta,
             )
@@ -1177,7 +1347,10 @@ class EvaluationPool:
             if cache.get_measurement_cpu(case, self.experiment) is None
         ]
         if missing:
-            if self.experiment.gp.fitness_mode.uses_basin:
+            if (
+                self.experiment.gp.fitness_mode.uses_basin
+                or self.experiment.gp.fitness_mode.uses_anytime
+            ):
                 # 每个 case 已是一个较大的 instance batch。baseline 只占一个
                 # program task，直接复用 population kernel 可避免 Python 循环。
                 for case in missing:
@@ -1760,6 +1933,17 @@ def _generation_record(
         if exclude_baseline
         else list(population)
     )
+    if evaluation.racing_high_evaluated_unique:
+        ranked_population = [
+            item
+            for item in ranked_population
+            if (
+                not is_baseline_individual(item)
+                and int(
+                    item.metadata.get("racing_fidelity_tier", 1)
+                ) == 0
+            )
+        ]
     if not ranked_population:
         raise ValueError("generation record 不含可统计的 GP 个体")
     values = np.asarray(
@@ -1768,7 +1952,14 @@ def _generation_record(
     )
     best = min(
         ranked_population,
-        key=lambda item: (item.fitness.values[0], item.total_nodes),
+        key=(
+            _racing_selection_key
+            if evaluation.racing_high_evaluated_unique
+            else lambda item: (
+                item.fitness.values[0],
+                item.total_nodes,
+            )
+        ),
     )
     breakdown = evaluation.breakdowns.get(best.structural_hash)
     if breakdown is None:
@@ -1853,10 +2044,43 @@ def _generation_record(
             if breakdown is None
             else dict(breakdown.mean_basin_delta_by_scale)
         ),
+        best_mean_anytime_gap_by_scale=(
+            {}
+            if breakdown is None
+            else dict(breakdown.mean_anytime_gap_by_scale)
+        ),
+        baseline_mean_anytime_gap_by_scale=(
+            {}
+            if breakdown is None
+            else dict(breakdown.baseline_anytime_gap_by_scale)
+        ),
+        best_mean_anytime_delta_by_scale=(
+            {}
+            if breakdown is None
+            else dict(breakdown.mean_anytime_delta_by_scale)
+        ),
         best_fitness_delta_by_scale=(
             {}
             if breakdown is None
             else dict(breakdown.fitness_delta_by_scale)
+        ),
+        racing_enabled=bool(evaluation.racing_high_evaluated_unique),
+        racing_screen_evaluated_unique=(
+            evaluation.racing_screen_evaluated_unique
+        ),
+        racing_high_evaluated_unique=(
+            evaluation.racing_high_evaluated_unique
+        ),
+        racing_screen_iterations=evaluation.racing_screen_iterations,
+        racing_high_iterations=evaluation.racing_high_iterations,
+        racing_screen_instances=evaluation.racing_screen_instances,
+        racing_high_instances=evaluation.racing_high_instances,
+        racing_finalist_hashes=evaluation.racing_finalist_hashes,
+        racing_screen_fitness_by_hash=dict(
+            evaluation.racing_screen_fitness_by_hash
+        ),
+        racing_high_fitness_by_hash=dict(
+            evaluation.racing_high_fitness_by_hash
         ),
     )
 
@@ -1957,6 +2181,13 @@ def _write_training_validation_curve(
             "train_baseline_gap_percent,train_delta_pp,"
             "train_delta_standard_error_pp,train_nonzero_fraction,"
             "train_wins,train_ties,train_losses,aco_iterations,"
+            "train_anytime_candidate_gap_percent,"
+            "train_anytime_baseline_gap_percent,"
+            "train_anytime_delta_pp,train_fitness_delta_pp,"
+            "racing_enabled,racing_screen_evaluated_unique,"
+            "racing_high_evaluated_unique,racing_screen_iterations,"
+            "racing_high_iterations,racing_screen_instances,"
+            "racing_high_instances,"
             "validation_candidate_gap_percent,"
             "validation_baseline_gap_percent,validation_delta_pp,"
             "generation_wall_time_sec,validation_monitor_wall_time_sec\n"
@@ -1981,6 +2212,29 @@ def _write_training_validation_curve(
                 record.best_ties_by_scale.get(scale, 0),
                 record.best_losses_by_scale.get(scale, 0),
                 record.training_aco_iterations,
+                record.best_mean_anytime_gap_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+                record.baseline_mean_anytime_gap_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+                record.best_mean_anytime_delta_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+                record.best_fitness_delta_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+                int(record.racing_enabled),
+                record.racing_screen_evaluated_unique,
+                record.racing_high_evaluated_unique,
+                record.racing_screen_iterations,
+                record.racing_high_iterations,
+                record.racing_screen_instances,
+                record.racing_high_instances,
                 record.validation_monitor_candidate_gap_by_scale.get(
                     scale,
                     float("nan"),
@@ -2386,6 +2640,283 @@ def _training_experiment_for_generation(
     )
 
 
+def _racing_screen_experiment_for_generation(
+    experiment: ExperimentConfig,
+    generation: int,
+) -> ExperimentConfig:
+    """构造本代 Stage-1 配置；其 baseline cache 域与高保真域严格分离。"""
+
+    high_iterations = experiment.iterations_for_generation(generation)
+    screen_iterations = experiment.racing.iterations_for_generation(
+        generation,
+        generations=experiment.gp.generations,
+        fallback=high_iterations,
+    )
+    return replace(
+        experiment,
+        aco=replace(experiment.aco, iterations=screen_iterations),
+    )
+
+
+def _racing_screen_cases(
+    cases: Sequence[EvaluationCase],
+    instances_per_scale: int,
+) -> tuple[EvaluationCase, ...]:
+    """从已冻结的本代 batch 取前缀，保证两阶段严格共享实例与 seed。"""
+
+    selected: list[EvaluationCase] = []
+    for case in cases:
+        if case.batch.batch_size < instances_per_scale:
+            raise ValueError(
+                f"TSP{case.scale} 本代仅有 {case.batch.batch_size} 个实例，"
+                f"少于 racing screen 所需 {instances_per_scale}"
+            )
+        selected.append(
+            EvaluationCase(
+                scale=case.scale,
+                batch=case.batch.take(tuple(range(instances_per_scale))),
+                seed=case.seed,
+            )
+        )
+    return tuple(selected)
+
+
+def _racing_selection_key(
+    individual: RMTGPIndividual,
+) -> tuple[object, ...]:
+    """用于繁殖的 ``(保真度层级, UCB, 节点数, hash)`` 全序。"""
+
+    tier = int(individual.metadata.get("racing_fidelity_tier", 1))
+    breakdown = individual.metadata.get(
+        "racing_high_breakdown"
+        if tier == 0
+        else "racing_screen_breakdown"
+    )
+    score = (
+        float(breakdown.fitness)
+        if isinstance(breakdown, FitnessBreakdown)
+        else float(individual.fitness.values[0])
+    )
+    return tier, score, individual.total_nodes, individual.structural_hash
+
+
+def _racing_checkpoint_candidates(
+    population: Sequence[RMTGPIndividual],
+    count: int,
+) -> list[RMTGPIndividual]:
+    """只从本代经过高保真复评的学习个体中选择 checkpoint。"""
+
+    high = [
+        item
+        for item in _learned_candidates(population)
+        if int(item.metadata.get("racing_fidelity_tier", 1)) == 0
+    ]
+    unique: dict[str, RMTGPIndividual] = {}
+    for item in sorted(high, key=_racing_selection_key):
+        unique.setdefault(item.structural_hash, item)
+    return list(unique.values())[:count]
+
+
+def _evaluate_population_with_racing(
+    *,
+    population: Sequence[RMTGPIndividual],
+    cases: Sequence[EvaluationCase],
+    generation: int,
+    experiment: ExperimentConfig,
+    evaluator: EvaluationPool,
+    baseline_cache: BaselineCache,
+) -> tuple[PopulationEvaluationResult, ExperimentConfig]:
+    """执行 Stage-1 全量筛选与 Stage-2 finalists 复评。
+
+    ``preserved_elites`` 使用上一代真实高保真分数。探索配额使用独立、
+    由 root seed 与 generation 派生的 RNG，不消耗 GP 的全局随机流，
+    因而中断恢复后会得到完全相同的 finalists。
+    """
+
+    learned = _learned_candidates(population)
+    previous_high: dict[str, tuple[float, int]] = {}
+    for item in learned:
+        score = item.metadata.get("racing_high_score")
+        if isinstance(score, (float, int)):
+            previous = previous_high.get(item.structural_hash)
+            candidate = (float(score), item.total_nodes)
+            if previous is None or candidate < previous:
+                previous_high[item.structural_hash] = candidate
+
+    screen_experiment = _racing_screen_experiment_for_generation(
+        experiment,
+        generation,
+    )
+    high_experiment = _training_experiment_for_generation(
+        experiment,
+        generation,
+    )
+    screen_cases = _racing_screen_cases(
+        cases,
+        experiment.racing.screen_instances_per_scale,
+    )
+    high_cases = (
+        tuple(cases)
+        if experiment.racing.high_instances_per_scale is None
+        else _racing_screen_cases(
+            cases,
+            experiment.racing.high_instances_per_scale,
+        )
+    )
+
+    evaluator.set_experiment(screen_experiment)
+    screen_evaluation = evaluator.evaluate_population(
+        population,
+        screen_cases,
+        baseline_cache,
+    )
+    screen_by_hash: dict[str, RMTGPIndividual] = {}
+    for item in learned:
+        breakdown = item.metadata.get("fitness_breakdown")
+        if not isinstance(breakdown, FitnessBreakdown):
+            raise RuntimeError("racing Stage 1 缺少 fitness breakdown")
+        item.metadata["racing_screen_breakdown"] = breakdown
+        item.metadata["racing_screen_score"] = float(breakdown.fitness)
+        item.metadata["racing_fidelity_tier"] = 1
+        item.metadata.pop("racing_high_breakdown", None)
+        item.metadata.pop("racing_high_score", None)
+        screen_by_hash.setdefault(item.structural_hash, item)
+
+    exploitation_count = (
+        experiment.racing.finalists
+        - experiment.racing.exploration_finalists
+    )
+    selected_hashes: list[str] = []
+    for structural_hash, _ in sorted(
+        previous_high.items(),
+        key=lambda item: (item[1][0], item[1][1], item[0]),
+    ):
+        if structural_hash in screen_by_hash:
+            selected_hashes.append(structural_hash)
+            if len(selected_hashes) >= experiment.racing.preserved_elites:
+                break
+    screen_ranked = sorted(
+        screen_by_hash.values(),
+        key=lambda item: (
+            float(item.metadata["racing_screen_score"]),
+            item.total_nodes,
+            item.structural_hash,
+        ),
+    )
+    for item in screen_ranked:
+        if item.structural_hash not in selected_hashes:
+            selected_hashes.append(item.structural_hash)
+        if len(selected_hashes) >= exploitation_count:
+            break
+
+    remaining = sorted(
+        set(screen_by_hash) - set(selected_hashes)
+    )
+    exploration_count = min(
+        experiment.racing.exploration_finalists,
+        len(remaining),
+    )
+    if exploration_count:
+        seed_payload = (
+            f"{experiment.root_seed}\0{generation}\0racing-exploration"
+        )
+        exploration_seed = int.from_bytes(
+            sha256(seed_payload.encode("utf-8")).digest()[:8],
+            byteorder="little",
+        )
+        exploration_rng = random.Random(exploration_seed)
+        selected_hashes.extend(
+            exploration_rng.sample(remaining, exploration_count)
+        )
+    if len(selected_hashes) < min(
+        experiment.racing.finalists,
+        len(screen_by_hash),
+    ):
+        for item in screen_ranked:
+            if item.structural_hash not in selected_hashes:
+                selected_hashes.append(item.structural_hash)
+            if len(selected_hashes) >= min(
+                experiment.racing.finalists,
+                len(screen_by_hash),
+            ):
+                break
+
+    selected_set = set(selected_hashes)
+    high_population = [
+        item
+        for item in population
+        if is_baseline_individual(item)
+        or item.structural_hash in selected_set
+    ]
+    for item in high_population:
+        if item.fitness.valid:
+            del item.fitness.values
+
+    evaluator.set_experiment(high_experiment)
+    high_evaluation = evaluator.evaluate_population(
+        high_population,
+        high_cases,
+        baseline_cache,
+    )
+    for item in learned:
+        if item.structural_hash not in selected_set:
+            continue
+        breakdown = item.metadata.get("fitness_breakdown")
+        if not isinstance(breakdown, FitnessBreakdown):
+            raise RuntimeError("racing Stage 2 缺少 fitness breakdown")
+        item.metadata["racing_high_breakdown"] = breakdown
+        item.metadata["racing_high_score"] = float(breakdown.fitness)
+        item.metadata["racing_fidelity_tier"] = 0
+
+    combined_breakdowns = dict(screen_evaluation.breakdowns)
+    combined_breakdowns.update(high_evaluation.breakdowns)
+    combined = PopulationEvaluationResult(
+        evaluated_unique=(
+            screen_evaluation.evaluated_unique
+            + high_evaluation.evaluated_unique
+        ),
+        breakdowns=combined_breakdowns,
+        baseline_wall_time=(
+            screen_evaluation.baseline_wall_time
+            + high_evaluation.baseline_wall_time
+        ),
+        evaluation_wall_time=(
+            screen_evaluation.evaluation_wall_time
+            + high_evaluation.evaluation_wall_time
+        ),
+        constructed_tours=(
+            screen_evaluation.constructed_tours
+            + high_evaluation.constructed_tours
+        ),
+        racing_screen_evaluated_unique=(
+            screen_evaluation.evaluated_unique
+        ),
+        racing_high_evaluated_unique=high_evaluation.evaluated_unique,
+        racing_screen_iterations=screen_experiment.aco.iterations,
+        racing_high_iterations=high_experiment.aco.iterations,
+        racing_screen_instances=sum(
+            case.batch.batch_size for case in screen_cases
+        ),
+        racing_high_instances=sum(
+            case.batch.batch_size for case in high_cases
+        ),
+        racing_finalist_hashes=tuple(selected_hashes),
+        racing_screen_fitness_by_hash={
+            structural_hash: float(breakdown.fitness)
+            for structural_hash, breakdown
+            in screen_evaluation.breakdowns.items()
+            if structural_hash in screen_by_hash
+        },
+        racing_high_fitness_by_hash={
+            structural_hash: float(breakdown.fitness)
+            for structural_hash, breakdown
+            in high_evaluation.breakdowns.items()
+            if structural_hash in selected_set
+        },
+    )
+    return combined, high_experiment
+
+
 def _learned_candidates(
     population: Sequence[RMTGPIndividual],
 ) -> list[RMTGPIndividual]:
@@ -2496,21 +3027,40 @@ def train(
             for individual in population:
                 if individual.fitness.valid:
                     del individual.fitness.values
-            evaluation = evaluator.evaluate_population(
-                population,
-                cases,
-                baseline_cache,
-            )
+            if experiment.racing.enabled:
+                evaluation, generation_experiment = (
+                    _evaluate_population_with_racing(
+                        population=population,
+                        cases=cases,
+                        generation=generation,
+                        experiment=experiment,
+                        evaluator=evaluator,
+                        baseline_cache=baseline_cache,
+                    )
+                )
+                active_iterations = generation_experiment.aco.iterations
+            else:
+                evaluation = evaluator.evaluate_population(
+                    population,
+                    cases,
+                    baseline_cache,
+                )
 
             if generation % experiment.gp.checkpoint_interval == 0:
-                checkpoint_pool = _learned_candidates(population)
-                selected = tools.selBest(
-                    checkpoint_pool,
-                    min(
+                if experiment.racing.enabled:
+                    selected = _racing_checkpoint_candidates(
+                        population,
                         experiment.gp.checkpoint_top_k,
-                        len(checkpoint_pool),
-                    ),
-                )
+                    )
+                else:
+                    checkpoint_pool = _learned_candidates(population)
+                    selected = tools.selBest(
+                        checkpoint_pool,
+                        min(
+                            experiment.gp.checkpoint_top_k,
+                            len(checkpoint_pool),
+                        ),
+                    )
                 checkpoints.extend(deepcopy(selected))
 
             before_breeding = perf_counter() - generation_started
@@ -2548,9 +3098,13 @@ def train(
                 )
                 monitor_candidate = min(
                     monitor_pool,
-                    key=lambda item: (
-                        item.fitness.values[0],
-                        item.total_nodes,
+                    key=(
+                        _racing_selection_key
+                        if experiment.racing.enabled
+                        else lambda item: (
+                            item.fitness.values[0],
+                            item.total_nodes,
+                        )
                     ),
                 )
                 monitor_data = evaluator.validation_data(
@@ -2589,6 +3143,11 @@ def train(
                     transition_pset,
                     pheromone_pset,
                     experiment.gp,
+                    selection_key=(
+                        _racing_selection_key
+                        if experiment.racing.enabled
+                        else None
+                    ),
                 )
             else:
                 next_population = population
@@ -2640,15 +3199,18 @@ def train(
             if progress_callback is not None:
                 progress_callback(record)
 
-        final_pool = _learned_candidates(population)
-        checkpoints.extend(
-            deepcopy(
-                tools.selBest(
-                    final_pool,
-                    min(experiment.gp.checkpoint_top_k, len(final_pool)),
-                )
+        if experiment.racing.enabled:
+            final_selected = _racing_checkpoint_candidates(
+                population,
+                experiment.gp.checkpoint_top_k,
             )
-        )
+        else:
+            final_pool = _learned_candidates(population)
+            final_selected = tools.selBest(
+                final_pool,
+                min(experiment.gp.checkpoint_top_k, len(final_pool)),
+            )
+        checkpoints.extend(deepcopy(final_selected))
         evaluator.set_experiment(experiment)
         if active_iterations != experiment.aco.iterations:
             evaluator.warm(validation_cases[0])

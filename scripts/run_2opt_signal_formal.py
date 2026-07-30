@@ -96,6 +96,8 @@ def _load_decisions(path: Path | None) -> dict[str, dict[str, Any]]:
             "paired_final_ucb",
             "paired_basin_ucb",
             "paired_combined_ucb",
+            "paired_anytime_ucb",
+            "paired_final_anytime_ucb",
         }:
             raise ValueError(f"{variant} fitness_mode 非法: {mode}")
         gamma = float(item.get("gamma", 1.0 / 3.0))

@@ -5,12 +5,18 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from rmtgp_aco.config import ACOVariant
 from rmtgp_aco.ls_signal import (
     compression_statistics,
     edge_difference_survival,
     edge_retention,
     signal_to_noise_statistics,
     spearman_by_context,
+)
+from scripts.audit_tsp500_racing import (
+    _balanced_indices,
+    _shard_path,
+    _summarize,
 )
 
 
@@ -75,3 +81,60 @@ def test_signal_to_noise_uses_seed_variance() -> None:
     statistics = signal_to_noise_statistics(values)
     assert statistics.ratio_of_mean_variances == pytest.approx(0.5)
     np.testing.assert_allclose(statistics.ratios_by_instance, 0.5)
+
+
+def test_tsp500_racing_gate_uses_program_seed_instance_axes(
+    tmp_path,
+) -> None:
+    """审计排序必须沿 program 轴计算，不能被 advanced indexing 换轴。"""
+
+    horizons = (100, 200, 500, 5000)
+    seeds = 3
+    programs = 65
+    instances = 16
+    selected = [
+        {
+            "difficulty": "easy" if index < 8 else "hard",
+            "instance_id": f"i{index}",
+        }
+        for index in range(instances)
+    ]
+    assert _balanced_indices(selected, 8).tolist() == [
+        0,
+        1,
+        2,
+        3,
+        8,
+        9,
+        10,
+        11,
+    ]
+    program_effect = np.arange(programs, dtype=np.float64)[:, None] * 0.01
+    for horizon in horizons:
+        for replicate in range(seeds):
+            final = np.full((programs, instances), 10.0) + program_effect
+            anytime = np.full((programs, instances), 20.0) + program_effect
+            path = _shard_path(tmp_path, horizon, replicate)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(
+                path,
+                final_gap_percent=final,
+                anytime_gap_percent=anytime,
+                wall_time_sec=np.asarray(1.0),
+                kernel_time_sec=np.asarray(0.5),
+            )
+    summary = _summarize(
+        output=tmp_path,
+        variant=ACOVariant.AS,
+        horizons=horizons,
+        seeds=seeds,
+        selected_instances=selected,
+        budgets=(8, 16),
+    )
+    recommendation = summary["recommended_screen"]
+    assert recommendation is not None
+    assert summary["formal_training_allowed"]
+    assert recommendation["horizon"] == 100
+    assert recommendation["instances"] == 8
+    assert recommendation["top32_recall_at_target"] == 1.0
+    assert recommendation["spearman_at_target"] == pytest.approx(1.0)

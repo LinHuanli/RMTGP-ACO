@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "purpose": "TSP100 matched Anytime+Final control",
+  "variants": {
+    "as": {
+      "fitness_mode": "paired_final_anytime_ucb",
+      "gamma": 0.3333333333333333,
+      "origin": false
+    },
+    "acs": {
+      "fitness_mode": "paired_final_anytime_ucb",
+      "gamma": 0.16666666666666666,
+      "origin": false
+    },
+    "mmas": {
+      "fitness_mode": "paired_final_anytime_ucb",
+      "gamma": 0.16666666666666666,
+      "origin": false
+    }
+  }
+}

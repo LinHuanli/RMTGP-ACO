@@ -93,6 +93,7 @@ class _DeviceResult:
     chunks: int
     block_threads: int
     device_name: str
+    anytime_mean_lengths: np.ndarray | None = None
     basin_mean_lengths: np.ndarray | None = None
     pre_basin_mean_lengths: np.ndarray | None = None
     edge_retention: np.ndarray | None = None
@@ -1508,6 +1509,7 @@ def _run_device_v2(
         length_parts: list[np.ndarray] = []
         iteration_parts: list[np.ndarray] = []
         anytime_parts: list[np.ndarray] = []
+        anytime_mean_parts: list[np.ndarray] = []
         diagnostic_parts: list[np.ndarray] = []
         basin_parts: list[np.ndarray] = []
         pre_basin_parts: list[np.ndarray] = []
@@ -1610,6 +1612,7 @@ def _run_device_v2(
                 if record_anytime
                 else cp.empty(1, dtype=cp.float32)
             )
+            anytime_sum = cp.zeros(count, dtype=cp.float32)
             diagnostics = cp.empty((count, 8), dtype=cp.uint64)
 
             start_event = cp.cuda.Event()
@@ -1808,6 +1811,7 @@ def _run_device_v2(
                         retained_edge_sum,
                         np.int32(basin_top_q),
                         np.int32(audit_local_search),
+                        anytime_sum,
                         anytime,
                         np.int32(record_anytime),
                         diagnostics,
@@ -1825,6 +1829,9 @@ def _run_device_v2(
             length_parts.append(cp.asnumpy(global_best_lengths))
             iteration_parts.append(cp.asnumpy(best_iterations))
             diagnostic_parts.append(cp.asnumpy(diagnostics))
+            anytime_mean_parts.append(
+                cp.asnumpy(anytime_sum) / float(config.iterations)
+            )
             if basin_top_q > 0:
                 basin_parts.append(
                     cp.asnumpy(basin_sum) / float(config.iterations)
@@ -1869,6 +1876,7 @@ def _run_device_v2(
             chunks=chunk_count,
             block_threads=construct_threads,
             device_name=device_name,
+            anytime_mean_lengths=np.concatenate(anytime_mean_parts),
             basin_mean_lengths=(
                 np.concatenate(basin_parts)
                 if basin_top_q > 0
@@ -2053,6 +2061,11 @@ def _solve_population_impl(
         if record_anytime
         else None
     )
+    anytime_mean_flat = (
+        np.empty(task_count, dtype=np.float32)
+        if use_v2
+        else None
+    )
     basin_flat = (
         np.empty(task_count, dtype=np.float32)
         if basin_top_q > 0
@@ -2089,6 +2102,14 @@ def _solve_population_impl(
         if record_anytime:
             assert anytime_flat is not None and result.anytime is not None
             anytime_flat[result.flat_indices] = result.anytime
+        if use_v2:
+            assert (
+                anytime_mean_flat is not None
+                and result.anytime_mean_lengths is not None
+            )
+            anytime_mean_flat[result.flat_indices] = (
+                result.anytime_mean_lengths
+            )
         if basin_top_q > 0:
             assert basin_flat is not None and result.basin_mean_lengths is not None
             basin_flat[result.flat_indices] = result.basin_mean_lengths
@@ -2144,6 +2165,7 @@ def _solve_population_impl(
     best_iterations = representative_iterations
     diagnostics = representative_diagnostics
     anytime_tensor: torch.Tensor | None = None
+    anytime_mean_tensor: torch.Tensor | None = None
     basin_tensor: torch.Tensor | None = None
     pre_basin_tensor: torch.Tensor | None = None
     retention_tensor: torch.Tensor | None = None
@@ -2155,6 +2177,13 @@ def _solve_population_impl(
                 representative_count,
                 problem.batch_size,
                 config.iterations,
+            ).astype(np.float64)
+        )
+    if anytime_mean_flat is not None:
+        anytime_mean_tensor = torch.from_numpy(
+            anytime_mean_flat.reshape(
+                representative_count,
+                problem.batch_size,
             ).astype(np.float64)
         )
     if basin_flat is not None:
@@ -2206,6 +2235,8 @@ def _solve_population_impl(
         diagnostics = diagnostics[inverse]
         if anytime_tensor is not None:
             anytime_tensor = anytime_tensor[inverse]
+        if anytime_mean_tensor is not None:
+            anytime_mean_tensor = anytime_mean_tensor[inverse]
         if basin_tensor is not None:
             basin_tensor = basin_tensor[inverse]
         if pre_basin_tensor is not None:
@@ -2268,6 +2299,7 @@ def _solve_population_impl(
         edge_retention=retention_tensor,
         final_colony_tour=colony_tensor,
         final_pre_colony_tour=pre_colony_tensor,
+        anytime_mean_length=anytime_mean_tensor,
         backend_metrics=metrics,
     )
     return quality, anytime_tensor

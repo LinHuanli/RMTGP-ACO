@@ -66,6 +66,30 @@ class ProblemBatch:
             coordinate_hashes=self.coordinate_hashes,
         )
 
+    def take(self, indices: torch.Tensor | list[int] | tuple[int, ...]) -> ProblemBatch:
+        """按给定顺序抽取实例，并保持全部张量与标识严格对齐。"""
+
+        selected = torch.as_tensor(indices, dtype=torch.long)
+        if selected.ndim != 1 or selected.numel() < 1:
+            raise ValueError("ProblemBatch.take 要求非空一维 indices")
+        if torch.any(selected < 0) or torch.any(selected >= self.batch_size):
+            raise IndexError("ProblemBatch.take indices 越界")
+        device_indices = selected.to(self.device)
+        positions = selected.tolist()
+        return ProblemBatch(
+            coords=self.coords[device_indices],
+            distances=self.distances[device_indices],
+            heuristic=self.heuristic[device_indices],
+            nn_indices=self.nn_indices[device_indices],
+            full_nn_rank=self.full_nn_rank[device_indices],
+            reference_tour=self.reference_tour[device_indices],
+            reference_length=self.reference_length[device_indices],
+            instance_ids=tuple(self.instance_ids[index] for index in positions),
+            coordinate_hashes=tuple(
+                self.coordinate_hashes[index] for index in positions
+            ),
+        )
+
 
 @dataclass(slots=True)
 class TransitionContext:
@@ -140,6 +164,9 @@ class PopulationQualityResult:
     # tour length 的跨轮均值。它不是 global-best anytime AUC，因而能保留
     # 整个 colony 进入优质局部搜索盆地的密集学习信号。
     basin_mean_length: torch.Tensor | None = None
+    # ``anytime_mean_length[p,b]`` 是各轮 global-best-so-far tour length
+    # 的均值。只保留一个标量，不返回 iterations 长度的完整轨迹。
+    anytime_mean_length: torch.Tensor | None = None
     # 以下三个字段只在显式 local-search signal audit 中返回。正常训练不
     # 分配相应轨迹或把 colony 搬回主机。
     pre_basin_mean_length: torch.Tensor | None = None
@@ -166,6 +193,7 @@ class PopulationQualityResult:
             raise ValueError("population diagnostics 必须具有 [P,D] shape，D>=4")
         for name in (
             "basin_mean_length",
+            "anytime_mean_length",
             "pre_basin_mean_length",
             "edge_retention",
         ):

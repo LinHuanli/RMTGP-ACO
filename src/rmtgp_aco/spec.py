@@ -16,6 +16,7 @@ from .config import (
     ACOVariant,
     ExperimentConfig,
     GPConfig,
+    RacingConfig,
     RuntimeConfig,
     TransitionIntegration,
 )
@@ -254,7 +255,14 @@ def load_run_spec(path: str | Path) -> RunSpec:
     )
     if not isinstance(payload, Mapping):
         raise ValueError("配置根节点必须是 mapping")
-    unknown_sections = set(payload) - {"experiment", "aco", "gp", "runtime", "data"}
+    unknown_sections = set(payload) - {
+        "experiment",
+        "aco",
+        "gp",
+        "runtime",
+        "racing",
+        "data",
+    }
     if unknown_sections:
         raise ValueError(f"配置含未知顶层字段: {sorted(unknown_sections)}")
 
@@ -264,10 +272,14 @@ def load_run_spec(path: str | Path) -> RunSpec:
     runtime = RuntimeConfig(
         **_strict_kwargs(RuntimeConfig, dict(payload.get("runtime", {})))
     )
+    racing = RacingConfig(
+        **_strict_kwargs(RacingConfig, dict(payload.get("racing", {})))
+    )
     experiment = ExperimentConfig(
         aco=aco,
         gp=gp,
         runtime=runtime,
+        racing=racing,
         **_strict_kwargs(ExperimentConfig, experiment_raw),
     )
     if (
@@ -299,5 +311,24 @@ def load_run_spec(path: str | Path) -> RunSpec:
     if set(experiment.validation_scales) != set(data.validation):
         raise ValueError(
             "experiment.validation_scales 必须与 data.validation 的 keys 完全一致"
+        )
+    if (
+        experiment.racing.enabled
+        and experiment.racing.screen_instances_per_scale
+        > data.train_instances_per_scale
+    ):
+        raise ValueError(
+            "racing screen_instances_per_scale 不得超过 "
+            "data.train_instances_per_scale"
+        )
+    if (
+        experiment.racing.enabled
+        and experiment.racing.high_instances_per_scale is not None
+        and experiment.racing.high_instances_per_scale
+        > data.train_instances_per_scale
+    ):
+        raise ValueError(
+            "racing high_instances_per_scale 不得超过 "
+            "data.train_instances_per_scale"
         )
     return RunSpec(experiment=experiment, data=data, source_path=source)

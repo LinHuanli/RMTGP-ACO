@@ -102,6 +102,8 @@ class FitnessMode(StrEnum):
     PAIRED_FINAL_UCB = "paired_final_ucb"
     PAIRED_BASIN_UCB = "paired_basin_ucb"
     PAIRED_COMBINED_UCB = "paired_combined_ucb"
+    PAIRED_ANYTIME_UCB = "paired_anytime_ucb"
+    PAIRED_FINAL_ANYTIME_UCB = "paired_final_anytime_ucb"
 
     @property
     def is_paired(self) -> bool:
@@ -112,6 +114,13 @@ class FitnessMode(StrEnum):
         return self in {
             FitnessMode.PAIRED_BASIN_UCB,
             FitnessMode.PAIRED_COMBINED_UCB,
+        }
+
+    @property
+    def uses_anytime(self) -> bool:
+        return self in {
+            FitnessMode.PAIRED_ANYTIME_UCB,
+            FitnessMode.PAIRED_FINAL_ANYTIME_UCB,
         }
 
 
@@ -413,6 +422,7 @@ class GPConfig:
     baseline_anchor: bool = False
     basin_top_q: int = 7
     basin_weight: float = 0.8
+    anytime_weight: float = 0.5
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "fitness_mode", FitnessMode(self.fitness_mode))
@@ -445,6 +455,8 @@ class GPConfig:
             raise ValueError("basin_top_q 必须为正整数")
         if not 0.0 <= self.basin_weight <= 1.0:
             raise ValueError("basin_weight 必须位于 [0, 1]")
+        if not 0.0 <= self.anytime_weight <= 1.0:
+            raise ValueError("anytime_weight 必须位于 [0, 1]")
         if self.transition_profile not in {"main", "legacy"}:
             raise ValueError("transition_profile 仅支持 main 或 legacy")
         if self.function_profile not in {"f0", "f1"}:
@@ -580,6 +592,82 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RacingConfig:
+    """训练期两阶段多保真筛选配置。
+
+    Stage 1 用较少实例和较短 ACO horizon 对所有学习个体筛选。Stage 2
+    只用完整 mini-batch 和较长 horizon 复评 finalists。所有配额都只计
+    学习个体；原始 ACO baseline anchor 始终独立处理。
+    """
+
+    enabled: bool = False
+    screen_instances_per_scale: int = 8
+    high_instances_per_scale: int | None = None
+    finalists: int = 32
+    exploration_finalists: int = 4
+    preserved_elites: int = 4
+    screen_horizon_schedule: tuple[tuple[int, int], ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.screen_instances_per_scale < 1:
+            raise ValueError("racing screen instance 数必须为正整数")
+        if (
+            self.high_instances_per_scale is not None
+            and self.high_instances_per_scale
+            < self.screen_instances_per_scale
+        ):
+            raise ValueError(
+                "racing high instance 数不得少于 screen instance 数"
+            )
+        if self.finalists < 1:
+            raise ValueError("racing finalists 必须为正整数")
+        if not 0 <= self.exploration_finalists < self.finalists:
+            raise ValueError(
+                "racing exploration_finalists 必须位于 [0, finalists)"
+            )
+        if not 0 <= self.preserved_elites <= (
+            self.finalists - self.exploration_finalists
+        ):
+            raise ValueError(
+                "racing preserved_elites 不得超过 exploitation 配额"
+            )
+        if self.screen_horizon_schedule is not None:
+            schedule = tuple(
+                (int(end_generation), int(iterations))
+                for end_generation, iterations
+                in self.screen_horizon_schedule
+            )
+            if not schedule:
+                raise ValueError("racing screen_horizon_schedule 不得为空")
+            previous = 0
+            for end_generation, iterations in schedule:
+                if end_generation <= previous:
+                    raise ValueError(
+                        "racing screen schedule 的代数边界必须严格递增"
+                    )
+                if iterations < 1:
+                    raise ValueError("racing screen horizon 必须为正整数")
+                previous = end_generation
+            object.__setattr__(self, "screen_horizon_schedule", schedule)
+
+    def iterations_for_generation(
+        self,
+        generation: int,
+        *,
+        generations: int,
+        fallback: int,
+    ) -> int:
+        if generation < 1 or generation > generations:
+            raise ValueError(f"generation 必须位于 [1, {generations}]")
+        if self.screen_horizon_schedule is None:
+            return fallback
+        for end_generation, iterations in self.screen_horizon_schedule:
+            if generation <= end_generation:
+                return iterations
+        raise RuntimeError("racing screen_horizon_schedule 未覆盖当前 generation")
+
+
+@dataclass(frozen=True, slots=True)
 class ExperimentConfig:
     """一次训练或测试实验的可复现配置。"""
 
@@ -588,6 +676,7 @@ class ExperimentConfig:
     aco: ACOConfig
     gp: GPConfig = field(default_factory=GPConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    racing: RacingConfig = field(default_factory=RacingConfig)
     train_scales: tuple[int, ...] = (50, 100)
     validation_scales: tuple[int, ...] = (50, 100)
     test_scales: tuple[int, ...] = (500,)
@@ -644,6 +733,11 @@ class ExperimentConfig:
                     "basin fitness 只用于 local-search 训练；"
                     "无局部搜索实验应使用 final fitness"
                 )
+        if self.gp.fitness_mode.uses_anytime and not self.aco.uses_local_search:
+            raise ValueError(
+                "anytime fitness 只用于 local-search 训练；"
+                "无局部搜索实验应使用 final fitness"
+            )
         if self.training_horizon_schedule is not None:
             schedule = tuple(
                 (int(end_generation), int(iterations))
@@ -665,6 +759,30 @@ class ExperimentConfig:
                     "training_horizon_schedule 最后边界必须等于 gp.generations"
                 )
             object.__setattr__(self, "training_horizon_schedule", schedule)
+        if self.racing.enabled:
+            learned_population = self.gp.population_size - int(
+                self.gp.baseline_anchor
+            )
+            if self.racing.finalists >= learned_population:
+                raise ValueError(
+                    "racing finalists 必须少于学习个体数；否则没有筛选意义"
+                )
+            schedule = self.racing.screen_horizon_schedule
+            if schedule is not None and schedule[-1][0] != self.gp.generations:
+                raise ValueError(
+                    "racing screen schedule 最后边界必须等于 gp.generations"
+                )
+            for generation in range(1, self.gp.generations + 1):
+                high_iterations = self.iterations_for_generation(generation)
+                screen_iterations = self.racing.iterations_for_generation(
+                    generation,
+                    generations=self.gp.generations,
+                    fallback=high_iterations,
+                )
+                if screen_iterations > high_iterations:
+                    raise ValueError(
+                        "racing screen horizon 不得超过同代 high horizon"
+                    )
 
     def iterations_for_generation(self, generation: int) -> int:
         """返回指定 GP generation 使用的 ACO 迭代数。"""
@@ -695,12 +813,20 @@ class ExperimentConfig:
         runtime_values["cuda_provider"] = self.runtime.cuda_provider.value
         runtime_values["cuda_precision"] = self.runtime.cuda_precision.value
         runtime_values["cuda_task_order"] = self.runtime.cuda_task_order.value
+        racing_values = asdict(self.racing)
+        if self.racing.screen_horizon_schedule is not None:
+            racing_values["screen_horizon_schedule"] = [
+                [end_generation, iterations]
+                for end_generation, iterations
+                in self.racing.screen_horizon_schedule
+            ]
         return {
             "experiment_id": self.experiment_id,
             "root_seed": self.root_seed,
             "aco": self.aco.stable_dict(),
             "gp": gp_values,
             "runtime": runtime_values,
+            "racing": racing_values,
             "train_scales": list(self.train_scales),
             "validation_scales": list(self.validation_scales),
             "test_scales": list(self.test_scales),

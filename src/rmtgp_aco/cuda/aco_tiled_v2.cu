@@ -979,6 +979,7 @@ extern "C" __global__ void v2_update(
     unsigned long long* retained_edge_sum,
     int basin_top_q,
     int audit_local_search,
+    float* anytime_sum,
     float* anytime,
     int record_anytime,
     uint64_t* diagnostics
@@ -1456,8 +1457,14 @@ extern "C" __global__ void v2_update(
         }
     }
 #endif
-    if (tid == 0 && record_anytime != 0) {
-        anytime[static_cast<size_t>(task) * total_iterations + iteration - 1]
-            = global_best_lengths[task];
+    if (tid == 0) {
+        // 训练只需要 best-so-far 曲线的均值。直接在设备端累加一个标量，
+        // 避免为 population×instance×iteration 分配和回传完整曲线。
+        anytime_sum[task] += global_best_lengths[task];
+        if (record_anytime != 0) {
+            anytime[
+                static_cast<size_t>(task) * total_iterations + iteration - 1
+            ] = global_best_lengths[task];
+        }
     }
 }

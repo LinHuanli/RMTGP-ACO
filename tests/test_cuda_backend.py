@@ -148,6 +148,46 @@ def test_cuda_population_anytime_matches_single_program_path(
     assert torch.equal(result.anytime_best[0], result.anytime_best[1])
 
 
+def test_cuda_v2_anytime_scalar_matches_full_curve(
+    small_instances,
+) -> None:
+    """训练期设备端标量应数值等价于完整 best-so-far 曲线均值。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "as",
+            local_search=LocalSearch.TWO_OPT,
+            iterations=4,
+        ),
+        ants=32,
+        candidate_size=2,
+        local_search_candidate_size=2,
+    )
+    runtime = _runtime_v2()
+    quality = solve_population_cuda(
+        batch,
+        config,
+        [(None, None)],
+        seed=817,
+        runtime=runtime,
+    )
+    full = solve_population_cuda_anytime(
+        batch,
+        config,
+        [(None, None)],
+        seed=817,
+        runtime=runtime,
+    )
+    assert quality.anytime_mean_length is not None
+    torch.testing.assert_close(
+        quality.anytime_mean_length,
+        full.anytime_best.mean(dim=2),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
 @pytest.mark.skipif(cuda_device_count() < 2, reason="需要两张可见 CUDA GPU")
 def test_cuda_single_dual_device_and_chunk_invariance(small_instances) -> None:
     batch = make_problem_batch(small_instances, candidate_size=2)

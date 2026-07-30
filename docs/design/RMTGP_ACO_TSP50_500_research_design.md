@@ -2902,9 +2902,9 @@ M_{ij}
 的真 3-opt 重连。本文使用连续欧氏距离和 counter-based RNG。因此，语义是
 ACOTSP-style，而不是原 C 程序的逐位复现。
 
-局部搜索条件增加一个可选的信息素终端
+前期实现曾审计一个可选的信息素终端
 \(\mathrm{LSGain}\)。设来源路线在局部搜索前后的长度分别为
-\(L^{\mathrm{pre}}_r\) 和 \(L^{\mathrm{post}}_r\)，则
+\(L^{\mathrm{pre}}_r\) 和 \(L^{\mathrm{post}}_r\)，其候选定义为
 
 \[
 g^{\mathrm{LS}}_r
@@ -2923,7 +2923,9 @@ shape 为 \([B,R,n]\)。输入仅包括当前构造路线、局部搜索前长�
 后长度。它不读取最优标签。AS 的 \(R=M\)，因为全部蚂蚁都增强信息素。
 ACS 和 MMAS 的 \(R=1\)，因为每轮只选择一个增强来源。全局最优或
 restart-best 路线在被发现时同时保存其 LSGain。关闭局部搜索时该终端恒为
-\(-1\)。这保持两个训练条件的 grammar 一致。
+\(-1\)。但是该信用定义尚不成熟，而且初步证据不能证明它改善选择。因此，
+当前冻结的 TSP100 与 TSP500 正式训练均不把 LSGain 或 Origin 放入
+terminal set。它们只保留为未来的独立机制消融，不能与训练规模实验混合。
 
 最终测试只使用锁定后的最终个体，不测试整个 population。TSP100 使用前
 128 个独立测试实例。TSP500 使用前 32 个独立测试实例。每个实例使用三个
@@ -2950,6 +2952,98 @@ block 处理，并行检查 \(20^2\) 个候选对。候选对用最小 pair inde
 基准中，8 warps/block 比 4 warps/block 快约 4.5%。3-opt 的 block 化相对
 旧的一 warp/tour 实现，在 TSP100 和 TSP500 小工作负载上分别把局部搜索
 内核时间降低约 1.9 倍和 3.5 倍。正式结论仍以完整运行 artifact 为准。
+
+### 22.10.1 TSP500 Anytime+Final 多保真训练
+
+TSP100 的 full-2opt 训练显示，basin surrogate 在训练 batch 上可下降，但
+最终 validation 可能退化。后续主实验不再增加 terminal、function 或
+局部搜索信用机制。它只改变训练规模、fitness 的时间信息和评价保真度。
+这样可以单独检验以下解释：TSP100 在 full 2-opt 后接近饱和，导致 final
+fitness 缺少区分度；TSP500 仍有足够 headroom。
+
+TSP500 主 fitness 定义为
+
+\[
+F(\theta)
+=
+\overline{
+\frac{1}{2}\Delta g_{\mathrm{anytime}}(\theta)
++
+\frac{1}{2}\Delta g_{\mathrm{final}}(\theta)
+}
++
+z\,SE(\theta),
+\qquad z=1.
+\]
+
+\(g_{\mathrm{final}}\) 是最后一轮的 best-tour gap。\(
+g_{\mathrm{anytime}}\) 是逐轮 global-best-so-far gap 的算术均值。两个
+gap 都相对实例的最优标签计算。\(\Delta\) 是候选减去相同 instance、
+相同 ACO seed 的原始 ACO+2opt。负值表示候选更好。该定义不把 baseline
+性能作为标签，也不改变最终评价指标。它只利用整个搜索轨迹，减少“最终
+best 相同”造成的平台。
+
+每代先无放回抽取 16 个 TSP500 uniform 训练实例。两阶段评价如下。
+
+| 阶段 | 学习个体 | 实例 | 第 1--15 代 | 第 16--35 代 | 第 36--50 代 |
+|---|---:|---:|---:|---:|---:|
+| Stage 1 screen | 全部 99 个 | 8 | 50 | 100 | 200 |
+| Stage 2 high fidelity | 32 个 | 16 | 100 | 200 | 500 |
+
+一个原始 ACO baseline anchor 独立评价。它不占 32 个 finalist 名额，也不
+进入繁殖。32 个学习个体包括最多 4 个上一代高保真 elites、由本代 screen
+分数补足到 28 个的 exploitation 集合，以及从未选集合中用
+root-seed 和 generation 派生的独立 RNG 抽出的 4 个 exploration 个体。
+重复 genotype 只执行一次 kernel task，但同 genotype 的 population copies
+共享结果。
+
+繁殖使用以下全序：
+
+\[
+\bigl(
+\text{fidelity tier},
+F_{\mathrm{UCB}},
+\text{total nodes},
+\text{structural hash}
+\bigr).
+\]
+
+高保真层严格优先于仅经过 screen 的层。checkpoint 也只能来自本代高保真
+学习个体。screen 与 high-fidelity 的真实 fitness 均写入逐代 artifact，
+不能用人为 ordinal rank 替代科研统计值。探索 RNG 不消耗 GP 的全局随机
+流。因此，逐代 checkpoint 恢复后 finalists 和繁殖轨迹保持确定。
+
+正式训练前复用冻结的 64 个 GP programs。每个 variant 在 easy/hard
+平衡的 validation 实例、3 个 ACO seeds 和
+\(\{100,200,500,5000\}\) horizons 上审计。门控为：
+
+\[
+\begin{aligned}
+r_{\mathrm{nonzero}}^{\mathrm{final}}&\ge 0.5,\\
+r_{\mathrm{nonzero}}^{\mathrm{anytime}}&\ge 0.5,\\
+\mathrm{SNR}_{\mathrm{combined}}&\ge 1,\\
+\mathrm{Recall@32}&\ge 0.8,\\
+\rho_{\mathrm{Spearman}}&\ge 0.7.
+\end{aligned}
+\]
+
+门控失败时先增加 screen horizon，再把平衡实例数从 8 增至 16。仍失败的
+variant 不启动正式训练。审计实测 kernel throughput 用于预测单个完整
+run。若预测超过 72 小时，统一依次把 finalists 从 32 减为 24，再把
+high-fidelity 实例从 16 减为 8。第二项缩减只有在 8-instance gate 已通过
+时允许。仍超预算则停止，而不是静默改变其余算法参数。
+
+AS 使用 \(\gamma_{\mathrm{tr}}=\gamma_{\mathrm{ph}}=1/3\)。ACS 与
+MMAS 使用 \(1/6\)。三个 variants 均运行 3 个独立 GP seeds。TSP100
+另运行一个只替换为相同 Anytime+Final fitness 的 3×3 matched control。
+这使“fitness 改变”和“训练规模改变”可以分开解释。
+
+TSP500 validation 固定为 selection 16 个实例和独立 gate 48 个实例。
+selection 先用 1 个 ACO seed 选出 Top-5，再用 3 个 seeds 完成选择；gate
+使用 3 个 seeds。最终测试只使用每个 GP run 锁定的一个最终个体。TSP100
+uniform 使用 128 个实例，TSP500 uniform 使用 32 个实例。所有方法使用
+3 个 ACO seeds、32 只蚂蚁和 5000 次迭代。比较包括 ACO+2opt、
+ACO+3opt、TSP100-trained RMTGP+2opt 和 TSP500-trained RMTGP+2opt。
 
 ## 22.12 E11：ACS 语义审计
 

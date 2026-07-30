@@ -26,8 +26,8 @@ from .config import (
 from .model import RunResult
 from .sampling import EvaluationCase
 
-BASELINE_ARCHIVE_SCHEMA_VERSION = 5
-_READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3, 4, 5})
+BASELINE_ARCHIVE_SCHEMA_VERSION = 6
+_READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3, 4, 5, 6})
 NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v4-basin-origin"
 TORCH_KERNEL_SEMANTIC_VERSION = "torch-generator-v1"
 CUDA_KERNEL_SEMANTIC_VERSION = "counter-rng-cuda-fp32-search-v1"
@@ -135,6 +135,7 @@ class BaselineRecord:
     uniform_fallback_count: int
     bound_clip_count: int
     mmas_restart_count: int
+    anytime_mean_length: float = float("nan")
     local_search_move_count: int = 0
     local_search_candidate_check_count: int = 0
     local_search_improved_tour_count: int = 0
@@ -157,6 +158,7 @@ def records_from_result(
     reference = case.batch.reference_length.detach().cpu().numpy()
     best = result.best_length.detach().cpu().numpy()
     anytime = result.anytime_best.detach().cpu().numpy()
+    anytime_mean = anytime.mean(axis=1)
     gap = 100.0 * (best - reference) / reference
     anytime_gap = 100.0 * (anytime - reference[:, None]) / reference[:, None]
     records: list[BaselineRecord] = []
@@ -185,6 +187,7 @@ def records_from_result(
                 uniform_fallback_count=result.diagnostics.uniform_fallback_count,
                 bound_clip_count=result.diagnostics.bound_clip_count,
                 mmas_restart_count=result.diagnostics.mmas_restart_count,
+                anytime_mean_length=float(anytime_mean[index]),
                 local_search_move_count=(
                     result.diagnostics.local_search_move_count
                 ),
@@ -259,6 +262,7 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
             "basin_top_q",
             "basin_mean_length",
             "basin_gap_auc",
+            "anytime_mean_length",
         }
         missing = required - set(fields)
         if missing:
@@ -292,6 +296,22 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
                 ),
                 bound_clip_count=int(fields["bound_clip_count"][index]),
                 mmas_restart_count=int(fields["mmas_restart_count"][index]),
+                anytime_mean_length=(
+                    float(fields["anytime_mean_length"][index])
+                    if "anytime_mean_length" in fields
+                    else (
+                        float(fields["reference_length"][index])
+                        * (
+                            1.0
+                            + float(fields["anytime_gap_auc"][index])
+                            / 100.0
+                        )
+                        if math.isfinite(
+                            float(fields["anytime_gap_auc"][index])
+                        )
+                        else float("nan")
+                    )
+                ),
                 local_search_move_count=(
                     int(fields["local_search_move_count"][index])
                     if "local_search_move_count" in fields
@@ -447,6 +467,36 @@ class BaselineArchive:
             values.append(record.basin_mean_length)
         return torch.as_tensor(values, dtype=torch.float64)
 
+    def lookup_anytime_mean_length(
+        self,
+        case: EvaluationCase,
+    ) -> torch.Tensor | None:
+        """读取 baseline 的 best-so-far 曲线均值。
+
+        schema 2--5 的逐轮 archive 若保存了 ``anytime_gap_auc``，读取时会
+        无损反推该均值；旧 population-batched archive 的 NaN 占位值会被
+        视为 cache miss。
+        """
+
+        values: list[float] = []
+        for coordinate_hash in case.batch.coordinate_hashes:
+            key = baseline_key(
+                coordinate_hash=coordinate_hash,
+                seed=case.seed,
+                config_hash=self.config.baseline_behavior_hash,
+                backend_semantic=self.backend_semantic,
+            )
+            record = self._records.get(key)
+            if record is None or not math.isfinite(record.anytime_mean_length):
+                if self.require:
+                    raise KeyError(
+                        "baseline anytime cache miss: "
+                        f"hash={coordinate_hash[:12]}, seed={case.seed}"
+                    )
+                return None
+            values.append(record.anytime_mean_length)
+        return torch.as_tensor(values, dtype=torch.float64)
+
     @property
     def records(self) -> int:
         return len(self._records)
@@ -526,6 +576,14 @@ def precompute_baseline_cases(
                 else np.full_like(best, np.nan)
             )
             basin_gap = 100.0 * (basin - reference) / reference
+            anytime_mean = (
+                quality.anytime_mean_length[0].detach().cpu().numpy()
+                if quality.anytime_mean_length is not None
+                else np.full_like(best, np.nan)
+            )
+            anytime_gap = (
+                100.0 * (anytime_mean - reference) / reference
+            )
             diagnostic = quality.diagnostics[0]
             for index, coordinate_hash in enumerate(case.batch.coordinate_hashes):
                 records.append(
@@ -547,11 +605,12 @@ def precompute_baseline_cases(
                         reference_length=float(reference[index]),
                         reference_gap_percent=float(gap[index]),
                         best_iteration=int(quality.best_iteration[0, index].item()),
-                        anytime_gap_auc=float("nan"),
+                        anytime_gap_auc=float(anytime_gap[index]),
                         candidate_fallback_count=int(diagnostic[0].item()),
                         uniform_fallback_count=int(diagnostic[1].item()),
                         bound_clip_count=int(diagnostic[2].item()),
                         mmas_restart_count=int(diagnostic[3].item()),
+                        anytime_mean_length=float(anytime_mean[index]),
                         local_search_move_count=(
                             int(diagnostic[4].item())
                             if diagnostic.numel() > 4

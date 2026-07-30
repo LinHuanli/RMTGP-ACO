@@ -1176,3 +1176,35 @@ F_{\mathrm{train}}
 6. 最终 joint residual 在 full-2opt 环境下改善 basin quality、收敛速度或最终 gap。
 
 因此，你现在的结果不是简单的负结果。它准确暴露了下一步真正值得解决的问题。最优先的动作是先完成 **compression/SNR/edge-survival audit**，随后只改两件事：**fitness 改成 post-LS top-(q) AUC，pheromone tree 加入 edge provenance**。这两个变化最小，但最直接针对当前失败机制。
+
+---
+
+# 十四、当前冻结实现：先检验 TSP500 的可辨识度
+
+上文的 LSGain、Origin 和扩展 terminal set 是候选研究方向，不是当前正式
+方法。初步实验尚不能证明这些机制成熟。当前实现保持原有 function set、
+terminal set 和双树残差结构不变，也不加入 LSGain 或 Origin。
+
+当前主假设更窄：full 2-opt 使 TSP100 final gap 接近饱和；TSP500 有更大
+headroom，且逐轮 best-so-far 平均值比单个 final best 提供更密集的信号。
+训练 fitness 因此冻结为
+
+\[
+F
+=
+\operatorname{mean}
+\left(
+\tfrac12\Delta g_{\mathrm{anytime}}
++
+\tfrac12\Delta g_{\mathrm{final}}
+\right)
++
+SE.
+\]
+
+每代 TSP500 batch 为 16。Stage 1 用 8 个实例筛选全部个体。Stage 2 用
+16 个实例复评 32 个 finalists。短 horizon 为 50/100/200，长 horizon
+为 100/200/500。正式训练前使用 64 个固定 programs、3 个 seeds 和
+100/200/500/5000 horizons 验证非零比例、SNR、Top-32 recall 与 Spearman
+相关。完整可执行合同见
+`experiments/tsp500_2opt_racing/config.yaml`。
