@@ -3,6 +3,9 @@
 本实验先诊断 2-opt 是否压缩 GP 的行为差异，再决定是否开放 `Origin`
 terminal。训练和模型选择只使用 TSP100。测试也先锁定为 TSP100。
 
+已经完成的审计、三代 pilot 数值与正式配置冻结理由见
+[`decision_report.md`](decision_report.md)。
+
 审计对每个 AS、ACS、MMAS 分别使用 64 个 residual programs：
 
 - 32 个新随机个体；
