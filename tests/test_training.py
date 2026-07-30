@@ -29,6 +29,8 @@ from rmtgp_aco.sampling import in_memory_cases
 from rmtgp_aco.training import (
     BaselineCache,
     EvaluationPool,
+    _experiment_hash,
+    _pre_anytime_experiment_hash,
     baseline_relative_fitness,
     paired_ucb_fitness,
     train,
@@ -369,6 +371,35 @@ def test_training_horizon_schedule_is_recorded(tmp_path) -> None:
     assert result.history[0].validation_monitor_delta_by_scale == {}
     assert result.history[1].validation_monitor_delta_by_scale
     assert all(record.baseline_anchor_count == 1 for record in result.history)
+
+
+def test_pre_anytime_checkpoint_hash_migration_is_strict() -> None:
+    experiment = ExperimentConfig(
+        experiment_id="legacy-hash",
+        root_seed=1,
+        aco=ACOConfig.acotsp_default("as", iterations=2),
+        train_scales=(5,),
+        validation_scales=(5,),
+        test_scales=(5,),
+    )
+    legacy = _pre_anytime_experiment_hash(experiment)
+    assert legacy is not None
+    assert legacy != _experiment_hash(experiment)
+    anytime = replace(
+        experiment,
+        aco=replace(
+            ACOConfig.acotsp_local_search_default(
+                "as",
+                local_search=LocalSearch.TWO_OPT,
+                iterations=2,
+            )
+        ),
+        gp=replace(
+            experiment.gp,
+            fitness_mode=FitnessMode.PAIRED_FINAL_ANYTIME_UCB,
+        ),
+    )
+    assert _pre_anytime_experiment_hash(anytime) is None
 
 
 def test_tiny_training_run_is_reproducible(tmp_path) -> None:

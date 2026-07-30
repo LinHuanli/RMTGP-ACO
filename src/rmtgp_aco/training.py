@@ -11,7 +11,7 @@ import random
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import MISSING, asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -2270,6 +2270,52 @@ def _experiment_hash(experiment: ExperimentConfig) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _pre_anytime_experiment_hash(experiment: ExperimentConfig) -> str | None:
+    """返回新增 Anytime/Racing 字段前的兼容哈希。
+
+    该迁移只适用于未启用新机制的旧实验。删除的两个字段在旧版本中不存在，
+    且当前值必须等于默认值；任何实际算法配置变化仍会被拒绝。
+    """
+
+    if (
+        experiment.racing.enabled
+        or experiment.gp.fitness_mode.uses_anytime
+        or experiment.gp.anytime_weight != 0.5
+    ):
+        return None
+    payload = experiment.stable_dict()
+    payload.pop("racing", None)
+    gp = payload.get("gp")
+    if not isinstance(gp, dict):
+        return None
+    gp.pop("anytime_weight", None)
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _hydrate_generation_record(record: GenerationRecord) -> None:
+    """为旧 pickle 中后来新增、且有默认值的审计字段补默认值。"""
+
+    for descriptor in fields(GenerationRecord):
+        if hasattr(record, descriptor.name):
+            continue
+        if descriptor.default is not MISSING:
+            value = deepcopy(descriptor.default)
+        elif descriptor.default_factory is not MISSING:
+            value = descriptor.default_factory()
+        else:
+            raise ValueError(
+                "旧 checkpoint 缺少无默认值字段 "
+                f"GenerationRecord.{descriptor.name}"
+            )
+        setattr(record, descriptor.name, value)
+
+
 def _sampler_owner(
     provider: Callable[[int], Sequence[EvaluationCase]],
 ) -> object | None:
@@ -2331,8 +2377,16 @@ def _load_resume_checkpoint(
         raise TypeError("training checkpoint 根对象必须为 dict")
     if payload.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION:
         raise ValueError("training checkpoint schema 不兼容")
-    if payload.get("experiment_hash") != _experiment_hash(experiment):
+    expected_hashes = {_experiment_hash(experiment)}
+    legacy_hash = _pre_anytime_experiment_hash(experiment)
+    if legacy_hash is not None:
+        expected_hashes.add(legacy_hash)
+    if payload.get("experiment_hash") not in expected_hashes:
         raise ValueError("resume 配置与 checkpoint 不一致")
+    for record in payload.get("history", ()):
+        if not isinstance(record, GenerationRecord):
+            raise TypeError("training checkpoint history 类型错误")
+        _hydrate_generation_record(record)
     sampler_state = payload.get("sampler_state")
     if sampler_state is not None:
         if sampler_owner is None:
