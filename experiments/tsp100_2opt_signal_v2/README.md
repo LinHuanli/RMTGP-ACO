@@ -30,6 +30,11 @@ F=0.8\Delta F_{\mathrm{basin}}+0.2\Delta F_{\mathrm{final}}.
 再对全部 ACO iterations 取平均。最终 validation 和 test 仍以 final
 best gap 为主，并使用独立 holdout gate。
 
+每代训练使用 128 个 TSP100 instances。模型选择使用 128 个固定
+validation instances，与每代训练批量等大。最终 gate 使用另外 512 个
+互不重叠的 validation instances。这样正好使用验证文件中的 640 个实例，
+并将频繁使用的模型选择集与一次性的确认 gate 严格分离。
+
 单 variant 审计命令：
 
 ```bash
