@@ -104,7 +104,15 @@ PHEROMONE_TERMINALS: tuple[str, ...] = (
     "SourceQuality",
     "ACOProg",
     "Stagnation",
-    "LSGain",
+)
+
+# 旧实验的 ``LSGain`` 是 source-tour 级常数，不能给单条更新边分配局部
+# 搜索信用。保留为可读 legacy terminal，但不再进入默认搜索空间。
+LEGACY_LS_PHEROMONE_TERMINAL = "LSGain"
+ORIGIN_PHEROMONE_TERMINALS: tuple[str, ...] = PHEROMONE_TERMINALS + ("Origin",)
+ALLOWED_PHEROMONE_TERMINALS: tuple[str, ...] = (
+    *ORIGIN_PHEROMONE_TERMINALS,
+    LEGACY_LS_PHEROMONE_TERMINAL,
 )
 
 CORE_PHEROMONE_TERMINALS: tuple[str, ...] = (
@@ -242,7 +250,9 @@ def create_primitive_sets(
         if pheromone_terminals is None
         else tuple(pheromone_terminals)
     )
-    invalid_pheromone = set(selected_pheromone_terminals) - set(PHEROMONE_TERMINALS)
+    invalid_pheromone = set(selected_pheromone_terminals) - set(
+        ALLOWED_PHEROMONE_TERMINALS
+    )
     if invalid_pheromone:
         raise ValueError(f"未知 pheromone terminals: {sorted(invalid_pheromone)}")
     _add_typed_primitives(
@@ -385,7 +395,7 @@ def _terminal_instruction(node: gp.Terminal) -> Instruction:
         if (
             value in TRANSITION_TERMINALS
             or value in LEGACY_TRANSITION_TERMINALS
-            or value in PHEROMONE_TERMINALS
+            or value in ALLOWED_PHEROMONE_TERMINALS
         ):
             return Instruction("TERMINAL", value)
         if value in NAMED_CONSTANTS:

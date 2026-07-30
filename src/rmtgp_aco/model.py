@@ -136,6 +136,16 @@ class PopulationQualityResult:
     diagnostics: torch.Tensor
     wall_time_sec: float
     constructed_tours: int
+    # ``basin_mean_length[p,b]`` 是每轮 post-LS 最好 q 只蚂蚁平均
+    # tour length 的跨轮均值。它不是 global-best anytime AUC，因而能保留
+    # 整个 colony 进入优质局部搜索盆地的密集学习信号。
+    basin_mean_length: torch.Tensor | None = None
+    # 以下三个字段只在显式 local-search signal audit 中返回。正常训练不
+    # 分配相应轨迹或把 colony 搬回主机。
+    pre_basin_mean_length: torch.Tensor | None = None
+    edge_retention: torch.Tensor | None = None
+    final_colony_tour: torch.Tensor | None = None
+    final_pre_colony_tour: torch.Tensor | None = None
     backend_metrics: dict[str, float | int | str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -154,6 +164,24 @@ class PopulationQualityResult:
             or self.diagnostics.shape[1] < 4
         ):
             raise ValueError("population diagnostics 必须具有 [P,D] shape，D>=4")
+        for name in (
+            "basin_mean_length",
+            "pre_basin_mean_length",
+            "edge_retention",
+        ):
+            value = getattr(self, name)
+            if value is not None and value.shape != self.best_length.shape:
+                raise ValueError(f"population {name} 必须具有 [P,B] shape")
+        for name in ("final_colony_tour", "final_pre_colony_tour"):
+            value = getattr(self, name)
+            if value is not None and (
+                value.ndim != 4
+                or value.shape[:2] != self.best_length.shape
+                or value.shape[-1] != self.best_tour.shape[-1]
+            ):
+                raise ValueError(
+                    f"population {name} 必须具有 [P,B,A,n+1] shape"
+                )
 
 
 @dataclass(slots=True)

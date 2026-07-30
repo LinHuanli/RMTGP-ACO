@@ -26,19 +26,26 @@ from deap import tools
 
 from .aco import solve
 from .baseline import BaselineArchive, backend_semantic_id
-from .config import ExecutionBackend, ExperimentConfig, GPUMode
+from .config import (
+    ExecutionBackend,
+    ExperimentConfig,
+    FitnessMode,
+    GPUMode,
+    SelectionMode,
+)
 from .genetic import (
     RMTGPIndividual,
     compile_individual,
     evolve_generation,
     initialise_population,
+    is_baseline_individual,
     make_individual,
 )
 from .program import create_primitive_sets
 from .sampling import EvaluationCase
 
 _WORKER_EXPERIMENT: ExperimentConfig | None = None
-_CHECKPOINT_SCHEMA_VERSION = 4
+_CHECKPOINT_SCHEMA_VERSION = 5
 _T = TypeVar("_T")
 
 
@@ -52,6 +59,15 @@ class FitnessBreakdown:
     baseline_gap_by_scale: dict[int, float]
     mean_delta_by_scale: dict[int, float]
     degradation_by_scale: dict[int, float] = field(default_factory=dict)
+    standard_error_by_scale: dict[int, float] = field(default_factory=dict)
+    nonzero_fraction_by_scale: dict[int, float] = field(default_factory=dict)
+    wins_by_scale: dict[int, int] = field(default_factory=dict)
+    ties_by_scale: dict[int, int] = field(default_factory=dict)
+    losses_by_scale: dict[int, int] = field(default_factory=dict)
+    mean_basin_gap_by_scale: dict[int, float] = field(default_factory=dict)
+    baseline_basin_gap_by_scale: dict[int, float] = field(default_factory=dict)
+    mean_basin_delta_by_scale: dict[int, float] = field(default_factory=dict)
+    fitness_delta_by_scale: dict[int, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +89,14 @@ class PopulationEvaluationResult:
     baseline_wall_time: float
     evaluation_wall_time: float
     constructed_tours: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class BaselineMeasurement:
+    """一个 case 的原始 ACO final 与可选 top-q basin 统计（均在 CPU）。"""
+
+    best_length: torch.Tensor
+    basin_mean_length: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +142,29 @@ class GenerationRecord:
         default_factory=dict
     )
     validation_monitor_wall_time: float = 0.0
+    best_standard_error_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    best_nonzero_fraction_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    best_wins_by_scale: dict[int, int] = field(default_factory=dict)
+    best_ties_by_scale: dict[int, int] = field(default_factory=dict)
+    best_losses_by_scale: dict[int, int] = field(default_factory=dict)
+    baseline_anchor_count: int = 0
+    training_aco_iterations: int = 0
+    best_mean_basin_gap_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    baseline_mean_basin_gap_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    best_mean_basin_delta_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
+    best_fitness_delta_by_scale: dict[int, float] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +182,10 @@ class ValidationScaleSummary:
     wins: int
     ties: int
     losses: int
+    candidate_mean_gap_percent: float = float("nan")
+    baseline_mean_gap_percent: float = float("nan")
+    relative_improvement: float = float("nan")
+    bootstrap_upper_bound: float = float("nan")
 
 
 @dataclass(slots=True)
@@ -153,6 +204,8 @@ class ValidationSelection:
     unique_candidates: int
     wall_time_sec: float
     scales: list[ValidationScaleSummary]
+    selection_score: float = float("nan")
+    selection_mode: str = SelectionMode.LEGACY_NONINFERIORITY.value
 
 
 @dataclass(slots=True)
@@ -172,7 +225,7 @@ class BaselineCache:
     """按配置、后端、实例 IDs 和 seed 缓存原始 ACO 结果。"""
 
     def __init__(self, archive: BaselineArchive | None = None) -> None:
-        self._values: dict[tuple[object, ...], torch.Tensor] = {}
+        self._values: dict[tuple[object, ...], BaselineMeasurement] = {}
         self.archive = archive
 
     @staticmethod
@@ -181,56 +234,145 @@ class BaselineCache:
         experiment: ExperimentConfig,
     ) -> tuple[object, ...]:
         return (
-            experiment.aco.config_hash,
+            experiment.aco.baseline_behavior_hash,
             backend_semantic_id(
                 experiment.runtime.aco_backend,
                 experiment.runtime,
             ),
             tuple(case.batch.instance_ids),
             case.seed,
+            (
+                experiment.gp.basin_top_q
+                if experiment.gp.fitness_mode.uses_basin
+                else 0
+            ),
         )
 
-    def get_cpu(
+    def get_measurement_cpu(
         self,
         case: EvaluationCase,
         experiment: ExperimentConfig,
-    ) -> torch.Tensor | None:
+    ) -> BaselineMeasurement | None:
         cached = self._values.get(self.key(case, experiment))
         if cached is not None:
             return cached
         if self.archive is not None:
             archived = self.archive.lookup(case)
             if archived is not None:
-                self._values[self.key(case, experiment)] = archived.detach().cpu()
+                basin = None
+                if experiment.gp.fitness_mode.uses_basin:
+                    basin = self.archive.lookup_basin_mean_length(
+                        case,
+                        top_q=experiment.gp.basin_top_q,
+                    )
+                    if basin is None:
+                        return None
+                self._values[self.key(case, experiment)] = BaselineMeasurement(
+                    best_length=archived.detach().cpu(),
+                    basin_mean_length=(
+                        None if basin is None else basin.detach().cpu()
+                    ),
+                )
                 return self._values[self.key(case, experiment)]
         return None
+
+    def get_cpu(
+        self,
+        case: EvaluationCase,
+        experiment: ExperimentConfig,
+    ) -> torch.Tensor | None:
+        """兼容旧调用方，只返回 final best length。"""
+
+        measurement = self.get_measurement_cpu(case, experiment)
+        return None if measurement is None else measurement.best_length
 
     def put(
         self,
         case: EvaluationCase,
         experiment: ExperimentConfig,
         value: torch.Tensor,
+        basin_mean_length: torch.Tensor | None = None,
     ) -> None:
-        self._values[self.key(case, experiment)] = value.detach().cpu()
+        self._values[self.key(case, experiment)] = BaselineMeasurement(
+            best_length=value.detach().cpu(),
+            basin_mean_length=(
+                None
+                if basin_mean_length is None
+                else basin_mean_length.detach().cpu()
+            ),
+        )
+
+    def measurement(
+        self,
+        case: EvaluationCase,
+        experiment: ExperimentConfig,
+    ) -> BaselineMeasurement:
+        value = self.get_measurement_cpu(case, experiment)
+        if value is None:
+            if experiment.gp.fitness_mode.uses_basin:
+                programs = [(None, None)]
+                if experiment.runtime.aco_backend in {
+                    ExecutionBackend.CUDA_FUSED_FP32,
+                    ExecutionBackend.CUDA_TILED_V2,
+                }:
+                    from .aco_cuda import solve_population_cuda
+
+                    result = solve_population_cuda(
+                        case.batch,
+                        experiment.aco,
+                        programs,
+                        seed=case.seed,
+                        runtime=experiment.runtime,
+                        basin_top_q=experiment.gp.basin_top_q,
+                    )
+                elif (
+                    experiment.runtime.aco_backend
+                    is ExecutionBackend.NUMBA_BATCH
+                ):
+                    from .aco_numba import solve_population_numba
+
+                    result = solve_population_numba(
+                        case.batch,
+                        experiment.aco,
+                        programs,
+                        seed=case.seed,
+                        threads=experiment.runtime.cpu_threads,
+                        basin_top_q=experiment.gp.basin_top_q,
+                    )
+                else:
+                    raise ValueError(
+                        "basin fitness 要求 numba_batch 或 CUDA population 后端"
+                    )
+                if result.basin_mean_length is None:
+                    raise RuntimeError("population 后端未返回 basin_mean_length")
+                self.put(
+                    case,
+                    experiment,
+                    result.best_length[0],
+                    result.basin_mean_length[0],
+                )
+            else:
+                result = solve(
+                    case.batch,
+                    experiment.aco,
+                    seed=case.seed,
+                    backend=experiment.runtime.aco_backend,
+                    runtime=experiment.runtime,
+                )
+                self.put(case, experiment, result.best_length)
+            value = self.get_measurement_cpu(case, experiment)
+            assert value is not None
+        return value
 
     def best_length(
         self,
         case: EvaluationCase,
         experiment: ExperimentConfig,
     ) -> torch.Tensor:
-        value = self.get_cpu(case, experiment)
-        if value is None:
-            result = solve(
-                case.batch,
-                experiment.aco,
-                seed=case.seed,
-                backend=experiment.runtime.aco_backend,
-                runtime=experiment.runtime,
-            )
-            self.put(case, experiment, result.best_length)
-            value = self.get_cpu(case, experiment)
-            assert value is not None
-        return value.to(case.batch.device)
+        return self.measurement(
+            case,
+            experiment,
+        ).best_length.to(case.batch.device)
 
 
 def reference_gap_fitness(
@@ -245,6 +387,11 @@ def reference_gap_fitness(
     baseline_gap: dict[int, float] = {}
     mean_delta: dict[int, float] = {}
     degradation: dict[int, float] = {}
+    standard_error: dict[int, float] = {}
+    nonzero_fraction: dict[int, float] = {}
+    wins: dict[int, int] = {}
+    ties: dict[int, int] = {}
+    losses: dict[int, int] = {}
     terms: list[float] = []
     for scale in sorted(candidate_lengths):
         candidate = torch.cat(candidate_lengths[scale])
@@ -258,6 +405,17 @@ def reference_gap_fitness(
         baseline_gap[scale] = float(baseline_scale_gap.mean().item())
         mean_delta[scale] = float(delta.mean().item())
         degradation[scale] = float(torch.clamp_min(delta, 0.0).mean().item())
+        standard_error[scale] = (
+            float(delta.std(unbiased=True).item() / np.sqrt(delta.numel()))
+            if delta.numel() > 1
+            else 0.0
+        )
+        wins[scale] = int(torch.sum(delta < -1e-12).item())
+        ties[scale] = int(torch.sum(torch.abs(delta) <= 1e-12).item())
+        losses[scale] = int(torch.sum(delta > 1e-12).item())
+        nonzero_fraction[scale] = (
+            float((wins[scale] + losses[scale]) / delta.numel())
+        )
         terms.append(mean_gap[scale])
     return FitnessBreakdown(
         fitness=fmean(terms),
@@ -266,6 +424,47 @@ def reference_gap_fitness(
         baseline_gap_by_scale=baseline_gap,
         mean_delta_by_scale=mean_delta,
         degradation_by_scale=degradation,
+        standard_error_by_scale=standard_error,
+        nonzero_fraction_by_scale=nonzero_fraction,
+        wins_by_scale=wins,
+        ties_by_scale=ties,
+        losses_by_scale=losses,
+    )
+
+
+def paired_ucb_fitness(
+    candidate_lengths: dict[int, list[torch.Tensor]],
+    baseline_lengths: dict[int, list[torch.Tensor]],
+    references: dict[int, list[torch.Tensor]],
+    *,
+    z: float = 1.0,
+) -> FitnessBreakdown:
+    """以配对 gap 差值的均值加标准误上界作为训练 fitness。"""
+
+    if z < 0.0:
+        raise ValueError("paired UCB 的 z 不得为负")
+    current = reference_gap_fitness(
+        candidate_lengths,
+        baseline_lengths,
+        references,
+    )
+    terms = [
+        current.mean_delta_by_scale[scale]
+        + z * current.standard_error_by_scale[scale]
+        for scale in sorted(current.mean_delta_by_scale)
+    ]
+    return FitnessBreakdown(
+        fitness=fmean(terms),
+        mean_gap_by_scale=current.mean_gap_by_scale,
+        median_gap_by_scale=current.median_gap_by_scale,
+        baseline_gap_by_scale=current.baseline_gap_by_scale,
+        mean_delta_by_scale=current.mean_delta_by_scale,
+        degradation_by_scale=current.degradation_by_scale,
+        standard_error_by_scale=current.standard_error_by_scale,
+        nonzero_fraction_by_scale=current.nonzero_fraction_by_scale,
+        wins_by_scale=current.wins_by_scale,
+        ties_by_scale=current.ties_by_scale,
+        losses_by_scale=current.losses_by_scale,
     )
 
 
@@ -295,6 +494,11 @@ def baseline_relative_fitness(
         baseline_gap_by_scale=current.baseline_gap_by_scale,
         mean_delta_by_scale=current.mean_delta_by_scale,
         degradation_by_scale=current.degradation_by_scale,
+        standard_error_by_scale=current.standard_error_by_scale,
+        nonzero_fraction_by_scale=current.nonzero_fraction_by_scale,
+        wins_by_scale=current.wins_by_scale,
+        ties_by_scale=current.ties_by_scale,
+        losses_by_scale=current.losses_by_scale,
     )
 
 
@@ -354,11 +558,18 @@ def _score_with_explicit_baselines(
             baseline_length.to(case.batch.device)
         )
         references.setdefault(case.scale, []).append(case.batch.reference_length)
-    return reference_gap_fitness(
-        candidate,
-        baseline,
-        references,
-    )
+    if experiment.gp.fitness_mode.uses_basin:
+        raise ValueError(
+            "basin fitness 要求 population-batched evaluator"
+        )
+    if experiment.gp.fitness_mode.is_paired:
+        return paired_ucb_fitness(
+            candidate,
+            baseline,
+            references,
+            z=experiment.gp.fitness_ucb_z,
+        )
+    return reference_gap_fitness(candidate, baseline, references)
 
 
 def _validation_data_with_explicit_baselines(
@@ -424,7 +635,7 @@ def _batched_population_breakdowns(
     individuals: Sequence[RMTGPIndividual],
     experiment: ExperimentConfig,
     cases: Sequence[EvaluationCase],
-    baseline_values: Sequence[torch.Tensor],
+    baseline_values: Sequence[BaselineMeasurement],
 ) -> tuple[list[FitnessBreakdown], int]:
     """用一个 population×instance native 边界计算全部训练 fitness。"""
 
@@ -441,6 +652,11 @@ def _batched_population_breakdowns(
                 programs,
                 seed=case.seed,
                 runtime=experiment.runtime,
+                basin_top_q=(
+                    experiment.gp.basin_top_q
+                    if experiment.gp.fitness_mode.uses_basin
+                    else 0
+                ),
             )
     else:
         from .aco_numba import solve_population_numba
@@ -452,62 +668,206 @@ def _batched_population_breakdowns(
                 programs,
                 seed=case.seed,
                 threads=experiment.runtime.cpu_threads,
+                basin_top_q=(
+                    experiment.gp.basin_top_q
+                    if experiment.gp.fitness_mode.uses_basin
+                    else 0
+                ),
             )
 
     programs = [compile_individual(individual) for individual in individuals]
     candidate: dict[int, list[torch.Tensor]] = {}
     baseline: dict[int, list[torch.Tensor]] = {}
+    candidate_basin: dict[int, list[torch.Tensor]] = {}
+    baseline_basin: dict[int, list[torch.Tensor]] = {}
     references: dict[int, list[torch.Tensor]] = {}
     constructed_tours = 0
-    for case, baseline_length in zip(cases, baseline_values, strict=True):
+    for case, baseline_value in zip(cases, baseline_values, strict=True):
         result = solve_population(case, programs)
         candidate.setdefault(case.scale, []).append(result.best_length)
-        baseline.setdefault(case.scale, []).append(baseline_length.detach().cpu())
+        baseline.setdefault(case.scale, []).append(
+            baseline_value.best_length.detach().cpu()
+        )
+        if experiment.gp.fitness_mode.uses_basin:
+            if (
+                result.basin_mean_length is None
+                or baseline_value.basin_mean_length is None
+            ):
+                raise RuntimeError("basin fitness 缺少 candidate/baseline basin 统计")
+            candidate_basin.setdefault(case.scale, []).append(
+                result.basin_mean_length
+            )
+            baseline_basin.setdefault(case.scale, []).append(
+                baseline_value.basin_mean_length.detach().cpu()
+            )
         references.setdefault(case.scale, []).append(
             case.batch.reference_length.detach().cpu()
         )
         constructed_tours += result.constructed_tours
 
-    scale_values: dict[
-        int,
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-    ] = {}
+    scale_values: dict[int, dict[str, torch.Tensor]] = {}
     for scale in sorted(candidate):
         candidate_length = torch.cat(candidate[scale], dim=1)
         baseline_length = torch.cat(baseline[scale]).unsqueeze(0)
         reference = torch.cat(references[scale]).unsqueeze(0)
         candidate_gap = 100.0 * (candidate_length - reference) / reference
         baseline_gap = 100.0 * (baseline_length - reference) / reference
-        delta = candidate_gap - baseline_gap
-        scale_values[scale] = (
-            candidate_gap.mean(dim=1),
-            candidate_gap.median(dim=1).values,
-            baseline_gap.mean(dim=1).expand(len(individuals)),
-            delta.mean(dim=1),
+        final_delta = candidate_gap - baseline_gap
+        basin_gap: torch.Tensor | None = None
+        baseline_basin_gap: torch.Tensor | None = None
+        basin_delta: torch.Tensor | None = None
+        if experiment.gp.fitness_mode.uses_basin:
+            basin_length = torch.cat(candidate_basin[scale], dim=1)
+            baseline_basin_length = torch.cat(
+                baseline_basin[scale]
+            ).unsqueeze(0)
+            basin_gap = 100.0 * (basin_length - reference) / reference
+            baseline_basin_gap = (
+                100.0 * (baseline_basin_length - reference) / reference
+            )
+            basin_delta = basin_gap - baseline_basin_gap
+
+        mode = experiment.gp.fitness_mode
+        if mode in {
+            FitnessMode.PAIRED_UCB,
+            FitnessMode.PAIRED_FINAL_UCB,
+        }:
+            fitness_observation = final_delta
+        elif mode is FitnessMode.PAIRED_BASIN_UCB:
+            assert basin_delta is not None
+            fitness_observation = basin_delta
+        elif mode is FitnessMode.PAIRED_COMBINED_UCB:
+            assert basin_delta is not None
+            weight = experiment.gp.basin_weight
+            fitness_observation = (
+                weight * basin_delta + (1.0 - weight) * final_delta
+            )
+        else:
+            fitness_observation = candidate_gap
+        audit_observation = (
+            fitness_observation
+            if mode.is_paired
+            else final_delta
         )
+        standard_error = (
+            audit_observation.std(dim=1, unbiased=True)
+            / np.sqrt(audit_observation.shape[1])
+            if audit_observation.shape[1] > 1
+            else audit_observation.new_zeros(audit_observation.shape[0])
+        )
+        scale_values[scale] = {
+            "candidate_mean": candidate_gap.mean(dim=1),
+            "candidate_median": candidate_gap.median(dim=1).values,
+            "baseline_mean": baseline_gap.mean(dim=1).expand(len(individuals)),
+            "final_delta_mean": final_delta.mean(dim=1),
+            "fitness_delta_mean": audit_observation.mean(dim=1),
+            "degradation": torch.clamp_min(
+                audit_observation,
+                0.0,
+            ).mean(dim=1),
+            "standard_error": standard_error,
+            "nonzero": (
+                (torch.abs(audit_observation) > 1e-12)
+                .to(torch.float64)
+                .mean(dim=1)
+            ),
+            "wins": torch.sum(audit_observation < -1e-12, dim=1),
+            "ties": torch.sum(
+                torch.abs(audit_observation) <= 1e-12,
+                dim=1,
+            ),
+            "losses": torch.sum(audit_observation > 1e-12, dim=1),
+        }
+        if basin_gap is not None:
+            assert baseline_basin_gap is not None and basin_delta is not None
+            scale_values[scale].update(
+                {
+                    "basin_mean": basin_gap.mean(dim=1),
+                    "baseline_basin_mean": baseline_basin_gap.mean(
+                        dim=1
+                    ).expand(len(individuals)),
+                    "basin_delta_mean": basin_delta.mean(dim=1),
+                }
+            )
 
     breakdowns: list[FitnessBreakdown] = []
     for index in range(len(individuals)):
         mean_gap = {
-            scale: float(values[0][index].item())
+            scale: float(values["candidate_mean"][index].item())
             for scale, values in scale_values.items()
         }
+        mean_delta = {
+            scale: float(values["final_delta_mean"][index].item())
+            for scale, values in scale_values.items()
+        }
+        fitness_delta = {
+            scale: float(values["fitness_delta_mean"][index].item())
+            for scale, values in scale_values.items()
+        }
+        standard_error = {
+            scale: float(values["standard_error"][index].item())
+            for scale, values in scale_values.items()
+        }
+        if experiment.gp.fitness_mode.is_paired:
+            fitness_terms = [
+                fitness_delta[scale]
+                + experiment.gp.fitness_ucb_z * standard_error[scale]
+                for scale in sorted(fitness_delta)
+            ]
+        else:
+            fitness_terms = list(mean_gap.values())
         breakdowns.append(
             FitnessBreakdown(
-                fitness=fmean(mean_gap.values()),
+                fitness=fmean(fitness_terms),
                 mean_gap_by_scale=mean_gap,
                 median_gap_by_scale={
-                    scale: float(values[1][index].item())
+                    scale: float(values["candidate_median"][index].item())
                     for scale, values in scale_values.items()
                 },
                 baseline_gap_by_scale={
-                    scale: float(values[2][index].item())
+                    scale: float(values["baseline_mean"][index].item())
                     for scale, values in scale_values.items()
                 },
-                mean_delta_by_scale={
-                    scale: float(values[3][index].item())
+                mean_delta_by_scale=mean_delta,
+                degradation_by_scale={
+                    scale: float(values["degradation"][index].item())
                     for scale, values in scale_values.items()
                 },
+                standard_error_by_scale=standard_error,
+                nonzero_fraction_by_scale={
+                    scale: float(values["nonzero"][index].item())
+                    for scale, values in scale_values.items()
+                },
+                wins_by_scale={
+                    scale: int(values["wins"][index].item())
+                    for scale, values in scale_values.items()
+                },
+                ties_by_scale={
+                    scale: int(values["ties"][index].item())
+                    for scale, values in scale_values.items()
+                },
+                losses_by_scale={
+                    scale: int(values["losses"][index].item())
+                    for scale, values in scale_values.items()
+                },
+                mean_basin_gap_by_scale={
+                    scale: float(values["basin_mean"][index].item())
+                    for scale, values in scale_values.items()
+                    if "basin_mean" in values
+                },
+                baseline_basin_gap_by_scale={
+                    scale: float(
+                        values["baseline_basin_mean"][index].item()
+                    )
+                    for scale, values in scale_values.items()
+                    if "baseline_basin_mean" in values
+                },
+                mean_basin_delta_by_scale={
+                    scale: float(values["basin_delta_mean"][index].item())
+                    for scale, values in scale_values.items()
+                    if "basin_delta_mean" in values
+                },
+                fitness_delta_by_scale=fitness_delta,
             )
         )
     return breakdowns, constructed_tours
@@ -517,7 +877,7 @@ def _batched_validation_data(
     individuals: Sequence[RMTGPIndividual],
     experiment: ExperimentConfig,
     cases: Sequence[EvaluationCase],
-    baseline_values: Sequence[torch.Tensor],
+    baseline_values: Sequence[BaselineMeasurement],
 ) -> dict[str, ValidationData]:
     """批量计算 validation absolute/baseline/delta gaps。"""
 
@@ -552,10 +912,12 @@ def _batched_validation_data(
     baselines: dict[int, list[torch.Tensor]] = {}
     references: dict[int, list[torch.Tensor]] = {}
     ids: dict[int, list[np.ndarray]] = {}
-    for case, baseline_length in zip(cases, baseline_values, strict=True):
+    for case, baseline_value in zip(cases, baseline_values, strict=True):
         result = solve_population(case, programs)
         candidates.setdefault(case.scale, []).append(result.best_length)
-        baselines.setdefault(case.scale, []).append(baseline_length.detach().cpu())
+        baselines.setdefault(case.scale, []).append(
+            baseline_value.best_length.detach().cpu()
+        )
         references.setdefault(case.scale, []).append(
             case.batch.reference_length.detach().cpu()
         )
@@ -734,6 +1096,19 @@ class EvaluationPool:
             self.executor.shutdown(wait=True, cancel_futures=False)
             self.executor = None
 
+    def set_experiment(self, experiment: ExperimentConfig) -> None:
+        """切换当前 generation 的 ACO horizon。
+
+        持久多进程 worker 会持有初始化时的配置，因此只允许单进程后端
+        动态切换。CUDA 正式训练本身即为单进程。
+        """
+
+        if self.executor is not None and experiment != self.experiment:
+            raise ValueError(
+                "多进程 EvaluationPool 不支持动态 training horizon"
+            )
+        self.experiment = experiment
+
     def warm(self, case: EvaluationCase) -> set[int]:
         """在正式计时前加载每个 worker 的已编译 Numba cache。"""
 
@@ -795,46 +1170,52 @@ class EvaluationPool:
         cache: BaselineCache,
         *,
         parallel: bool,
-    ) -> tuple[torch.Tensor, ...]:
+    ) -> tuple[BaselineMeasurement, ...]:
         missing = [
             case
             for case in cases
-            if cache.get_cpu(case, self.experiment) is None
+            if cache.get_measurement_cpu(case, self.experiment) is None
         ]
         if missing:
-            if self.executor is not None and parallel:
-                case_chunks = _chunked(
-                    missing,
-                    self.experiment.runtime.processes,
-                )
-                chunk_results = list(
-                    self.executor.map(
-                        _baseline_chunk_in_worker,
-                        case_chunks,
-                        chunksize=1,
-                    )
-                )
-                values = [
-                    value
-                    for chunk in chunk_results
-                    for value in chunk
-                ]
+            if self.experiment.gp.fitness_mode.uses_basin:
+                # 每个 case 已是一个较大的 instance batch。baseline 只占一个
+                # program task，直接复用 population kernel 可避免 Python 循环。
+                for case in missing:
+                    cache.measurement(case, self.experiment)
             else:
-                values = [
-                    solve(
-                        case.batch,
-                        self.experiment.aco,
-                        seed=case.seed,
-                        backend=self.experiment.runtime.aco_backend,
-                        runtime=self.experiment.runtime,
-                    ).best_length.detach().cpu()
-                    for case in missing
-                ]
-            for case, value in zip(missing, values, strict=True):
-                cache.put(case, self.experiment, value)
-        result: list[torch.Tensor] = []
+                if self.executor is not None and parallel:
+                    case_chunks = _chunked(
+                        missing,
+                        self.experiment.runtime.processes,
+                    )
+                    chunk_results = list(
+                        self.executor.map(
+                            _baseline_chunk_in_worker,
+                            case_chunks,
+                            chunksize=1,
+                        )
+                    )
+                    values = [
+                        value
+                        for chunk in chunk_results
+                        for value in chunk
+                    ]
+                else:
+                    values = [
+                        solve(
+                            case.batch,
+                            self.experiment.aco,
+                            seed=case.seed,
+                            backend=self.experiment.runtime.aco_backend,
+                            runtime=self.experiment.runtime,
+                        ).best_length.detach().cpu()
+                        for case in missing
+                    ]
+                for case, value in zip(missing, values, strict=True):
+                    cache.put(case, self.experiment, value)
+        result: list[BaselineMeasurement] = []
         for case in cases:
-            value = cache.get_cpu(case, self.experiment)
+            value = cache.get_measurement_cpu(case, self.experiment)
             assert value is not None
             result.append(value)
         return tuple(result)
@@ -883,22 +1264,28 @@ class EvaluationPool:
                 baseline_values,
             )
         elif self.executor is None:
+            explicit_baselines = tuple(
+                value.best_length for value in baseline_values
+            )
             breakdowns = [
                 _score_with_explicit_baselines(
                     individual,
                     self.experiment,
                     cases,
-                    baseline_values,
+                    explicit_baselines,
                 )
                 for individual in individuals
             ]
         else:
+            explicit_baselines = tuple(
+                value.best_length for value in baseline_values
+            )
             individual_chunks = _chunked(
                 individuals,
                 self.experiment.runtime.processes,
             )
             payloads = [
-                (chunk, tuple(cases), baseline_values)
+                (chunk, tuple(cases), explicit_baselines)
                 for chunk in individual_chunks
             ]
             chunk_results = list(
@@ -967,7 +1354,9 @@ class EvaluationPool:
                     individual,
                     self.experiment,
                     cases,
-                    baseline_values,
+                    tuple(
+                        value.best_length for value in baseline_values
+                    ),
                 )
                 for individual in candidates
             }
@@ -976,7 +1365,11 @@ class EvaluationPool:
             self.experiment.runtime.processes * 2,
         )
         payloads = [
-            (chunk, tuple(cases), baseline_values)
+            (
+                chunk,
+                tuple(cases),
+                tuple(value.best_length for value in baseline_values),
+            )
             for chunk in candidate_chunks
         ]
         results = list(
@@ -1031,6 +1424,43 @@ def _bootstrap_mean_ci(
     return float(low), float(high)
 
 
+def _bootstrap_mean_interval(
+    values: np.ndarray,
+    *,
+    seed: int,
+    confidence: float,
+    replicates: int,
+) -> tuple[float, float, float]:
+    """返回双侧区间以及同置信度的单侧上界。"""
+
+    if values.size < 1:
+        raise ValueError("bootstrap values 不得为空")
+    rng = np.random.default_rng(seed)
+    indices = rng.integers(
+        0,
+        values.size,
+        size=(replicates, values.size),
+    )
+    means = values[indices].mean(axis=1)
+    alpha = 1.0 - confidence
+    low, high = np.quantile(means, [alpha / 2.0, 1.0 - alpha / 2.0])
+    upper = np.quantile(means, confidence)
+    return float(low), float(high), float(upper)
+
+
+def _relative_gap_improvement(
+    candidate_gap: np.ndarray,
+    baseline_gap: np.ndarray,
+) -> float:
+    """按两个 mean gap 计算相对提升；零 baseline 不可宣称正提升。"""
+
+    candidate_mean = float(candidate_gap.mean())
+    baseline_mean = float(baseline_gap.mean())
+    if baseline_mean <= 1e-15:
+        return 0.0 if candidate_mean <= baseline_mean + 1e-15 else float("-inf")
+    return (baseline_mean - candidate_mean) / baseline_mean
+
+
 def _aggregate_by_instance(
     values: np.ndarray,
     instance_ids: np.ndarray,
@@ -1048,6 +1478,46 @@ def _aggregate_by_instance(
     )
 
 
+def _validation_quality_score(
+    data: ValidationData,
+    experiment: ExperimentConfig,
+    *,
+    stage_code: int,
+) -> float:
+    """返回 checkpoint 排序分数；严格协议使用配对 bootstrap 上界。"""
+
+    if experiment.selection_mode is SelectionMode.LEGACY_NONINFERIORITY:
+        return fmean(
+            float(values.mean())
+            for values in data.candidate_gap_by_scale.values()
+        )
+    upper_bounds: list[float] = []
+    for scale, raw_values in sorted(data.delta_by_scale.items()):
+        values = _aggregate_by_instance(
+            raw_values,
+            data.instance_ids_by_scale[scale],
+        )
+        _, _, upper = _bootstrap_mean_interval(
+            values,
+            seed=int(
+                np.random.default_rng(
+                    np.random.SeedSequence(
+                        [
+                            experiment.root_seed,
+                            scale,
+                            stage_code,
+                            0x554342,
+                        ]
+                    )
+                ).integers(0, 2**63 - 1)
+            ),
+            confidence=experiment.selection_confidence,
+            replicates=experiment.selection_bootstrap_replicates,
+        )
+        upper_bounds.append(upper)
+    return fmean(upper_bounds)
+
+
 def validate_candidates(
     candidates: Iterable[RMTGPIndividual],
     experiment: ExperimentConfig,
@@ -1058,14 +1528,20 @@ def validate_candidates(
     gate_cases: Sequence[EvaluationCase] | None = None,
     evaluator_pool: EvaluationPool | None = None,
 ) -> ValidationSelection:
-    """两阶段选 champion，再在独立 gate 上执行 non-inferiority。"""
+    """两阶段选 champion，并按配置执行非劣或严格优越门控。"""
 
     unique = {
         individual.structural_hash: individual
         for individual in candidates
     }
+    if experiment.selection_mode is SelectionMode.STRICT_SUPERIORITY:
+        unique = {
+            key: individual
+            for key, individual in unique.items()
+            if not is_baseline_individual(individual)
+        }
     if not unique:
-        raise ValueError("validation candidates 不能为空")
+        raise ValueError("validation candidates 不含可学习的非 baseline 个体")
     if evaluator_pool is None:
         with EvaluationPool(experiment) as temporary:
             return validate_candidates(
@@ -1092,11 +1568,12 @@ def validate_candidates(
     screening_scored: list[tuple[float, int, RMTGPIndividual]] = []
     for key, individual in unique.items():
         data = screening_data[key]
-        macro = fmean(
-            float(values.mean())
-            for values in data.candidate_gap_by_scale.values()
+        score = _validation_quality_score(
+            data,
+            experiment,
+            stage_code=0x534352,
         )
-        screening_scored.append((macro, individual.total_nodes, individual))
+        screening_scored.append((score, individual.total_nodes, individual))
     screening_scored.sort(key=lambda item: (item[0], item[1]))
     finalists = [
         item[2]
@@ -1118,17 +1595,31 @@ def validate_candidates(
     scored: list[tuple[float, int, RMTGPIndividual, ValidationData]] = []
     for individual in finalists:
         data = selection_data[individual.structural_hash]
-        macro = fmean(
-            float(values.mean())
-            for values in data.candidate_gap_by_scale.values()
+        score = _validation_quality_score(
+            data,
+            experiment,
+            stage_code=0x53454C,
         )
-        scored.append((macro, individual.total_nodes, individual, data))
+        scored.append((score, individual.total_nodes, individual, data))
     scored.sort(key=lambda item: (item[0], item[1]))
-    best_macro = scored[0][0]
-    near_ties = [item for item in scored if item[0] <= best_macro + 0.01]
-    macro_gap, _, selected, selected_data = min(
+    best_score = scored[0][0]
+    tie_tolerance = (
+        1e-12
+        if experiment.selection_mode is SelectionMode.STRICT_SUPERIORITY
+        else experiment.quality_tie_tolerance
+    )
+    near_ties = [
+        item
+        for item in scored
+        if item[0] <= best_score + tie_tolerance
+    ]
+    selection_score, _, selected, selected_data = min(
         near_ties,
         key=lambda item: (item[1], item[0]),
+    )
+    macro_gap = fmean(
+        float(values.mean())
+        for values in selected_data.candidate_gap_by_scale.values()
     )
 
     if gate_cases is validation_cases:
@@ -1147,14 +1638,19 @@ def validate_candidates(
         )
         for scale, values in gate_data.delta_by_scale.items()
     }
-    passed = all(
-        _normal_upper_bound(values) <= experiment.noninferiority_tolerance
-        for values in instance_deltas.values()
-    )
 
     scale_summaries: list[ValidationScaleSummary] = []
+    scale_passes: list[bool] = []
     for scale, values in sorted(instance_deltas.items()):
-        ci_low, ci_high = _bootstrap_mean_ci(
+        candidate_instance_gap = _aggregate_by_instance(
+            gate_data.candidate_gap_by_scale[scale],
+            gate_data.instance_ids_by_scale[scale],
+        )
+        baseline_instance_gap = _aggregate_by_instance(
+            gate_data.baseline_gap_by_scale[scale],
+            gate_data.instance_ids_by_scale[scale],
+        )
+        ci_low, ci_high, bootstrap_upper = _bootstrap_mean_interval(
             values,
             seed=int(
                 np.random.default_rng(
@@ -1163,7 +1659,24 @@ def validate_candidates(
                     )
                 ).integers(0, 2**63 - 1)
             ),
+            confidence=experiment.selection_confidence,
+            replicates=experiment.selection_bootstrap_replicates,
         )
+        relative_improvement = _relative_gap_improvement(
+            candidate_instance_gap,
+            baseline_instance_gap,
+        )
+        if experiment.selection_mode is SelectionMode.STRICT_SUPERIORITY:
+            scale_passes.append(
+                bootstrap_upper < 0.0
+                and relative_improvement
+                >= experiment.superiority_min_relative_improvement
+            )
+        else:
+            scale_passes.append(
+                _normal_upper_bound(values)
+                <= experiment.noninferiority_tolerance
+            )
         scale_summaries.append(
             ValidationScaleSummary(
                 scale=scale,
@@ -1177,8 +1690,17 @@ def validate_candidates(
                 wins=int(np.sum(values < -1e-12)),
                 ties=int(np.sum(np.abs(values) <= 1e-12)),
                 losses=int(np.sum(values > 1e-12)),
+                candidate_mean_gap_percent=float(
+                    candidate_instance_gap.mean()
+                ),
+                baseline_mean_gap_percent=float(
+                    baseline_instance_gap.mean()
+                ),
+                relative_improvement=relative_improvement,
+                bootstrap_upper_bound=bootstrap_upper,
             )
         )
+    passed = all(scale_passes)
 
     if passed:
         champion = selected.clone()
@@ -1212,6 +1734,8 @@ def validate_candidates(
         unique_candidates=len(unique),
         wall_time_sec=perf_counter() - started,
         scales=scale_summaries,
+        selection_score=float(selection_score),
+        selection_mode=experiment.selection_mode.value,
     )
 
 
@@ -1224,13 +1748,26 @@ def _generation_record(
     cumulative_wall_time: float,
     generation_wall_time: float,
     eta_seconds: float,
+    exclude_baseline: bool = False,
+    training_aco_iterations: int = 0,
 ) -> GenerationRecord:
+    ranked_population = (
+        [
+            item
+            for item in population
+            if not is_baseline_individual(item)
+        ]
+        if exclude_baseline
+        else list(population)
+    )
+    if not ranked_population:
+        raise ValueError("generation record 不含可统计的 GP 个体")
     values = np.asarray(
-        [item.fitness.values[0] for item in population],
+        [item.fitness.values[0] for item in ranked_population],
         dtype=float,
     )
     best = min(
-        population,
+        ranked_population,
         key=lambda item: (item.fitness.values[0], item.total_nodes),
     )
     breakdown = evaluation.breakdowns.get(best.structural_hash)
@@ -1282,6 +1819,45 @@ def _generation_record(
             / max(evaluation.evaluation_wall_time, 1e-12)
         ),
         eta_seconds=eta_seconds,
+        best_standard_error_by_scale=(
+            {} if breakdown is None else dict(breakdown.standard_error_by_scale)
+        ),
+        best_nonzero_fraction_by_scale=(
+            {} if breakdown is None else dict(breakdown.nonzero_fraction_by_scale)
+        ),
+        best_wins_by_scale=(
+            {} if breakdown is None else dict(breakdown.wins_by_scale)
+        ),
+        best_ties_by_scale=(
+            {} if breakdown is None else dict(breakdown.ties_by_scale)
+        ),
+        best_losses_by_scale=(
+            {} if breakdown is None else dict(breakdown.losses_by_scale)
+        ),
+        baseline_anchor_count=sum(
+            is_baseline_individual(item) for item in population
+        ),
+        training_aco_iterations=training_aco_iterations,
+        best_mean_basin_gap_by_scale=(
+            {}
+            if breakdown is None
+            else dict(breakdown.mean_basin_gap_by_scale)
+        ),
+        baseline_mean_basin_gap_by_scale=(
+            {}
+            if breakdown is None
+            else dict(breakdown.baseline_basin_gap_by_scale)
+        ),
+        best_mean_basin_delta_by_scale=(
+            {}
+            if breakdown is None
+            else dict(breakdown.mean_basin_delta_by_scale)
+        ),
+        best_fitness_delta_by_scale=(
+            {}
+            if breakdown is None
+            else dict(breakdown.fitness_delta_by_scale)
+        ),
     )
 
 
@@ -1379,6 +1955,8 @@ def _write_training_validation_curve(
         (
             "generation,scale,train_candidate_gap_percent,"
             "train_baseline_gap_percent,train_delta_pp,"
+            "train_delta_standard_error_pp,train_nonzero_fraction,"
+            "train_wins,train_ties,train_losses,aco_iterations,"
             "validation_candidate_gap_percent,"
             "validation_baseline_gap_percent,validation_delta_pp,"
             "generation_wall_time_sec,validation_monitor_wall_time_sec\n"
@@ -1394,6 +1972,15 @@ def _write_training_validation_curve(
                 record.best_mean_gap_by_scale.get(scale, float("nan")),
                 record.baseline_mean_gap_by_scale.get(scale, float("nan")),
                 record.best_mean_delta_by_scale.get(scale, float("nan")),
+                record.best_standard_error_by_scale.get(scale, float("nan")),
+                record.best_nonzero_fraction_by_scale.get(
+                    scale,
+                    float("nan"),
+                ),
+                record.best_wins_by_scale.get(scale, 0),
+                record.best_ties_by_scale.get(scale, 0),
+                record.best_losses_by_scale.get(scale, 0),
+                record.training_aco_iterations,
                 record.validation_monitor_candidate_gap_by_scale.get(
                     scale,
                     float("nan"),
@@ -1611,6 +2198,8 @@ def _validation_csv(
         (
             "backend,scale,observations,instances,mean_delta_pp,"
             "median_delta_pp,bootstrap_ci_low,bootstrap_ci_high,"
+            "bootstrap_upper_bound,candidate_mean_gap_percent,"
+            "baseline_mean_gap_percent,relative_improvement,"
             "normal_upper_bound_95,wins,ties,losses,"
             "stage_passed_noninferiority,deployed\n"
         )
@@ -1621,6 +2210,10 @@ def _validation_csv(
             f"{summary.observations},{summary.instances},"
             f"{summary.mean_delta_pp:.17g},{summary.median_delta_pp:.17g},"
             f"{summary.bootstrap_ci_low:.17g},{summary.bootstrap_ci_high:.17g},"
+            f"{summary.bootstrap_upper_bound:.17g},"
+            f"{summary.candidate_mean_gap_percent:.17g},"
+            f"{summary.baseline_mean_gap_percent:.17g},"
+            f"{summary.relative_improvement:.17g},"
             f"{summary.normal_upper_bound_95:.17g},{summary.wins},"
             f"{summary.ties},{summary.losses},"
             f"{str(selection.passed_noninferiority).lower()},"
@@ -1780,6 +2373,31 @@ def _cpu_fp64_final_audit(
     )
 
 
+def _training_experiment_for_generation(
+    experiment: ExperimentConfig,
+    generation: int,
+) -> ExperimentConfig:
+    iterations = experiment.iterations_for_generation(generation)
+    if iterations == experiment.aco.iterations:
+        return experiment
+    return replace(
+        experiment,
+        aco=replace(experiment.aco, iterations=iterations),
+    )
+
+
+def _learned_candidates(
+    population: Sequence[RMTGPIndividual],
+) -> list[RMTGPIndividual]:
+    """排除 baseline 哨兵，返回真正由 GP 表达式定义的个体。"""
+
+    return [
+        individual
+        for individual in population
+        if not is_baseline_individual(individual)
+    ]
+
+
 def train(
     experiment: ExperimentConfig,
     training_cases_for_generation: Callable[[int], Sequence[EvaluationCase]],
@@ -1835,8 +2453,13 @@ def train(
     if first_generation <= experiment.gp.generations:
         pending_cases = training_cases_for_generation(first_generation)
         warm_case = pending_cases[0]
+        warm_experiment = _training_experiment_for_generation(
+            experiment,
+            first_generation,
+        )
     elif validation_cases:
         warm_case = validation_cases[0]
+        warm_experiment = experiment
     else:
         raise ValueError("training 与 validation cases 不能同时为空")
 
@@ -1845,16 +2468,25 @@ def train(
         ExecutionBackend.NUMBA,
         ExecutionBackend.NUMBA_BATCH,
     }:
-        baseline_cache.best_length(warm_case, experiment)
+        baseline_cache.best_length(warm_case, warm_experiment)
 
     cumulative = history[-1].cumulative_wall_time if history else 0.0
-    with EvaluationPool(experiment) as evaluator:
+    with EvaluationPool(warm_experiment) as evaluator:
         evaluator.warm(warm_case)
+        active_iterations = warm_experiment.aco.iterations
         for generation in range(
             first_generation,
             experiment.gp.generations + 1,
         ):
             generation_started = perf_counter()
+            generation_experiment = _training_experiment_for_generation(
+                experiment,
+                generation,
+            )
+            evaluator.set_experiment(generation_experiment)
+            if generation_experiment.aco.iterations != active_iterations:
+                evaluator.warm(warm_case)
+                active_iterations = generation_experiment.aco.iterations
             if generation == first_generation:
                 assert pending_cases is not None
                 cases = pending_cases
@@ -1871,9 +2503,13 @@ def train(
             )
 
             if generation % experiment.gp.checkpoint_interval == 0:
+                checkpoint_pool = _learned_candidates(population)
                 selected = tools.selBest(
-                    population,
-                    experiment.gp.checkpoint_top_k,
+                    checkpoint_pool,
+                    min(
+                        experiment.gp.checkpoint_top_k,
+                        len(checkpoint_pool),
+                    ),
                 )
                 checkpoints.extend(deepcopy(selected))
 
@@ -1890,12 +2526,28 @@ def train(
                 generation_wall_time=before_breeding,
                 eta_seconds=estimated_average
                 * (experiment.gp.generations - generation),
+                exclude_baseline=experiment.gp.baseline_anchor,
+                training_aco_iterations=(
+                    generation_experiment.aco.iterations
+                ),
             )
 
-            if validation_monitor_cases:
+            if (
+                validation_monitor_cases
+                and generation % experiment.validation_monitor_interval == 0
+            ):
                 monitor_started = perf_counter()
+                evaluator.set_experiment(experiment)
+                if active_iterations != experiment.aco.iterations:
+                    evaluator.warm(validation_monitor_cases[0])
+                    active_iterations = experiment.aco.iterations
+                monitor_pool = (
+                    _learned_candidates(population)
+                    if experiment.gp.baseline_anchor
+                    else list(population)
+                )
                 monitor_candidate = min(
-                    population,
+                    monitor_pool,
                     key=lambda item: (
                         item.fitness.values[0],
                         item.total_nodes,
@@ -1925,6 +2577,10 @@ def train(
                 record.validation_monitor_wall_time = (
                     perf_counter() - monitor_started
                 )
+                evaluator.set_experiment(generation_experiment)
+                if active_iterations != generation_experiment.aco.iterations:
+                    evaluator.warm(warm_case)
+                    active_iterations = generation_experiment.aco.iterations
 
             breeding_started = perf_counter()
             if generation < experiment.gp.generations:
@@ -1984,14 +2640,18 @@ def train(
             if progress_callback is not None:
                 progress_callback(record)
 
+        final_pool = _learned_candidates(population)
         checkpoints.extend(
             deepcopy(
                 tools.selBest(
-                    population,
-                    experiment.gp.checkpoint_top_k,
+                    final_pool,
+                    min(experiment.gp.checkpoint_top_k, len(final_pool)),
                 )
             )
         )
+        evaluator.set_experiment(experiment)
+        if active_iterations != experiment.aco.iterations:
+            evaluator.warm(validation_cases[0])
         validation = validate_candidates(
             checkpoints,
             experiment,
@@ -2005,10 +2665,14 @@ def train(
     cpu_fp64_audit: ValidationSelection | None = None
     passed_noninferiority = validation.passed_noninferiority
     champion = validation.champion
-    if experiment.runtime.aco_backend in {
-        ExecutionBackend.CUDA_FUSED_FP32,
-        ExecutionBackend.CUDA_TILED_V2,
-    }:
+    if (
+        experiment.cpu_fp64_final_audit
+        and experiment.runtime.aco_backend
+        in {
+            ExecutionBackend.CUDA_FUSED_FP32,
+            ExecutionBackend.CUDA_TILED_V2,
+        }
+    ):
         selected_candidate = next(
             candidate
             for candidate in checkpoints

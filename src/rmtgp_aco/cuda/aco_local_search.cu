@@ -195,6 +195,9 @@ extern "C" __global__ void v2_two_opt(
     uint16_t* position_workspace,
     uint16_t* order_workspace,
     uint8_t* dlb_workspace,
+    uint16_t* pre_tour_workspace,
+    int8_t* origin_workspace,
+    int track_origin,
     uint64_t* diagnostics
 ) {
     using namespace rmtgp_ls;
@@ -220,6 +223,10 @@ extern "C" __global__ void v2_two_opt(
     uint16_t* order = order_workspace
         + static_cast<size_t>(flat_tour) * n;
     uint8_t* dlb = dlb_workspace + static_cast<size_t>(flat_tour) * n;
+    uint16_t* pre_tour = pre_tour_workspace
+        + static_cast<size_t>(flat_tour) * (n + 1);
+    int8_t* origin = origin_workspace
+        + static_cast<size_t>(flat_tour) * n;
 
     __shared__ int move_first[32];
     __shared__ int move_second[32];
@@ -229,6 +236,11 @@ extern "C" __global__ void v2_two_opt(
     __shared__ unsigned long long check_counts[32];
     __shared__ unsigned long long pass_counts[32];
 
+    if (track_origin != 0) {
+        for (int index = lane; index <= n; index += 32) {
+            pre_tour[index] = tour[index];
+        }
+    }
     for (int index = lane; index < n; index += 32) {
         const int city = static_cast<int>(tour[index]);
         position[city] = static_cast<uint16_t>(index);
@@ -511,6 +523,32 @@ extern "C" __global__ void v2_two_opt(
             ),
             pass_counts[warp_in_block]
         );
+    }
+    __syncwarp();
+    if (track_origin != 0) {
+        // ``order`` 在本轮 2-opt 结束后已不再使用。把它复用为
+        // construction tour 的 city->position 映射，使 provenance 从
+        // O(n^2) edge scan 降为 O(n)。下一轮会重新初始化 order。
+        for (int pre_edge = lane; pre_edge < n; pre_edge += 32) {
+            order[static_cast<int>(pre_tour[pre_edge])]
+                = static_cast<uint16_t>(pre_edge);
+        }
+        __syncwarp();
+        for (int edge = lane; edge < n; edge += 32) {
+            const int first = static_cast<int>(tour[edge]);
+            const int second = static_cast<int>(tour[(edge + 1) % n]);
+            const int pre_position = static_cast<int>(order[first]);
+            const bool retained = (
+                static_cast<int>(
+                    pre_tour[(pre_position + 1) % n]
+                ) == second
+                || static_cast<int>(
+                    pre_tour[(pre_position + n - 1) % n]
+                ) == second
+            );
+            origin[edge] = retained ? static_cast<int8_t>(1)
+                : static_cast<int8_t>(-1);
+        }
     }
 }
 

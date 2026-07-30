@@ -93,6 +93,11 @@ class _DeviceResult:
     chunks: int
     block_threads: int
     device_name: str
+    basin_mean_lengths: np.ndarray | None = None
+    pre_basin_mean_lengths: np.ndarray | None = None
+    edge_retention: np.ndarray | None = None
+    final_colony_tours: np.ndarray | None = None
+    final_pre_colony_tours: np.ndarray | None = None
     provider: str = "raw_cuda"
     precision: str = "fp32"
     candidate_lanes: int = 1
@@ -925,6 +930,11 @@ def _task_bytes_v2(
         + 4 * 4  # best/restart length and tau bounds
         + 4 * 3  # best iteration/stagnation/restart marker
         + 8 * 4  # v2 扩展 diagnostics
+        + 2 * ants * (n + 1)  # construction 前 tours（Origin/audit）
+        + ants * n  # post edge provenance int8
+        + 2 * n  # global/restart provenance int8
+        + 4 * 2  # post/pre basin accumulators
+        + 8  # retained-edge accumulator
     )
     if local_search is LocalSearch.NONE:
         return base + 4 * ants  # LSGain=-1 workspace
@@ -1019,9 +1029,13 @@ def _run_device(
     representatives: np.ndarray,
     initial_tau: tuple[np.ndarray, np.ndarray, np.ndarray],
     record_anytime: bool,
+    basin_top_q: int,
+    audit_local_search: bool,
 ) -> _DeviceResult:
     import cupy as cp
 
+    if basin_top_q or audit_local_search:
+        raise ValueError("basin fitness/audit 只由 cuda_tiled_v2 实现")
     with cp.cuda.Device(device):
         resident = _resident_problem(
             problem,
@@ -1295,6 +1309,8 @@ def _run_device_v2(
     representatives: np.ndarray,
     initial_tau: tuple[np.ndarray, np.ndarray, np.ndarray],
     record_anytime: bool,
+    basin_top_q: int,
+    audit_local_search: bool,
 ) -> _DeviceResult:
     """在一个设备上运行分阶段、candidate-tiled CUDA v2。"""
 
@@ -1325,6 +1341,18 @@ def _run_device_v2(
         )
     if local_candidate_size > 32:
         raise ValueError("CUDA 局部搜索当前要求 candidate_size <= 32")
+    origin_requested = bool(
+        np.any(
+            (
+                pheromone_programs.required_masks[representatives]
+                & np.uint64(1 << 8)
+            )
+            != 0
+        )
+    )
+    track_origin = origin_requested or audit_local_search
+    if track_origin and config.local_search is LocalSearch.THREE_OPT:
+        raise ValueError("Origin/local-search audit 当前只支持 two_opt")
     stack_depth = max(
         1,
         int(transition.stack_size),
@@ -1481,6 +1509,11 @@ def _run_device_v2(
         iteration_parts: list[np.ndarray] = []
         anytime_parts: list[np.ndarray] = []
         diagnostic_parts: list[np.ndarray] = []
+        basin_parts: list[np.ndarray] = []
+        pre_basin_parts: list[np.ndarray] = []
+        retention_parts: list[np.ndarray] = []
+        colony_parts: list[np.ndarray] = []
+        pre_colony_parts: list[np.ndarray] = []
         kernel_seconds = 0.0
         d2h_seconds = 0.0
         chunk_count = 0
@@ -1534,6 +1567,19 @@ def _run_device_v2(
                 (count, ants),
                 dtype=cp.float32,
             )
+            pre_tour_workspace = cp.empty(
+                (count, ants, n + 1),
+                dtype=cp.uint16,
+            )
+            origin_workspace = cp.ones(
+                (count, ants, n),
+                dtype=cp.int8,
+            )
+            global_best_origin = cp.empty((count, n), dtype=cp.int8)
+            restart_best_origin = cp.empty((count, n), dtype=cp.int8)
+            basin_sum = cp.zeros(count, dtype=cp.float32)
+            pre_basin_sum = cp.zeros(count, dtype=cp.float32)
+            retained_edge_sum = cp.zeros(count, dtype=cp.uint64)
             if config.uses_local_search:
                 position_workspace = cp.empty(
                     (count, ants, n),
@@ -1670,6 +1716,9 @@ def _run_device_v2(
                             position_workspace,
                             order_workspace,
                             dlb_workspace,
+                            pre_tour_workspace,
+                            origin_workspace,
+                            np.int32(track_origin),
                             diagnostics,
                         ),
                     )
@@ -1735,6 +1784,7 @@ def _run_device_v2(
                         pheromone_workspace,
                         tour_workspace,
                         length_workspace,
+                        length_before_workspace,
                         ls_gain_workspace,
                         deposit_workspace,
                         edge_frequency,
@@ -1750,6 +1800,14 @@ def _run_device_v2(
                         restart_iteration,
                         global_best_ls_gain,
                         restart_best_ls_gain,
+                        origin_workspace,
+                        global_best_origin,
+                        restart_best_origin,
+                        basin_sum,
+                        pre_basin_sum,
+                        retained_edge_sum,
+                        np.int32(basin_top_q),
+                        np.int32(audit_local_search),
                         anytime,
                         np.int32(record_anytime),
                         diagnostics,
@@ -1767,6 +1825,20 @@ def _run_device_v2(
             length_parts.append(cp.asnumpy(global_best_lengths))
             iteration_parts.append(cp.asnumpy(best_iterations))
             diagnostic_parts.append(cp.asnumpy(diagnostics))
+            if basin_top_q > 0:
+                basin_parts.append(
+                    cp.asnumpy(basin_sum) / float(config.iterations)
+                )
+            if audit_local_search:
+                pre_basin_parts.append(
+                    cp.asnumpy(pre_basin_sum) / float(config.iterations)
+                )
+                retention_parts.append(
+                    cp.asnumpy(retained_edge_sum).astype(np.float64)
+                    / float(config.iterations * ants * n)
+                )
+                colony_parts.append(cp.asnumpy(tour_workspace))
+                pre_colony_parts.append(cp.asnumpy(pre_tour_workspace))
             if record_anytime:
                 anytime_parts.append(cp.asnumpy(anytime))
             d2h_seconds += perf_counter() - d2h_started
@@ -1797,6 +1869,31 @@ def _run_device_v2(
             chunks=chunk_count,
             block_threads=construct_threads,
             device_name=device_name,
+            basin_mean_lengths=(
+                np.concatenate(basin_parts)
+                if basin_top_q > 0
+                else None
+            ),
+            pre_basin_mean_lengths=(
+                np.concatenate(pre_basin_parts)
+                if audit_local_search
+                else None
+            ),
+            edge_retention=(
+                np.concatenate(retention_parts)
+                if audit_local_search
+                else None
+            ),
+            final_colony_tours=(
+                np.concatenate(colony_parts)
+                if audit_local_search
+                else None
+            ),
+            final_pre_colony_tours=(
+                np.concatenate(pre_colony_parts)
+                if audit_local_search
+                else None
+            ),
             provider=CudaProvider.RAW_CUDA.value,
             precision=precision.value,
             candidate_lanes=candidate_lanes,
@@ -1812,6 +1909,8 @@ def _solve_population_impl(
     seed: int,
     runtime: RuntimeConfig,
     record_anytime: bool,
+    basin_top_q: int = 0,
+    audit_local_search: bool = False,
 ) -> tuple[PopulationQualityResult, torch.Tensor | None]:
     if not programs:
         raise ValueError("program population 不得为空")
@@ -1820,6 +1919,13 @@ def _solve_population_impl(
         raise ValueError("CUDA 局部搜索只由 cuda_tiled_v2 后端实现")
     if config.resolve_ants(problem.n) > 32:
         raise ValueError("CUDA 后端最多支持 32 只蚂蚁")
+    ants = config.resolve_ants(problem.n)
+    if basin_top_q < 0 or basin_top_q > ants:
+        raise ValueError("basin_top_q 必须位于 [0, ants]")
+    if audit_local_search and not config.uses_local_search:
+        raise ValueError("local-search signal audit 要求启用局部搜索")
+    if (basin_top_q or audit_local_search) and not use_v2:
+        raise ValueError("basin fitness/audit 只由 cuda_tiled_v2 实现")
     if use_v2 and config.resolve_ants(problem.n) != 32:
         raise ValueError(
             "CUDA v2 的 tiled construction 当前固定 32 只蚂蚁，"
@@ -1837,6 +1943,19 @@ def _solve_population_impl(
         representatives,
         inverse,
     ) = _active_and_representative_programs(programs, config)
+    origin_requested = bool(
+        np.any(
+            (
+                pheromone_programs.required_masks[representatives]
+                & np.uint64(1 << 8)
+            )
+            != 0
+        )
+    )
+    if origin_requested and not use_v2:
+        raise ValueError("Origin terminal 只由 cuda_tiled_v2 实现")
+    if origin_requested and config.local_search is not LocalSearch.TWO_OPT:
+        raise ValueError("Origin terminal 当前要求 local_search=two_opt")
     if max(transition.stack_size, pheromone_programs.stack_size) > 32:
         raise ValueError("CUDA GP postfix stack 深度不得超过 32")
 
@@ -1889,6 +2008,8 @@ def _solve_population_impl(
                 representatives=representatives,
                 initial_tau=initial_tau,
                 record_anytime=record_anytime,
+                basin_top_q=basin_top_q,
+                audit_local_search=audit_local_search,
             )
         ]
     else:
@@ -1909,6 +2030,8 @@ def _solve_population_impl(
                     representatives=representatives,
                     initial_tau=initial_tau,
                     record_anytime=record_anytime,
+                    basin_top_q=basin_top_q,
+                    audit_local_search=audit_local_search,
                 )
                 for device, shard in zip(used_devices, shards, strict=True)
             ]
@@ -1930,6 +2053,34 @@ def _solve_population_impl(
         if record_anytime
         else None
     )
+    basin_flat = (
+        np.empty(task_count, dtype=np.float32)
+        if basin_top_q > 0
+        else None
+    )
+    pre_basin_flat = (
+        np.empty(task_count, dtype=np.float32)
+        if audit_local_search
+        else None
+    )
+    retention_flat = (
+        np.empty(task_count, dtype=np.float64)
+        if audit_local_search
+        else None
+    )
+    colony_flat = (
+        np.empty(
+            (task_count, ants, problem.n + 1),
+            dtype=np.uint16,
+        )
+        if audit_local_search
+        else None
+    )
+    pre_colony_flat = (
+        np.empty_like(colony_flat)
+        if colony_flat is not None
+        else None
+    )
     for result in device_results:
         best_tour_flat[result.flat_indices] = result.best_tours
         gpu_length_flat[result.flat_indices] = result.gpu_best_lengths
@@ -1938,6 +2089,28 @@ def _solve_population_impl(
         if record_anytime:
             assert anytime_flat is not None and result.anytime is not None
             anytime_flat[result.flat_indices] = result.anytime
+        if basin_top_q > 0:
+            assert basin_flat is not None and result.basin_mean_lengths is not None
+            basin_flat[result.flat_indices] = result.basin_mean_lengths
+        if audit_local_search:
+            assert (
+                pre_basin_flat is not None
+                and retention_flat is not None
+                and colony_flat is not None
+                and pre_colony_flat is not None
+                and result.pre_basin_mean_lengths is not None
+                and result.edge_retention is not None
+                and result.final_colony_tours is not None
+                and result.final_pre_colony_tours is not None
+            )
+            pre_basin_flat[result.flat_indices] = (
+                result.pre_basin_mean_lengths
+            )
+            retention_flat[result.flat_indices] = result.edge_retention
+            colony_flat[result.flat_indices] = result.final_colony_tours
+            pre_colony_flat[result.flat_indices] = (
+                result.final_pre_colony_tours
+            )
 
     representative_tours = torch.from_numpy(
         best_tour_flat.reshape(
@@ -1971,6 +2144,11 @@ def _solve_population_impl(
     best_iterations = representative_iterations
     diagnostics = representative_diagnostics
     anytime_tensor: torch.Tensor | None = None
+    basin_tensor: torch.Tensor | None = None
+    pre_basin_tensor: torch.Tensor | None = None
+    retention_tensor: torch.Tensor | None = None
+    colony_tensor: torch.Tensor | None = None
+    pre_colony_tensor: torch.Tensor | None = None
     if anytime_flat is not None:
         anytime_tensor = torch.from_numpy(
             anytime_flat.reshape(
@@ -1979,6 +2157,48 @@ def _solve_population_impl(
                 config.iterations,
             ).astype(np.float64)
         )
+    if basin_flat is not None:
+        basin_tensor = torch.from_numpy(
+            basin_flat.reshape(
+                representative_count,
+                problem.batch_size,
+            ).astype(np.float64)
+        )
+    if audit_local_search:
+        assert (
+            pre_basin_flat is not None
+            and retention_flat is not None
+            and colony_flat is not None
+            and pre_colony_flat is not None
+        )
+        pre_basin_tensor = torch.from_numpy(
+            pre_basin_flat.reshape(
+                representative_count,
+                problem.batch_size,
+            ).astype(np.float64)
+        )
+        retention_tensor = torch.from_numpy(
+            retention_flat.reshape(
+                representative_count,
+                problem.batch_size,
+            )
+        )
+        colony_tensor = torch.from_numpy(
+            colony_flat.reshape(
+                representative_count,
+                problem.batch_size,
+                ants,
+                problem.n + 1,
+            ).astype(np.int64)
+        )
+        pre_colony_tensor = torch.from_numpy(
+            pre_colony_flat.reshape(
+                representative_count,
+                problem.batch_size,
+                ants,
+                problem.n + 1,
+            ).astype(np.int64)
+        )
     if representatives.size != len(programs):
         best_tours = best_tours[inverse]
         best_lengths = best_lengths[inverse]
@@ -1986,6 +2206,16 @@ def _solve_population_impl(
         diagnostics = diagnostics[inverse]
         if anytime_tensor is not None:
             anytime_tensor = anytime_tensor[inverse]
+        if basin_tensor is not None:
+            basin_tensor = basin_tensor[inverse]
+        if pre_basin_tensor is not None:
+            pre_basin_tensor = pre_basin_tensor[inverse]
+        if retention_tensor is not None:
+            retention_tensor = retention_tensor[inverse]
+        if colony_tensor is not None:
+            colony_tensor = colony_tensor[inverse]
+        if pre_colony_tensor is not None:
+            pre_colony_tensor = pre_colony_tensor[inverse]
 
     elapsed = perf_counter() - started
     kernel_values = [item.kernel_seconds for item in device_results]
@@ -2016,6 +2246,8 @@ def _solve_population_impl(
         ),
         "local_search_warps_per_block": runtime.cuda_ls_warps_per_block,
         "three_opt_block_threads": runtime.cuda_three_opt_block_threads,
+        "basin_top_q": basin_top_q,
+        "audit_local_search": int(audit_local_search),
     }
     if tuning_manifest_hash:
         metrics["tuning_manifest_sha256"] = tuning_manifest_hash
@@ -2031,6 +2263,11 @@ def _solve_population_impl(
             * config.resolve_ants(problem.n)
             * config.iterations
         ),
+        basin_mean_length=basin_tensor,
+        pre_basin_mean_length=pre_basin_tensor,
+        edge_retention=retention_tensor,
+        final_colony_tour=colony_tensor,
+        final_pre_colony_tour=pre_colony_tensor,
         backend_metrics=metrics,
     )
     return quality, anytime_tensor
@@ -2043,6 +2280,8 @@ def solve_population_cuda(
     *,
     seed: int,
     runtime: RuntimeConfig,
+    basin_top_q: int = 0,
+    audit_local_search: bool = False,
 ) -> PopulationQualityResult:
     """融合评估 population，并返回 CPU FP64 精确长度。"""
 
@@ -2053,6 +2292,8 @@ def solve_population_cuda(
         seed=seed,
         runtime=runtime,
         record_anytime=False,
+        basin_top_q=basin_top_q,
+        audit_local_search=audit_local_search,
     )
     return result
 

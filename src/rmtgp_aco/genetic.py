@@ -89,6 +89,12 @@ class RMTGPIndividual(list):
         return deepcopy(self)
 
 
+def is_baseline_individual(individual: RMTGPIndividual) -> bool:
+    """个体是否为精确旁路 GP 的原始 ACO 哨兵。"""
+
+    return bool(individual.metadata.get("baseline_passthrough", False))
+
+
 def _random_tree(
     pset: gp.PrimitiveSetTyped,
     return_type: type,
@@ -150,7 +156,7 @@ def initialise_population(
     gp.PrimitiveSetTyped,
     gp.PrimitiveSetTyped,
 ]:
-    """按 10/20/20/50 比例建立初始种群。"""
+    """建立初始种群；安全协议下只保留一个不可变 baseline anchor。"""
 
     if transition_pset is None or pheromone_pset is None:
         transition_pset, pheromone_pset = create_primitive_sets(
@@ -160,21 +166,36 @@ def initialise_population(
             pheromone_terminals=config.pheromone_terminals,
         )
     if config.train_transition and config.train_pheromone:
+        baseline_count = (
+            1
+            if config.baseline_anchor
+            else round(config.population_size * 0.10)
+        )
         counts = {
-            "baseline": round(config.population_size * 0.10),
+            "baseline": baseline_count,
             "transition": round(config.population_size * 0.20),
             "pheromone": round(config.population_size * 0.20),
         }
         counts["joint"] = config.population_size - sum(counts.values())
     elif config.train_transition:
+        baseline_count = (
+            1
+            if config.baseline_anchor
+            else round(config.population_size * 0.10)
+        )
         counts = {
-            "baseline": round(config.population_size * 0.10),
-            "transition": config.population_size - round(config.population_size * 0.10),
+            "baseline": baseline_count,
+            "transition": config.population_size - baseline_count,
         }
     else:
+        baseline_count = (
+            1
+            if config.baseline_anchor
+            else round(config.population_size * 0.10)
+        )
         counts = {
-            "baseline": round(config.population_size * 0.10),
-            "pheromone": config.population_size - round(config.population_size * 0.10),
+            "baseline": baseline_count,
+            "pheromone": config.population_size - baseline_count,
         }
 
     population = [
@@ -281,21 +302,51 @@ def evolve_generation(
     pheromone_pset: gp.PrimitiveSetTyped,
     config: GPConfig,
 ) -> list[RMTGPIndividual]:
-    """根据预注册概率产生下一代，保留显式 elites。"""
+    """根据预注册概率产生下一代，并可保留不可繁殖的 baseline anchor。"""
 
-    ranked = sorted(population, key=lambda item: (item.fitness.values, item.total_nodes))
-    elites = [item.clone() for item in ranked[: config.elite_size]]
+    if config.baseline_anchor:
+        anchors = [item for item in population if is_baseline_individual(item)]
+        if len(anchors) != 1:
+            raise ValueError(
+                "baseline_anchor 协议要求每一代恰好包含一个 baseline 哨兵"
+            )
+        anchor = anchors[0].clone()
+        breeding_pool = [
+            item for item in population if not is_baseline_individual(item)
+        ]
+        target_size = config.population_size - 1
+    else:
+        anchor = None
+        breeding_pool = population
+        target_size = config.population_size
+    if not breeding_pool:
+        raise ValueError("可繁殖的 GP 个体集合不得为空")
+
+    ranked = sorted(
+        breeding_pool,
+        key=lambda item: (item.fitness.values, item.total_nodes),
+    )
+    elite_count = min(config.elite_size, target_size)
+    elites = [item.clone() for item in ranked[:elite_count]]
     offspring: list[RMTGPIndividual] = []
 
-    while len(elites) + len(offspring) < config.population_size:
+    while len(elites) + len(offspring) < target_size:
         draw = random.random()
         if draw < config.crossover_probability:
-            parents = tools.selTournament(population, 2, tournsize=config.tournament_size)
+            parents = tools.selTournament(
+                breeding_pool,
+                2,
+                tournsize=config.tournament_size,
+            )
             child_a, child_b = (parents[0].clone(), parents[1].clone())
             child_a, child_b = mate_role_preserving(child_a, child_b, config)
             offspring.extend([child_a, child_b])
         elif draw < config.crossover_probability + config.mutation_probability:
-            parent = tools.selTournament(population, 1, tournsize=config.tournament_size)[0]
+            parent = tools.selTournament(
+                breeding_pool,
+                1,
+                tournsize=config.tournament_size,
+            )[0]
             child = parent.clone()
             (child,) = mutate_role_preserving(
                 child,
@@ -305,10 +356,17 @@ def evolve_generation(
             )
             offspring.append(child)
         else:
-            parent = tools.selTournament(population, 1, tournsize=config.tournament_size)[0]
+            parent = tools.selTournament(
+                breeding_pool,
+                1,
+                tournsize=config.tournament_size,
+            )[0]
             offspring.append(parent.clone())
 
-    return (elites + offspring)[: config.population_size]
+    result = (elites + offspring)[:target_size]
+    if anchor is not None:
+        result.append(anchor)
+    return result
 
 
 def evaluate_invalid(

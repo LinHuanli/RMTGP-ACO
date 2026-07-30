@@ -84,6 +84,7 @@ _PHEROMONE_TERMINAL_INDEX = {
     "ACOProg": 5,
     "Stagnation": 6,
     "LSGain": 7,
+    "Origin": 8,
 }
 
 # 这些 terminal 对同一次 candidate/edge vector 的全部列取值相同。只存一次，
@@ -110,7 +111,7 @@ _PHEROMONE_SCALAR_TERMINAL_MASK = np.uint64(
     (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7)
 )
 _PHEROMONE_VECTOR_TERMINAL_MASK = np.uint64(
-    (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3)
+    (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 8)
 )
 
 
@@ -1388,6 +1389,7 @@ def _prepare_pheromone_terminals(
     stagnation: int,
     total_iterations: int,
     source_ls_gain: float,
+    source_origin: np.ndarray,
     terminals: np.ndarray,
     edge_u: np.ndarray,
     edge_v: np.ndarray,
@@ -1457,6 +1459,9 @@ def _prepare_pheromone_terminals(
         terminals[6, 0] = value
     if _mask_has(required_mask, 7):
         terminals[7, 0] = source_ls_gain
+    if _mask_has(required_mask, 8):
+        for edge in range(n):
+            terminals[8, edge] = source_origin[edge]
 
 
 @njit(cache=True)
@@ -1476,6 +1481,9 @@ def _global_pheromone_update(
     ls_gains: np.ndarray,
     global_best_ls_gain: float,
     restart_best_ls_gain: float,
+    origins: np.ndarray,
+    global_best_origin: np.ndarray,
+    restart_best_origin: np.ndarray,
     tau_min: float,
     tau_max: float,
     variant: int,
@@ -1557,22 +1565,27 @@ def _global_pheromone_update(
             source_tour = tours[source]
             source_length = lengths[source]
             source_ls_gain = ls_gains[source]
+            source_origin = origins[source]
         elif variant == 1:
             source_tour = global_best_tour
             source_length = global_best_length
             source_ls_gain = global_best_ls_gain
+            source_origin = global_best_origin
         elif source_kind == 0:
             source_tour = tours[iteration_best_index]
             source_length = lengths[iteration_best_index]
             source_ls_gain = ls_gains[iteration_best_index]
+            source_origin = origins[iteration_best_index]
         elif source_kind == 1:
             source_tour = restart_best_tour
             source_length = restart_best_length
             source_ls_gain = restart_best_ls_gain
+            source_origin = restart_best_origin
         else:
             source_tour = global_best_tour
             source_length = global_best_length
             source_ls_gain = global_best_ls_gain
+            source_origin = global_best_origin
 
         _prepare_pheromone_terminals(
             heuristic,
@@ -1590,6 +1603,7 @@ def _global_pheromone_update(
             stagnation,
             total_iterations,
             source_ls_gain,
+            source_origin,
             ph_terminals,
             source_edge_u,
             source_edge_v,
@@ -1733,7 +1747,7 @@ def _allocate_solver_workspace(
         np.zeros(n * n, dtype=np.int64),  # ACS edge counts
         np.empty(edge_capacity, dtype=np.int64),  # active edges
         local_factors,
-        np.empty((8, n), dtype=np.float64),  # pheromone terminals
+        np.empty((9, n), dtype=np.float64),  # pheromone terminals
         np.zeros((n, n), dtype=np.float64),  # dense deposits
         np.zeros(n * n, dtype=np.int64),  # edge frequency
         np.empty(n * n, dtype=np.int64),  # active frequency edges
@@ -1742,7 +1756,37 @@ def _allocate_solver_workspace(
         np.empty(n, dtype=np.int64),  # LS city -> position
         np.empty(n, dtype=np.int64),  # LS random order
         np.empty(n, dtype=np.uint8),  # LS DLB
+        np.empty((ants, n + 1), dtype=np.int64),  # construction 前 tours
+        np.empty((ants, n), dtype=np.float64),  # post edge provenance
+        np.empty(n, dtype=np.float64),  # global-best provenance
+        np.empty(n, dtype=np.float64),  # restart-best provenance
+        np.empty(ants, dtype=np.float64),  # top-q insertion buffer
     )
+
+
+@njit(cache=True)
+def _top_q_mean(
+    values: np.ndarray,
+    q: int,
+    buffer: np.ndarray,
+) -> float:
+    """不修改 colony lengths，确定性计算最小 q 个值的平均数。"""
+
+    for index in range(q):
+        buffer[index] = np.inf
+    for index in range(values.shape[0]):
+        value = values[index]
+        if value >= buffer[q - 1]:
+            continue
+        position = q - 1
+        while position > 0 and value < buffer[position - 1]:
+            buffer[position] = buffer[position - 1]
+            position -= 1
+        buffer[position] = value
+    total = 0.0
+    for index in range(q):
+        total += buffer[index]
+    return total / q
 
 
 @njit(cache=True, nogil=True)
@@ -1791,8 +1835,10 @@ def _solve_instance_inplace(
     ph_required_mask: np.uint64,
     seed: np.uint64,
     instance_key: np.uint64,
+    basin_top_q: int,
+    audit_local_search: bool,
     workspace: tuple,
-) -> tuple[np.ndarray, float, int, np.ndarray, np.ndarray]:
+) -> tuple:
     """在调用方提供的可复用工作区内求解一个 TSP 实例。"""
 
     n = distances.shape[0]
@@ -1824,6 +1870,11 @@ def _solve_instance_inplace(
         ls_position,
         ls_order,
         ls_dlb,
+        pre_tours,
+        origins,
+        global_best_origin,
+        restart_best_origin,
+        top_q_buffer,
     ) = workspace
     for first in range(n):
         for second in range(n):
@@ -1840,6 +1891,10 @@ def _solve_instance_inplace(
     restart_iteration = 1
     global_best_ls_gain = -1.0
     restart_best_ls_gain = -1.0
+    basin_sum = 0.0
+    pre_basin_sum = 0.0
+    retained_edges = 0
+    track_origin = audit_local_search or _mask_has(ph_required_mask, 8)
 
     for iteration in range(1, iterations + 1):
         _construct_tours(
@@ -1882,6 +1937,12 @@ def _solve_instance_inplace(
             diagnostics,
         )
         _tour_lengths(distances, tours, lengths)
+        if basin_top_q > 0:
+            pre_basin_sum += _top_q_mean(lengths, basin_top_q, top_q_buffer)
+        if track_origin:
+            for ant in range(ants):
+                for city in range(n + 1):
+                    pre_tours[ant, city] = tours[ant, city]
         for ant in range(ants):
             ls_gains[ant] = -1.0
         if local_search_mode != 0:
@@ -1913,6 +1974,39 @@ def _solve_instance_inplace(
                 diagnostics[7] += passes
                 if lengths[ant] < before - 1e-12:
                     diagnostics[6] += 1
+        if basin_top_q > 0:
+            basin_sum += _top_q_mean(lengths, basin_top_q, top_q_buffer)
+        if track_origin:
+            for ant in range(ants):
+                # 2-opt 已结束，复用 order workspace 建立 construction
+                # city->position 映射。这样每条 post edge 只需检查原 tour
+                # 中该城市的两个邻居，避免 O(n^2) provenance scan。
+                for pre_position in range(n):
+                    ls_order[pre_tours[ant, pre_position]] = pre_position
+                for edge in range(n):
+                    first = tours[ant, edge]
+                    second = tours[ant, edge + 1]
+                    pre_position = ls_order[first]
+                    retained = (
+                        pre_tours[
+                            ant,
+                            (pre_position + 1) % n,
+                        ]
+                        == second
+                        or pre_tours[
+                            ant,
+                            (pre_position + n - 1) % n,
+                        ]
+                        == second
+                    )
+                    origins[ant, edge] = 1.0 if retained else -1.0
+                    retained_edges += int(retained)
+        else:
+            # Origin 未被请求时仍给 source 视图一个确定值，防止未初始化内存
+            # 在后续代码重构中被意外读取。
+            for ant in range(ants):
+                for edge in range(n):
+                    origins[ant, edge] = 1.0
         iteration_best_index = 0
         iteration_best_length = lengths[0]
         for ant in range(1, ants):
@@ -1927,6 +2021,8 @@ def _solve_instance_inplace(
             global_best_iteration = iteration
             for city in range(n + 1):
                 global_best_tour[city] = tours[iteration_best_index, city]
+            for edge in range(n):
+                global_best_origin[edge] = origins[iteration_best_index, edge]
             stagnation = 0
         else:
             stagnation += 1
@@ -1937,6 +2033,8 @@ def _solve_instance_inplace(
             restart_found_best = iteration
             for city in range(n + 1):
                 restart_best_tour[city] = tours[iteration_best_index, city]
+            for edge in range(n):
+                restart_best_origin[edge] = origins[iteration_best_index, edge]
 
         if variant == 2 and improved_global:
             tau_max = 1.0 / (rho * global_best_length)
@@ -1964,6 +2062,9 @@ def _solve_instance_inplace(
             ls_gains,
             global_best_ls_gain,
             restart_best_ls_gain,
+            origins,
+            global_best_origin,
+            restart_best_origin,
             tau_min,
             tau_max,
             variant,
@@ -2037,6 +2138,15 @@ def _solve_instance_inplace(
         global_best_iteration,
         anytime,
         diagnostics,
+        basin_sum / iterations if basin_top_q > 0 else np.nan,
+        pre_basin_sum / iterations if basin_top_q > 0 else np.nan,
+        (
+            retained_edges / (iterations * ants * n)
+            if audit_local_search
+            else np.nan
+        ),
+        tours,
+        pre_tours,
     )
 
 
@@ -2094,7 +2204,9 @@ def _solve_population_quality_kernel(
     seeds: np.ndarray,
     instance_keys: np.ndarray,
     stack_size: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    basin_top_q: int,
+    audit_local_search: bool,
+) -> tuple:
     """在一个 native 边界内并行全部 genotype×instance 任务。"""
 
     population = tr_opcodes.shape[0]
@@ -2106,6 +2218,14 @@ def _solve_population_quality_kernel(
         dtype=np.int64,
     )
     diagnostics = np.empty((population, batch, 8), dtype=np.int64)
+    basin_mean_lengths = np.empty((population, batch), dtype=np.float64)
+    pre_basin_mean_lengths = np.empty((population, batch), dtype=np.float64)
+    edge_retention = np.empty((population, batch), dtype=np.float64)
+    final_colony_tours = np.empty(
+        (population, batch, ants, distances.shape[1] + 1),
+        dtype=np.int64,
+    )
+    final_pre_colony_tours = np.empty_like(final_colony_tours)
     for batch_index in prange(batch):
         # 一个线程连续求解同一 instance 的整个人口，复用大工作区与几何 cache。
         workspace = _allocate_solver_workspace(
@@ -2124,6 +2244,11 @@ def _solve_population_quality_kernel(
                 best_iteration,
                 _,
                 task_diagnostics,
+                basin_mean_length,
+                pre_basin_mean_length,
+                task_edge_retention,
+                final_colony,
+                final_pre_colony,
             ) = _solve_instance_inplace(
                 distances[batch_index],
                 heuristic[batch_index],
@@ -2169,13 +2294,35 @@ def _solve_population_quality_kernel(
                 ph_required_masks[individual],
                 seeds[batch_index],
                 instance_keys[batch_index],
+                basin_top_q,
+                audit_local_search,
                 workspace,
             )
             best_lengths[individual, batch_index] = best_length
             best_iterations[individual, batch_index] = best_iteration
             best_tours[individual, batch_index] = best_tour
             diagnostics[individual, batch_index] = task_diagnostics
-    return best_tours, best_lengths, best_iterations, diagnostics
+            basin_mean_lengths[individual, batch_index] = basin_mean_length
+            pre_basin_mean_lengths[individual, batch_index] = (
+                pre_basin_mean_length
+            )
+            edge_retention[individual, batch_index] = task_edge_retention
+            if audit_local_search:
+                final_colony_tours[individual, batch_index] = final_colony
+                final_pre_colony_tours[individual, batch_index] = (
+                    final_pre_colony
+                )
+    return (
+        best_tours,
+        best_lengths,
+        best_iterations,
+        diagnostics,
+        basin_mean_lengths,
+        pre_basin_mean_lengths,
+        edge_retention,
+        final_colony_tours,
+        final_pre_colony_tours,
+    )
 
 
 def solve_population_numba(
@@ -2185,6 +2332,8 @@ def solve_population_numba(
     *,
     seed: int,
     threads: int = 16,
+    basin_top_q: int = 0,
+    audit_local_search: bool = False,
 ) -> PopulationQualityResult:
     """以 16-thread task matrix 评估一组唯一 GP genotypes。"""
 
@@ -2196,6 +2345,11 @@ def solve_population_numba(
         raise ValueError("threads 必须为正整数")
     if not programs:
         raise ValueError("program population 不得为空")
+    ants = config.resolve_ants(problem.n)
+    if basin_top_q < 0 or basin_top_q > ants:
+        raise ValueError("basin_top_q 必须位于 [0, ants]")
+    if audit_local_search and not config.uses_local_search:
+        raise ValueError("local-search signal audit 要求启用局部搜索")
     if config.local_search is LocalSearch.THREE_OPT:
         raise NotImplementedError(
             "Numba 审计后端当前实现 two_opt；three_opt 正式路径使用 CUDA"
@@ -2311,7 +2465,17 @@ def solve_population_numba(
 
     set_num_threads(threads)
     started = perf_counter()
-    best_tours, best_lengths, best_iterations, diagnostics = (
+    (
+        best_tours,
+        best_lengths,
+        best_iterations,
+        diagnostics,
+        basin_mean_lengths,
+        pre_basin_mean_lengths,
+        edge_retention,
+        final_colony_tours,
+        final_pre_colony_tours,
+    ) = (
         _solve_population_quality_kernel(
             distances,
             heuristic,
@@ -2372,6 +2536,8 @@ def solve_population_numba(
             seeds,
             instance_keys,
             max(transition.stack_size, pheromone.stack_size),
+            basin_top_q,
+            audit_local_search,
         )
     )
     if representatives.size != len(programs):
@@ -2379,6 +2545,11 @@ def solve_population_numba(
         best_lengths = best_lengths[inverse]
         best_iterations = best_iterations[inverse]
         diagnostics = diagnostics[inverse]
+        basin_mean_lengths = basin_mean_lengths[inverse]
+        pre_basin_mean_lengths = pre_basin_mean_lengths[inverse]
+        edge_retention = edge_retention[inverse]
+        final_colony_tours = final_colony_tours[inverse]
+        final_pre_colony_tours = final_pre_colony_tours[inverse]
     elapsed = perf_counter() - started
     return PopulationQualityResult(
         best_tour=torch.from_numpy(best_tours),
@@ -2392,6 +2563,35 @@ def solve_population_numba(
             * config.resolve_ants(problem.n)
             * config.iterations
         ),
+        basin_mean_length=(
+            torch.from_numpy(basin_mean_lengths)
+            if basin_top_q > 0
+            else None
+        ),
+        pre_basin_mean_length=(
+            torch.from_numpy(pre_basin_mean_lengths)
+            if audit_local_search
+            else None
+        ),
+        edge_retention=(
+            torch.from_numpy(edge_retention)
+            if audit_local_search
+            else None
+        ),
+        final_colony_tour=(
+            torch.from_numpy(final_colony_tours)
+            if audit_local_search
+            else None
+        ),
+        final_pre_colony_tour=(
+            torch.from_numpy(final_pre_colony_tours)
+            if audit_local_search
+            else None
+        ),
+        backend_metrics={
+            "basin_top_q": basin_top_q,
+            "audit_local_search": int(audit_local_search),
+        },
     )
 
 
@@ -2537,6 +2737,11 @@ def solve_numba(
             best_iteration,
             instance_anytime,
             instance_diagnostics,
+            _,
+            _,
+            _,
+            _,
+            _,
         ) = _solve_instance_inplace(
             distances[batch_index],
             heuristic[batch_index],
@@ -2582,6 +2787,8 @@ def solve_numba(
             pheromone.required_mask,
             seed_value,
             instance_keys[batch_index],
+            0,
+            False,
             workspace,
         )
         best_tours[batch_index] = best_tour

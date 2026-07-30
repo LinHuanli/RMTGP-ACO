@@ -92,6 +92,36 @@ class GPUMode(StrEnum):
     AUTO = "auto"
 
 
+class FitnessMode(StrEnum):
+    """GP 个体在一个训练 mini-batch 上的评分方式。"""
+
+    ABSOLUTE_GAP = "absolute_gap"
+    # ``paired_ucb`` 是早期 checkpoint/config 的兼容名称。新实验应显式
+    # 使用 paired_final_ucb、paired_basin_ucb 或 paired_combined_ucb。
+    PAIRED_UCB = "paired_ucb"
+    PAIRED_FINAL_UCB = "paired_final_ucb"
+    PAIRED_BASIN_UCB = "paired_basin_ucb"
+    PAIRED_COMBINED_UCB = "paired_combined_ucb"
+
+    @property
+    def is_paired(self) -> bool:
+        return self is not FitnessMode.ABSOLUTE_GAP
+
+    @property
+    def uses_basin(self) -> bool:
+        return self in {
+            FitnessMode.PAIRED_BASIN_UCB,
+            FitnessMode.PAIRED_COMBINED_UCB,
+        }
+
+
+class SelectionMode(StrEnum):
+    """validation checkpoint 的选择和门控协议。"""
+
+    LEGACY_NONINFERIORITY = "legacy_noninferiority"
+    STRICT_SUPERIORITY = "strict_superiority"
+
+
 class TransitionIntegration(StrEnum):
     """GP transition tree 与 ACO desirability 的结合方式。"""
 
@@ -378,8 +408,14 @@ class GPConfig:
     function_profile: str = "f1"
     transition_terminals: tuple[str, ...] | None = None
     pheromone_terminals: tuple[str, ...] | None = None
+    fitness_mode: FitnessMode = FitnessMode.ABSOLUTE_GAP
+    fitness_ucb_z: float = 1.0
+    baseline_anchor: bool = False
+    basin_top_q: int = 7
+    basin_weight: float = 0.8
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "fitness_mode", FitnessMode(self.fitness_mode))
         total = (
             self.crossover_probability
             + self.mutation_probability
@@ -403,6 +439,12 @@ class GPConfig:
             raise ValueError("generations 必须为正整数")
         if self.checkpoint_interval < 1 or self.checkpoint_top_k < 1:
             raise ValueError("checkpoint_interval 和 checkpoint_top_k 必须为正整数")
+        if self.fitness_ucb_z < 0.0:
+            raise ValueError("fitness_ucb_z 不得为负")
+        if self.basin_top_q < 1:
+            raise ValueError("basin_top_q 必须为正整数")
+        if not 0.0 <= self.basin_weight <= 1.0:
+            raise ValueError("basin_weight 必须位于 [0, 1]")
         if self.transition_profile not in {"main", "legacy"}:
             raise ValueError("transition_profile 仅支持 main 或 legacy")
         if self.function_profile not in {"f0", "f1"}:
@@ -553,8 +595,21 @@ class ExperimentConfig:
     validation_screening_seeds: int = 1
     validation_top_k: int = 5
     noninferiority_tolerance: float = 0.1
+    selection_mode: SelectionMode = SelectionMode.LEGACY_NONINFERIORITY
+    superiority_min_relative_improvement: float = 0.10
+    selection_confidence: float = 0.95
+    selection_bootstrap_replicates: int = 10_000
+    quality_tie_tolerance: float = 0.01
+    training_horizon_schedule: tuple[tuple[int, int], ...] | None = None
+    validation_monitor_interval: int = 1
+    cpu_fp64_final_audit: bool = True
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "selection_mode",
+            SelectionMode(self.selection_mode),
+        )
         for name in ("train_scales", "validation_scales", "test_scales"):
             values = tuple(int(value) for value in getattr(self, name))
             if not values:
@@ -566,11 +621,70 @@ class ExperimentConfig:
             raise ValueError("screening seeds 不得多于完整 validation seeds")
         if self.validation_top_k < 1:
             raise ValueError("validation_top_k 必须为正整数")
+        if not 0.0 <= self.superiority_min_relative_improvement < 1.0:
+            raise ValueError(
+                "superiority_min_relative_improvement 必须位于 [0, 1)"
+            )
+        if not 0.5 < self.selection_confidence < 1.0:
+            raise ValueError("selection_confidence 必须位于 (0.5, 1)")
+        if self.selection_bootstrap_replicates < 100:
+            raise ValueError("selection_bootstrap_replicates 至少为 100")
+        if self.quality_tie_tolerance < 0.0:
+            raise ValueError("quality_tie_tolerance 不得为负")
+        if self.validation_monitor_interval < 1:
+            raise ValueError("validation_monitor_interval 必须为正整数")
+        if self.gp.fitness_mode.uses_basin:
+            for scale in self.train_scales:
+                if self.gp.basin_top_q > self.aco.resolve_ants(scale):
+                    raise ValueError(
+                        "basin_top_q 不得超过训练规模对应的蚂蚁数"
+                    )
+            if not self.aco.uses_local_search:
+                raise ValueError(
+                    "basin fitness 只用于 local-search 训练；"
+                    "无局部搜索实验应使用 final fitness"
+                )
+        if self.training_horizon_schedule is not None:
+            schedule = tuple(
+                (int(end_generation), int(iterations))
+                for end_generation, iterations in self.training_horizon_schedule
+            )
+            if not schedule:
+                raise ValueError("training_horizon_schedule 不得为空")
+            previous = 0
+            for end_generation, iterations in schedule:
+                if end_generation <= previous:
+                    raise ValueError(
+                        "training_horizon_schedule 的代数边界必须严格递增"
+                    )
+                if iterations < 1:
+                    raise ValueError("training horizon 必须为正整数")
+                previous = end_generation
+            if schedule[-1][0] != self.gp.generations:
+                raise ValueError(
+                    "training_horizon_schedule 最后边界必须等于 gp.generations"
+                )
+            object.__setattr__(self, "training_horizon_schedule", schedule)
+
+    def iterations_for_generation(self, generation: int) -> int:
+        """返回指定 GP generation 使用的 ACO 迭代数。"""
+
+        if generation < 1 or generation > self.gp.generations:
+            raise ValueError(
+                f"generation 必须位于 [1, {self.gp.generations}]"
+            )
+        if self.training_horizon_schedule is None:
+            return self.aco.iterations
+        for end_generation, iterations in self.training_horizon_schedule:
+            if generation <= end_generation:
+                return iterations
+        raise RuntimeError("training_horizon_schedule 未覆盖当前 generation")
 
     def stable_dict(self) -> dict[str, Any]:
         """递归转换为 YAML/JSON 友好的字典。"""
 
         gp_values = asdict(self.gp)
+        gp_values["fitness_mode"] = self.gp.fitness_mode.value
         for name in ("transition_terminals", "pheromone_terminals"):
             if gp_values[name] is not None:
                 gp_values[name] = list(gp_values[name])
@@ -594,4 +708,24 @@ class ExperimentConfig:
             "validation_screening_seeds": self.validation_screening_seeds,
             "validation_top_k": self.validation_top_k,
             "noninferiority_tolerance": self.noninferiority_tolerance,
+            "selection_mode": self.selection_mode.value,
+            "superiority_min_relative_improvement": (
+                self.superiority_min_relative_improvement
+            ),
+            "selection_confidence": self.selection_confidence,
+            "selection_bootstrap_replicates": (
+                self.selection_bootstrap_replicates
+            ),
+            "quality_tie_tolerance": self.quality_tie_tolerance,
+            "training_horizon_schedule": (
+                None
+                if self.training_horizon_schedule is None
+                else [
+                    [end_generation, iterations]
+                    for end_generation, iterations
+                    in self.training_horizon_schedule
+                ]
+            ),
+            "validation_monitor_interval": self.validation_monitor_interval,
+            "cpu_fp64_final_audit": self.cpu_fp64_final_audit,
         }

@@ -9,9 +9,29 @@ import torch
 import yaml
 from conftest import make_instance
 
-from rmtgp_aco.config import ACOConfig, ExperimentConfig, GPConfig
+from rmtgp_aco.config import (
+    ACOConfig,
+    ExecutionBackend,
+    ExperimentConfig,
+    FitnessMode,
+    GPConfig,
+    LocalSearch,
+    RuntimeConfig,
+    SelectionMode,
+)
+from rmtgp_aco.genetic import (
+    evolve_generation,
+    initialise_population,
+    is_baseline_individual,
+)
 from rmtgp_aco.sampling import in_memory_cases
-from rmtgp_aco.training import baseline_relative_fitness, train
+from rmtgp_aco.training import (
+    BaselineCache,
+    EvaluationPool,
+    baseline_relative_fitness,
+    paired_ucb_fitness,
+    train,
+)
 
 
 def test_scale_balanced_baseline_relative_fitness() -> None:
@@ -37,6 +57,194 @@ def test_scale_balanced_baseline_relative_fitness() -> None:
     assert result.degradation_by_scale[50] == 5.0
     assert result.mean_delta_by_scale[100] == 10.0
     assert result.fitness == 12.5
+
+
+def test_paired_ucb_fitness_has_exact_zero_baseline() -> None:
+    baseline = {100: [torch.tensor([10.0, 10.0, 10.0])]}
+    reference = {100: [torch.tensor([10.0, 10.0, 10.0])]}
+    exact = paired_ucb_fitness(
+        baseline,
+        baseline,
+        reference,
+        z=1.0,
+    )
+    assert exact.fitness == 0.0
+    assert exact.standard_error_by_scale[100] == 0.0
+    assert exact.nonzero_fraction_by_scale[100] == 0.0
+
+    mixed = paired_ucb_fitness(
+        {100: [torch.tensor([9.0, 10.0, 11.0])]},
+        baseline,
+        reference,
+        z=1.0,
+    )
+    assert mixed.mean_delta_by_scale[100] == pytest.approx(0.0)
+    assert mixed.fitness > 0.0
+    assert mixed.wins_by_scale[100] == 1
+    assert mixed.ties_by_scale[100] == 1
+    assert mixed.losses_by_scale[100] == 1
+
+
+def test_baseline_anchor_is_unique_and_never_enters_breeding_pool() -> None:
+    gp = GPConfig(
+        population_size=12,
+        generations=2,
+        elite_size=2,
+        tournament_size=2,
+        initial_min_depth=1,
+        initial_max_depth=2,
+        max_depth=3,
+        max_nodes_per_tree=31,
+        max_total_nodes=31,
+        checkpoint_interval=1,
+        checkpoint_top_k=2,
+        baseline_anchor=True,
+        fitness_mode="paired_ucb",
+    )
+    population, transition_pset, pheromone_pset = initialise_population(gp)
+    assert sum(is_baseline_individual(item) for item in population) == 1
+    for index, individual in enumerate(population):
+        individual.fitness.values = (0.0 if is_baseline_individual(individual) else index + 1.0,)
+    evolved = evolve_generation(
+        population,
+        transition_pset,
+        pheromone_pset,
+        gp,
+    )
+    assert len(evolved) == gp.population_size
+    assert sum(is_baseline_individual(item) for item in evolved) == 1
+    assert all(
+        not is_baseline_individual(item)
+        for item in evolved[:-1]
+    )
+
+
+@pytest.mark.parametrize(
+    "fitness_mode",
+    [
+        FitnessMode.PAIRED_FINAL_UCB,
+        FitnessMode.PAIRED_BASIN_UCB,
+        FitnessMode.PAIRED_COMBINED_UCB,
+    ],
+)
+def test_population_fitness_modes_keep_exact_zero_baseline_anchor(
+    fitness_mode,
+) -> None:
+    """三种 paired fitness 均以同 seed 原始 ACO 为精确零点。"""
+
+    cases = in_memory_cases(
+        {5: [make_instance(5, 41), make_instance(5, 42)]},
+        seed=1221,
+        candidate_size=2,
+    )
+    experiment = ExperimentConfig(
+        experiment_id=f"fitness-{fitness_mode.value}",
+        root_seed=91,
+        aco=replace(
+            ACOConfig.acotsp_local_search_default(
+                "acs",
+                local_search=LocalSearch.TWO_OPT,
+                iterations=2,
+            ),
+            ants=4,
+            candidate_size=2,
+            local_search_candidate_size=2,
+        ),
+        gp=GPConfig(
+            population_size=6,
+            generations=1,
+            elite_size=1,
+            tournament_size=2,
+            initial_min_depth=1,
+            initial_max_depth=2,
+            max_depth=3,
+            baseline_anchor=True,
+            fitness_mode=fitness_mode,
+            basin_top_q=2,
+            basin_weight=0.8,
+        ),
+        runtime=RuntimeConfig(
+            aco_backend=ExecutionBackend.NUMBA_BATCH,
+            cpu_threads=2,
+        ),
+        train_scales=(5,),
+        validation_scales=(5,),
+        test_scales=(5,),
+        validation_seeds=1,
+    )
+    population, _, _ = initialise_population(experiment.gp)
+    anchor = next(
+        individual
+        for individual in population
+        if is_baseline_individual(individual)
+    )
+    with EvaluationPool(experiment) as evaluator:
+        result = evaluator.evaluate_population(
+            population,
+            cases,
+            BaselineCache(),
+        )
+    breakdown = result.breakdowns[anchor.structural_hash]
+    assert anchor.fitness.values == (0.0,)
+    assert breakdown.fitness == 0.0
+    assert breakdown.fitness_delta_by_scale[5] == 0.0
+    assert breakdown.standard_error_by_scale[5] == 0.0
+    if fitness_mode.uses_basin:
+        assert breakdown.mean_basin_delta_by_scale[5] == 0.0
+        assert breakdown.mean_basin_gap_by_scale
+        assert breakdown.baseline_basin_gap_by_scale
+    else:
+        assert breakdown.mean_basin_gap_by_scale == {}
+
+
+def test_training_horizon_schedule_is_recorded(tmp_path) -> None:
+    cases = in_memory_cases(
+        {5: [make_instance(5, 11), make_instance(5, 12)]},
+        seed=910,
+        candidate_size=2,
+    )
+    experiment = ExperimentConfig(
+        experiment_id="horizon-tiny",
+        root_seed=77,
+        aco=replace(
+            ACOConfig.acotsp_default("as", iterations=3),
+            ants=3,
+            candidate_size=2,
+        ),
+        gp=GPConfig(
+            population_size=6,
+            generations=3,
+            elite_size=1,
+            tournament_size=2,
+            initial_min_depth=1,
+            initial_max_depth=2,
+            max_depth=3,
+            checkpoint_interval=1,
+            checkpoint_top_k=2,
+            baseline_anchor=True,
+            fitness_mode="paired_ucb",
+        ),
+        train_scales=(5,),
+        validation_scales=(5,),
+        test_scales=(5,),
+        selection_mode=SelectionMode.LEGACY_NONINFERIORITY,
+        training_horizon_schedule=((1, 1), (2, 2), (3, 3)),
+        validation_monitor_interval=2,
+    )
+    result = train(
+        experiment,
+        lambda _generation: cases,
+        cases,
+        validation_monitor_cases=cases,
+        output_directory=tmp_path / "horizon",
+    )
+    assert [
+        record.training_aco_iterations
+        for record in result.history
+    ] == [1, 2, 3]
+    assert result.history[0].validation_monitor_delta_by_scale == {}
+    assert result.history[1].validation_monitor_delta_by_scale
+    assert all(record.baseline_anchor_count == 1 for record in result.history)
 
 
 def test_tiny_training_run_is_reproducible(tmp_path) -> None:

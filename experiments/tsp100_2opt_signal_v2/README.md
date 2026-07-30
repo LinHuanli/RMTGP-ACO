@@ -1,0 +1,82 @@
+# TSP100 full-2opt 学习信号实验
+
+本实验先诊断 2-opt 是否压缩 GP 的行为差异，再决定是否开放 `Origin`
+terminal。训练和模型选择只使用 TSP100。测试也先锁定为 TSP100。
+
+审计对每个 AS、ACS、MMAS 分别使用 64 个 residual programs：
+
+- 32 个新随机个体；
+- 16 个已有 checkpoint；
+- 16 个已有 checkpoint 的单次小变异。
+
+原始 ACO 是独立的第 0 个 program。每个 program 在 8 个 easy 和 8 个 hard
+validation instances、5 个公共随机 seeds、500/2000/5000 三个 horizon 上
+运行。记录 final gap、pre/post-2opt top-7 AUC、edge retention、
+difference survival、SNR 和 MMAS clipping 计数。
+
+`Origin` 的开放门槛在审计脚本中冻结为：
+
+1. 平均 introduced-edge fraction 至少为 0.05；
+2. residual 在 construction 阶段产生边差异的比例至少为 0.20；
+3. 平均 difference survival 小于 0.80。
+
+默认训练 fitness 为相同实例和 seed 下的 paired UCB：
+
+\[
+F=0.8\Delta F_{\mathrm{basin}}+0.2\Delta F_{\mathrm{final}}.
+\]
+
+其中 \(F_{\mathrm{basin}}\) 是每轮 post-2opt 最好 7 只蚂蚁的平均 gap，
+再对全部 ACO iterations 取平均。最终 validation 和 test 仍以 final
+best gap 为主，并使用独立 holdout gate。
+
+单 variant 审计命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/audit_2opt_signal.py \
+  --variant acs
+```
+
+每个 horizon×seed 都保存为独立 NPZ shard。相同命令可以安全续跑。
+
+两张物理 GPU 的完整审计可由一个可恢复队列启动：
+
+```bash
+nohup .venv/bin/python scripts/run_2opt_signal_campaign.py \
+  --phase audit --physical-gpus 0 1 \
+  > runs/tsp100-2opt-signal-v2/audit-nohup.log 2>&1 &
+```
+
+审计完成后，三种 fitness、两个额外 residual radius 和通过门控的
+`+Origin` 使用相同初始 population 做三代 pilot：
+
+```bash
+nohup .venv/bin/python scripts/run_2opt_signal_campaign.py \
+  --phase pilots --physical-gpus 0 1 --pilot-iterations 500 \
+  > runs/tsp100-2opt-signal-v2/pilot-nohup.log 2>&1 &
+```
+
+确认性训练固定 3 个独立 GP seeds。默认使用 combined fitness、
+\(\gamma=1/3\)，不自动加入 `Origin`。其他冻结决定必须通过显式 decisions
+JSON 输入：
+
+```bash
+nohup .venv/bin/python scripts/run_2opt_signal_formal.py \
+  --physical-gpus 0 1 --iterations 5000 --origin-mode none \
+  > runs/tsp100-2opt-signal-v2/formal-nohup.log 2>&1 &
+```
+
+9 个 run 全部完成后，只加载每个 run 最终选定的个体。最终测试使用 128 个
+TSP100 instances、3 个 ACO seeds 和 5000 iterations：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 nohup .venv/bin/python \
+  scripts/evaluate_2opt_signal_final.py \
+  > runs/tsp100-2opt-signal-v2/test-nohup.log 2>&1 &
+```
+
+主成功标准同时要求：
+
+1. mean final gap 的相对降低不少于 10%；
+2. paired 层次 bootstrap 的单侧 95% 上界小于 0；
+3. 三个独立 GP runs 中至少两个改善。

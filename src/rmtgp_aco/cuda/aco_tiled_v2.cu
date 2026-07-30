@@ -955,6 +955,7 @@ extern "C" __global__ void v2_update(
     float* pheromone_workspace,
     uint16_t* tour_workspace,
     float* length_workspace,
+    const float* length_before_workspace,
     const float* ls_gain_workspace,
     float* deposit_workspace,
     uint8_t* edge_frequency_workspace,
@@ -970,6 +971,14 @@ extern "C" __global__ void v2_update(
     int32_t* restart_iteration,
     float* global_best_ls_gain,
     float* restart_best_ls_gain,
+    const int8_t* origin_workspace,
+    int8_t* global_best_origin_workspace,
+    int8_t* restart_best_origin_workspace,
+    float* basin_sum,
+    float* pre_basin_sum,
+    unsigned long long* retained_edge_sum,
+    int basin_top_q,
+    int audit_local_search,
     float* anytime,
     int record_anytime,
     uint64_t* diagnostics
@@ -1004,6 +1013,12 @@ extern "C" __global__ void v2_update(
         + static_cast<size_t>(task) * (n + 1);
     uint16_t* global_best_tour = best_tours
         + static_cast<size_t>(task) * (n + 1);
+    const int8_t* origins = origin_workspace
+        + static_cast<size_t>(task) * ants * n;
+    int8_t* global_best_origin = global_best_origin_workspace
+        + static_cast<size_t>(task) * n;
+    int8_t* restart_best_origin = restart_best_origin_workspace
+        + static_cast<size_t>(task) * n;
     const int8_t* ph_ops = ph_opcodes
         + static_cast<size_t>(program) * ph_width;
     const float* ph_fargs = ph_float_arguments
@@ -1019,8 +1034,76 @@ extern "C" __global__ void v2_update(
     __shared__ int mmas_source_kind;
     __shared__ int mmas_resolved_period;
     __shared__ unsigned int bound_counts[V2_UPDATE_THREADS];
+    __shared__ float basin_post_best[V2_MAX_ANTS];
+    __shared__ float basin_pre_best[V2_MAX_ANTS];
 
     if (tid == 0) {
+        if (basin_top_q > 0) {
+            for (int rank = 0; rank < basin_top_q; ++rank) {
+                basin_post_best[rank] = CUDART_INF_F;
+                if (audit_local_search != 0) {
+                    basin_pre_best[rank] = CUDART_INF_F;
+                }
+            }
+            for (int ant = 0; ant < ants; ++ant) {
+                const float post_value = colony_lengths[ant];
+                const float pre_value = local_search_active != 0
+                    ? length_before_workspace[
+                        static_cast<size_t>(task) * ants + ant
+                    ]
+                    : post_value;
+                int post_position = basin_top_q - 1;
+                if (post_value < basin_post_best[post_position]) {
+                    while (
+                        post_position > 0
+                        && post_value < basin_post_best[post_position - 1]
+                    ) {
+                        basin_post_best[post_position]
+                            = basin_post_best[post_position - 1];
+                        --post_position;
+                    }
+                    basin_post_best[post_position] = post_value;
+                }
+                if (audit_local_search != 0) {
+                    int pre_position = basin_top_q - 1;
+                    if (pre_value < basin_pre_best[pre_position]) {
+                        while (
+                            pre_position > 0
+                            && pre_value < basin_pre_best[pre_position - 1]
+                        ) {
+                            basin_pre_best[pre_position]
+                                = basin_pre_best[pre_position - 1];
+                            --pre_position;
+                        }
+                        basin_pre_best[pre_position] = pre_value;
+                    }
+                }
+            }
+            float post_total = 0.0f;
+            float pre_total = 0.0f;
+            for (int rank = 0; rank < basin_top_q; ++rank) {
+                post_total += basin_post_best[rank];
+                if (audit_local_search != 0) {
+                    pre_total += basin_pre_best[rank];
+                }
+            }
+            basin_sum[task] += post_total / static_cast<float>(basin_top_q);
+            if (audit_local_search != 0) {
+                pre_basin_sum[task] += pre_total
+                    / static_cast<float>(basin_top_q);
+            }
+        }
+        if (audit_local_search != 0) {
+            unsigned long long retained = 0;
+            for (int ant = 0; ant < ants; ++ant) {
+                for (int edge = 0; edge < n; ++edge) {
+                    retained += origins[
+                        static_cast<size_t>(ant) * n + edge
+                    ] > 0;
+                }
+            }
+            retained_edge_sum[task] += retained;
+        }
         iteration_best_index = 0;
         iteration_best_length = colony_lengths[0];
         for (int ant = 1; ant < ants; ++ant) {
@@ -1100,10 +1183,20 @@ extern "C" __global__ void v2_update(
         for (int city = tid; city <= n; city += blockDim.x) {
             global_best_tour[city] = iteration_best_tour[city];
         }
+        for (int edge = tid; edge < n; edge += blockDim.x) {
+            global_best_origin[edge] = origins[
+                static_cast<size_t>(iteration_best_index) * n + edge
+            ];
+        }
     }
     if (copy_restart_best) {
         for (int city = tid; city <= n; city += blockDim.x) {
             restart_tour[city] = iteration_best_tour[city];
+        }
+        for (int edge = tid; edge < n; edge += blockDim.x) {
+            restart_best_origin[edge] = origins[
+                static_cast<size_t>(iteration_best_index) * n + edge
+            ];
         }
     }
     __syncthreads();
@@ -1141,16 +1234,19 @@ extern "C" __global__ void v2_update(
         const uint16_t* source_tour;
         float source_length;
         float source_ls_gain;
+        const int8_t* source_origin;
 #if RMTGP_VARIANT == 0
         source_tour = tours + static_cast<size_t>(tid) * (n + 1);
         source_length = colony_lengths[tid];
         source_ls_gain = ls_gain_workspace[
             static_cast<size_t>(task) * ants + tid
         ];
+        source_origin = origins + static_cast<size_t>(tid) * n;
 #elif RMTGP_VARIANT == 1
         source_tour = global_best_tour;
         source_length = global_best_lengths[task];
         source_ls_gain = global_best_ls_gain[task];
+        source_origin = global_best_origin;
 #else
         if (mmas_source_kind == 0) {
             source_tour = iteration_best_tour;
@@ -1158,14 +1254,18 @@ extern "C" __global__ void v2_update(
             source_ls_gain = ls_gain_workspace[
                 static_cast<size_t>(task) * ants + iteration_best_index
             ];
+            source_origin = origins
+                + static_cast<size_t>(iteration_best_index) * n;
         } else if (mmas_source_kind == 1) {
             source_tour = restart_tour;
             source_length = restart_best_lengths[task];
             source_ls_gain = restart_best_ls_gain[task];
+            source_origin = restart_best_origin;
         } else {
             source_tour = global_best_tour;
             source_length = global_best_lengths[task];
             source_ls_gain = global_best_ls_gain[task];
+            source_origin = global_best_origin;
         }
 #endif
         prepare_source_deposits(
@@ -1194,6 +1294,7 @@ extern "C" __global__ void v2_update(
             ph_lengths[program],
             ph_required_masks[program],
             source_ls_gain,
+            source_origin,
             deposits
         );
     }

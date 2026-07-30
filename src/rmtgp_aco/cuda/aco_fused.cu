@@ -694,6 +694,7 @@ __device__ float pheromone_terminal(
     float edge_tau_std,
     float source_quality,
     float source_ls_gain,
+    const int8_t* source_origin,
     float epsilon_numeric
 ) {
     if (terminal == 0) {
@@ -736,7 +737,10 @@ __device__ float pheromone_terminal(
             1.0f
         ) - 1.0f;
     }
-    return source_ls_gain;
+    if (terminal == 7) {
+        return source_ls_gain;
+    }
+    return static_cast<float>(source_origin[edge]);
 }
 
 __device__ void prepare_source_deposits(
@@ -765,6 +769,7 @@ __device__ void prepare_source_deposits(
     int program_length,
     uint64_t required_mask,
     float source_ls_gain,
+    const int8_t* source_origin,
     float* deposits
 ) {
     const float base_deposit = 1.0f / source_length;
@@ -854,8 +859,8 @@ __device__ void prepare_source_deposits(
         float deposit = base_deposit;
         const int u = source_tour[edge];
         const int v = source_tour[edge + 1];
-        float terminals[8];
-        for (int terminal = 0; terminal < 8; ++terminal) {
+        float terminals[9];
+        for (int terminal = 0; terminal < 9; ++terminal) {
             if ((required_mask & (UINT64_C(1) << terminal)) != 0) {
                 terminals[terminal] = pheromone_terminal(
                     terminal,
@@ -878,6 +883,7 @@ __device__ void prepare_source_deposits(
                     edge_tau_std,
                     source_quality,
                     source_ls_gain,
+                    source_origin,
                     epsilon_numeric
                 );
             }
@@ -1303,6 +1309,7 @@ extern "C" __global__ void fused_aco(
                     ph_lengths[program],
                     ph_required_masks[program],
                     -1.0f,
+                    nullptr,
                     deposits
                 );
             }

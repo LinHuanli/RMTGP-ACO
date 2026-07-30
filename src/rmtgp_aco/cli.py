@@ -650,6 +650,11 @@ def _command_precompute_baselines(args: argparse.Namespace) -> int:
         spec.experiment.runtime.aco_backend,
         threads=spec.experiment.runtime.cpu_threads,
         runtime=spec.experiment.runtime,
+        basin_top_q=(
+            spec.experiment.gp.basin_top_q
+            if spec.experiment.gp.fitness_mode.uses_basin
+            else 0
+        ),
     )
     target = write_baseline_shard(
         records,
@@ -666,6 +671,11 @@ def _command_precompute_baselines(args: argparse.Namespace) -> int:
                 spec.experiment.runtime,
             ),
             "splits": sorted(selected_splits),
+            "basin_top_q": (
+                spec.experiment.gp.basin_top_q
+                if spec.experiment.gp.fitness_mode.uses_basin
+                else 0
+            ),
         },
     )
     print(
@@ -1845,6 +1855,18 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
                     breakdown.baseline_gap_by_scale
                 ),
                 "best_delta_pp_by_scale": breakdown.mean_delta_by_scale,
+                "best_basin_gap_percent_by_scale": (
+                    breakdown.mean_basin_gap_by_scale
+                ),
+                "baseline_basin_gap_percent_by_scale": (
+                    breakdown.baseline_basin_gap_by_scale
+                ),
+                "best_basin_delta_pp_by_scale": (
+                    breakdown.mean_basin_delta_by_scale
+                ),
+                "fitness_delta_pp_by_scale": (
+                    breakdown.fitness_delta_by_scale
+                ),
                 "baseline_lookup_seconds": evaluation.baseline_wall_time,
                 "evaluation_seconds": evaluation.evaluation_wall_time,
                 "breeding_seconds": breeding_seconds,

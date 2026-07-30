@@ -11,12 +11,14 @@ from .config import (
     CudaTaskOrder,
     ExecutionBackend,
     ExperimentConfig,
+    FitnessMode,
     GPConfig,
     GPUMode,
     LocalSearch,
     LocalSearchProfile,
     PheromoneIntegration,
     RuntimeConfig,
+    SelectionMode,
     TransitionIntegration,
 )
 
@@ -28,12 +30,14 @@ __all__ = [
     "CudaTaskOrder",
     "ExecutionBackend",
     "ExperimentConfig",
+    "FitnessMode",
     "GPUMode",
     "GPConfig",
     "LocalSearch",
     "LocalSearchProfile",
     "PheromoneIntegration",
     "RuntimeConfig",
+    "SelectionMode",
     "TransitionIntegration",
 ]
 

@@ -26,13 +26,13 @@ from .config import (
 from .model import RunResult
 from .sampling import EvaluationCase
 
-BASELINE_ARCHIVE_SCHEMA_VERSION = 4
-_READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3, 4})
-NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v3-acotsp-ls"
+BASELINE_ARCHIVE_SCHEMA_VERSION = 5
+_READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3, 4, 5})
+NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v4-basin-origin"
 TORCH_KERNEL_SEMANTIC_VERSION = "torch-generator-v1"
 CUDA_KERNEL_SEMANTIC_VERSION = "counter-rng-cuda-fp32-search-v1"
 CUDA_V2_KERNEL_SEMANTIC_VERSION = (
-    "counter-rng-cuda-tiled-v2-search-v3-acotsp-ls"
+    "counter-rng-cuda-tiled-v2-search-v4-basin-origin"
 )
 
 
@@ -139,6 +139,9 @@ class BaselineRecord:
     local_search_candidate_check_count: int = 0
     local_search_improved_tour_count: int = 0
     local_search_pass_count: int = 0
+    basin_top_q: int = 0
+    basin_mean_length: float = float("nan")
+    basin_gap_auc: float = float("nan")
 
 
 def records_from_result(
@@ -253,6 +256,9 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
             "local_search_candidate_check_count",
             "local_search_improved_tour_count",
             "local_search_pass_count",
+            "basin_top_q",
+            "basin_mean_length",
+            "basin_gap_auc",
         }
         missing = required - set(fields)
         if missing:
@@ -305,6 +311,21 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
                     int(fields["local_search_pass_count"][index])
                     if "local_search_pass_count" in fields
                     else 0
+                ),
+                basin_top_q=(
+                    int(fields["basin_top_q"][index])
+                    if "basin_top_q" in fields
+                    else 0
+                ),
+                basin_mean_length=(
+                    float(fields["basin_mean_length"][index])
+                    if "basin_mean_length" in fields
+                    else float("nan")
+                ),
+                basin_gap_auc=(
+                    float(fields["basin_gap_auc"][index])
+                    if "basin_gap_auc" in fields
+                    else float("nan")
                 ),
             )
             for index in range(count)
@@ -394,6 +415,38 @@ class BaselineArchive:
             values.append(record.best_length)
         return torch.as_tensor(values, dtype=torch.float64)
 
+    def lookup_basin_mean_length(
+        self,
+        case: EvaluationCase,
+        *,
+        top_q: int,
+    ) -> torch.Tensor | None:
+        """读取与 top-q 定义严格匹配的 baseline basin 统计。"""
+
+        values: list[float] = []
+        for coordinate_hash in case.batch.coordinate_hashes:
+            key = baseline_key(
+                coordinate_hash=coordinate_hash,
+                seed=case.seed,
+                config_hash=self.config.baseline_behavior_hash,
+                backend_semantic=self.backend_semantic,
+            )
+            record = self._records.get(key)
+            if (
+                record is None
+                or record.basin_top_q != top_q
+                or not math.isfinite(record.basin_mean_length)
+            ):
+                if self.require:
+                    raise KeyError(
+                        "baseline basin cache miss/mismatch: "
+                        f"hash={coordinate_hash[:12]}, seed={case.seed}, "
+                        f"top_q={top_q}"
+                    )
+                return None
+            values.append(record.basin_mean_length)
+        return torch.as_tensor(values, dtype=torch.float64)
+
     @property
     def records(self) -> int:
         return len(self._records)
@@ -424,6 +477,7 @@ def precompute_baseline_cases(
     *,
     threads: int = 16,
     runtime: RuntimeConfig | None = None,
+    basin_top_q: int = 0,
 ) -> list[BaselineRecord]:
     """显式预计算 cases；调用方负责按 split/replicate 写 immutable shard。"""
 
@@ -449,6 +503,7 @@ def precompute_baseline_cases(
                     [(None, None)],
                     seed=case.seed,
                     runtime=runtime,
+                    basin_top_q=basin_top_q,
                 )
             else:
                 from .aco_numba import solve_population_numba
@@ -459,11 +514,18 @@ def precompute_baseline_cases(
                     [(None, None)],
                     seed=case.seed,
                     threads=threads,
+                    basin_top_q=basin_top_q,
                 )
             semantic = backend_semantic_id(selected, runtime)
             reference = case.batch.reference_length.detach().cpu().numpy()
             best = quality.best_length[0].detach().cpu().numpy()
             gap = 100.0 * (best - reference) / reference
+            basin = (
+                quality.basin_mean_length[0].detach().cpu().numpy()
+                if quality.basin_mean_length is not None
+                else np.full_like(best, np.nan)
+            )
+            basin_gap = 100.0 * (basin - reference) / reference
             diagnostic = quality.diagnostics[0]
             for index, coordinate_hash in enumerate(case.batch.coordinate_hashes):
                 records.append(
@@ -510,6 +572,9 @@ def precompute_baseline_cases(
                             if diagnostic.numel() > 7
                             else 0
                         ),
+                        basin_top_q=basin_top_q,
+                        basin_mean_length=float(basin[index]),
+                        basin_gap_auc=float(basin_gap[index]),
                     )
                 )
             continue

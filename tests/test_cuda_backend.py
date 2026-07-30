@@ -30,6 +30,7 @@ from rmtgp_aco.config import (
 from rmtgp_aco.data import make_problem_batch
 from rmtgp_aco.genetic import initialise_population
 from rmtgp_aco.program import (
+    ORIGIN_PHEROMONE_TERMINALS,
     compile_tree,
     constant_zero_tree,
     create_primitive_sets,
@@ -466,6 +467,108 @@ def test_cuda_v2_local_search_is_audited_and_repeatable(
     assert int(first.diagnostics[0, 4]) > 0
     assert int(first.diagnostics[0, 5]) > 0
     assert int(first.diagnostics[0, 6]) > 0
+
+
+def test_cuda_v2_two_opt_basin_audit_is_monotone_and_noninvasive(
+    small_instances,
+) -> None:
+    """CUDA 审计必须与正常路径逐位同轨，并返回 dense basin 信号。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "acs",
+            local_search=LocalSearch.TWO_OPT,
+            iterations=3,
+        ),
+        candidate_size=2,
+        local_search_candidate_size=2,
+    )
+    runtime = _runtime_v2()
+    audited = solve_population_cuda(
+        batch,
+        config,
+        [(None, None)],
+        seed=2039,
+        runtime=runtime,
+        basin_top_q=7,
+        audit_local_search=True,
+    )
+    normal = solve_population_cuda(
+        batch,
+        config,
+        [(None, None)],
+        seed=2039,
+        runtime=runtime,
+        basin_top_q=7,
+        audit_local_search=False,
+    )
+
+    assert audited.basin_mean_length is not None
+    assert audited.pre_basin_mean_length is not None
+    assert audited.edge_retention is not None
+    assert audited.final_colony_tour is not None
+    assert audited.final_pre_colony_tour is not None
+    assert audited.final_colony_tour.shape == (
+        1,
+        batch.batch_size,
+        config.resolve_ants(batch.n),
+        batch.n + 1,
+    )
+    assert torch.all(
+        audited.basin_mean_length
+        <= audited.pre_basin_mean_length + 1e-5
+    )
+    assert torch.all(audited.edge_retention >= 0.0)
+    assert torch.all(audited.edge_retention <= 1.0)
+    assert torch.equal(audited.best_tour, normal.best_tour)
+    assert torch.equal(audited.best_length, normal.best_length)
+    assert torch.equal(audited.best_iteration, normal.best_iteration)
+    assert torch.equal(audited.basin_mean_length, normal.basin_mean_length)
+
+
+def test_cuda_v2_origin_pheromone_terminal_is_repeatable(
+    small_instances,
+) -> None:
+    """生成式 CUDA GP 必须能读取 2-opt 新旧边 provenance。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "as",
+            local_search=LocalSearch.TWO_OPT,
+            iterations=2,
+        ),
+        candidate_size=2,
+        local_search_candidate_size=2,
+    )
+    _, pheromone_pset = create_primitive_sets(
+        pheromone_terminals=ORIGIN_PHEROMONE_TERMINALS,
+    )
+    origin = compile_tree(
+        gp.PrimitiveTree.from_string("Origin", pheromone_pset),
+        role="pheromone",
+    )
+    first = solve_population_cuda(
+        batch,
+        config,
+        [(None, origin)],
+        seed=2053,
+        runtime=_runtime_v2(),
+        basin_top_q=7,
+    )
+    repeated = solve_population_cuda(
+        batch,
+        config,
+        [(None, origin)],
+        seed=2053,
+        runtime=_runtime_v2(chunk_size=1),
+        basin_top_q=7,
+    )
+    assert torch.equal(first.best_tour, repeated.best_tour)
+    assert torch.equal(first.best_length, repeated.best_length)
+    assert torch.equal(first.basin_mean_length, repeated.basin_mean_length)
+    assert torch.isfinite(first.best_length).all()
 
 
 @pytest.mark.parametrize("variant", list(ACOVariant))

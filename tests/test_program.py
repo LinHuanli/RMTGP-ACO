@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 
 import torch
+from deap import gp
 
 from rmtgp_aco.config import GPConfig
 from rmtgp_aco.genetic import (
@@ -14,6 +15,8 @@ from rmtgp_aco.genetic import (
     valid_size,
 )
 from rmtgp_aco.program import (
+    LEGACY_LS_PHEROMONE_TERMINAL,
+    ORIGIN_PHEROMONE_TERMINALS,
     PHEROMONE_TERMINALS,
     TRANSITION_TERMINALS,
     compile_tree,
@@ -96,3 +99,28 @@ def test_genetic_operators_preserve_roles_and_limits() -> None:
     assert valid_size(mutant, config)
     compile_tree(mutant.transition_tree, role="transition")
     compile_tree(mutant.pheromone_tree, role="pheromone")
+
+
+def test_origin_is_gated_and_lsgain_is_not_in_default_search_space() -> None:
+    """Origin 必须显式启用；不成熟的 LSGain 不得被随机 GP 使用。"""
+
+    _, default_pheromone = create_primitive_sets()
+    assert "Origin" not in default_pheromone.mapping
+    assert LEGACY_LS_PHEROMONE_TERMINAL not in default_pheromone.mapping
+    assert "Origin" not in PHEROMONE_TERMINALS
+
+    _, origin_pheromone = create_primitive_sets(
+        pheromone_terminals=ORIGIN_PHEROMONE_TERMINALS,
+    )
+    tree = gp.PrimitiveTree.from_string("Origin", origin_pheromone)
+    program = compile_tree(tree, role="pheromone")
+    context = {
+        name: torch.full((2, 3), 0.25, dtype=torch.float64)
+        for name in ORIGIN_PHEROMONE_TERMINALS
+    }
+    context["Origin"] = torch.tensor(
+        [[1.0, -1.0, 1.0], [-1.0, 1.0, -1.0]],
+        dtype=torch.float64,
+    )
+    assert program.required_terminals == frozenset({"Origin"})
+    assert torch.equal(program.evaluate(context), context["Origin"])
