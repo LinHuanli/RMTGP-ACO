@@ -11,6 +11,7 @@ from rmtgp_aco.config import (
     ACOVariant,
     ExecutionBackend,
     GPUMode,
+    LocalSearch,
     RuntimeConfig,
 )
 
@@ -44,6 +45,28 @@ def test_dynamic_ant_and_candidate_resolution() -> None:
     assert config.resolve_candidate_size(8) == 7
 
 
+@pytest.mark.parametrize(
+    ("variant", "rho", "q0"),
+    [
+        (ACOVariant.AS, 0.5, 0.0),
+        (ACOVariant.ACS, 0.1, 0.98),
+        (ACOVariant.MMAS, 0.2, 0.0),
+    ],
+)
+def test_acotsp_local_search_profile_keeps_comparable_ant_budget(
+    variant: ACOVariant,
+    rho: float,
+    q0: float,
+) -> None:
+    config = ACOConfig.acotsp_local_search_default(variant)
+    assert config.ants == 32
+    assert config.local_search is LocalSearch.TWO_OPT
+    assert config.local_search_candidate_size == 20
+    assert config.local_search_dlb
+    assert config.rho == rho
+    assert config.q0 == q0
+
+
 def test_invalid_residual_bound_is_rejected() -> None:
     config = ACOConfig.acotsp_default("mmas")
     with pytest.raises(ValueError, match="gamma_transition"):
@@ -53,6 +76,8 @@ def test_invalid_residual_bound_is_rejected() -> None:
 def test_cuda_runtime_rejects_unsafe_block_and_cpu_mode() -> None:
     with pytest.raises(ValueError, match="gpu_block_threads"):
         RuntimeConfig(gpu_block_threads=128)
+    with pytest.raises(ValueError, match="cuda_three_opt_block_threads"):
+        RuntimeConfig(cuda_three_opt_block_threads=64)
     with pytest.raises(ValueError, match="至少保留 20%"):
         RuntimeConfig(gpu_memory_fraction=0.81)
     with pytest.raises(ValueError, match="gpu_mode=cpu"):

@@ -52,6 +52,14 @@ class EvaluationRecord:
     baseline_best_iteration: int = -1
     baseline_anytime_gap_auc: float = float("nan")
     baseline_tours_per_second: float = float("nan")
+    local_search_move_count: int = 0
+    local_search_candidate_check_count: int = 0
+    local_search_improved_tour_count: int = 0
+    local_search_pass_count: int = 0
+    baseline_local_search_move_count: int = 0
+    baseline_local_search_candidate_check_count: int = 0
+    baseline_local_search_improved_tour_count: int = 0
+    baseline_local_search_pass_count: int = 0
 
 
 def load_champion(path: str | Path) -> RMTGPIndividual:
@@ -193,6 +201,30 @@ def _record_batch(
                 baseline_anytime_auc[index].item()
             ),
             baseline_tours_per_second=float(baseline_throughput),
+            local_search_move_count=(
+                candidate.diagnostics.local_search_move_count
+            ),
+            local_search_candidate_check_count=(
+                candidate.diagnostics.local_search_candidate_check_count
+            ),
+            local_search_improved_tour_count=(
+                candidate.diagnostics.local_search_improved_tour_count
+            ),
+            local_search_pass_count=(
+                candidate.diagnostics.local_search_pass_count
+            ),
+            baseline_local_search_move_count=(
+                baseline.diagnostics.local_search_move_count
+            ),
+            baseline_local_search_candidate_check_count=(
+                baseline.diagnostics.local_search_candidate_check_count
+            ),
+            baseline_local_search_improved_tour_count=(
+                baseline.diagnostics.local_search_improved_tour_count
+            ),
+            baseline_local_search_pass_count=(
+                baseline.diagnostics.local_search_pass_count
+            ),
         )
 
 
@@ -331,6 +363,14 @@ def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
         "bound_clip_count",
         "gp_root_seed",
         "baseline_best_iteration",
+        "local_search_move_count",
+        "local_search_candidate_check_count",
+        "local_search_improved_tour_count",
+        "local_search_pass_count",
+        "baseline_local_search_move_count",
+        "baseline_local_search_candidate_check_count",
+        "baseline_local_search_improved_tour_count",
+        "baseline_local_search_pass_count",
     }
     float_fields = {
         "best_length",
@@ -358,6 +398,17 @@ def read_records(paths: Iterable[str | Path]) -> list[EvaluationRecord]:
                 values.setdefault("baseline_best_iteration", "-1")
                 values.setdefault("baseline_anytime_gap_auc", "nan")
                 values.setdefault("baseline_tours_per_second", "nan")
+                for name in (
+                    "local_search_move_count",
+                    "local_search_candidate_check_count",
+                    "local_search_improved_tour_count",
+                    "local_search_pass_count",
+                    "baseline_local_search_move_count",
+                    "baseline_local_search_candidate_check_count",
+                    "baseline_local_search_improved_tour_count",
+                    "baseline_local_search_pass_count",
+                ):
+                    values.setdefault(name, "0")
                 for name in integer_fields:
                     values[name] = int(values[name])
                 for name in float_fields:

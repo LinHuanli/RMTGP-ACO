@@ -339,6 +339,9 @@ extern "C" __global__ void v2_init(
     int32_t* global_best_iterations,
     int32_t* stagnation,
     int32_t* restart_found_best,
+    int32_t* restart_iteration,
+    float* global_best_ls_gain,
+    float* restart_best_ls_gain,
     uint64_t* diagnostics
 ) {
     const int task = blockIdx.x;
@@ -356,8 +359,8 @@ extern "C" __global__ void v2_init(
         pheromone[edge] = edge / n == edge % n ? 0.0f : tau0;
         edge_frequency[edge] = 0;
     }
-    if (tid < 4) {
-        diagnostics[static_cast<size_t>(task) * 4 + tid] = 0;
+    if (tid < 8) {
+        diagnostics[static_cast<size_t>(task) * 8 + tid] = 0;
     }
     if (tid == 0) {
         global_best_lengths[task] = CUDART_INF_F;
@@ -367,6 +370,9 @@ extern "C" __global__ void v2_init(
         global_best_iterations[task] = 0;
         stagnation[task] = 0;
         restart_found_best[task] = 0;
+        restart_iteration[task] = 1;
+        global_best_ls_gain[task] = -1.0f;
+        restart_best_ls_gain[task] = -1.0f;
     }
 }
 
@@ -910,8 +916,8 @@ extern "C" __global__ void v2_construct(
             candidate_total += candidate_counts[other];
             uniform_total += uniform_counts[other];
         }
-        diagnostics[static_cast<size_t>(task) * 4] += candidate_total;
-        diagnostics[static_cast<size_t>(task) * 4 + 1] += uniform_total;
+        diagnostics[static_cast<size_t>(task) * 8] += candidate_total;
+        diagnostics[static_cast<size_t>(task) * 8 + 1] += uniform_total;
     }
 }
 
@@ -945,9 +951,11 @@ extern "C" __global__ void v2_update(
     float mmas_branch_lambda,
     float mmas_branch_threshold,
     int mmas_restart_stagnation,
+    int local_search_active,
     float* pheromone_workspace,
     uint16_t* tour_workspace,
     float* length_workspace,
+    const float* ls_gain_workspace,
     float* deposit_workspace,
     uint8_t* edge_frequency_workspace,
     uint16_t* restart_tour_workspace,
@@ -959,6 +967,9 @@ extern "C" __global__ void v2_update(
     int32_t* global_best_iterations,
     int32_t* stagnation_all,
     int32_t* restart_found_best,
+    int32_t* restart_iteration,
+    float* global_best_ls_gain,
+    float* restart_best_ls_gain,
     float* anytime,
     int record_anytime,
     uint64_t* diagnostics
@@ -1005,6 +1016,8 @@ extern "C" __global__ void v2_update(
     __shared__ int copy_global_best;
     __shared__ int copy_restart_best;
     __shared__ int restart_now;
+    __shared__ int mmas_source_kind;
+    __shared__ int mmas_resolved_period;
     __shared__ unsigned int bound_counts[V2_UPDATE_THREADS];
 
     if (tid == 0) {
@@ -1021,18 +1034,26 @@ extern "C" __global__ void v2_update(
         restart_now = 0;
         if (copy_global_best) {
             global_best_lengths[task] = iteration_best_length;
+            global_best_ls_gain[task] = ls_gain_workspace[
+                static_cast<size_t>(task) * ants + iteration_best_index
+            ];
             global_best_iterations[task] = iteration;
             stagnation_all[task] = 0;
 #if RMTGP_VARIANT == 2
-            const float p_x = expf(
-                logf(mmas_p_best) / static_cast<float>(n)
-            );
-            const float denominator = p_x
-                * static_cast<float>((candidate_size + 1) / 2);
             task_tau_max[task] = 1.0f
                 / (rho * global_best_lengths[task]);
-            task_tau_min[task] = task_tau_max[task]
-                * (1.0f - p_x) / denominator;
+            if (local_search_active != 0) {
+                task_tau_min[task] = task_tau_max[task]
+                    / (2.0f * static_cast<float>(n));
+            } else {
+                const float p_x = expf(
+                    logf(mmas_p_best) / static_cast<float>(n)
+                );
+                const float denominator = p_x
+                    * static_cast<float>((candidate_size + 1) / 2);
+                task_tau_min[task] = task_tau_max[task]
+                    * (1.0f - p_x) / denominator;
+            }
 #endif
         } else {
             ++stagnation_all[task];
@@ -1040,7 +1061,36 @@ extern "C" __global__ void v2_update(
         if (copy_restart_best) {
             restart_best_lengths[task] = iteration_best_length;
             restart_found_best[task] = iteration;
+            restart_best_ls_gain[task] = ls_gain_workspace[
+                static_cast<size_t>(task) * ants + iteration_best_index
+            ];
         }
+        mmas_resolved_period = mmas_update_period;
+        mmas_source_kind = 0;
+#if RMTGP_VARIANT == 2
+    if (local_search_active != 0) {
+        // ACOTSP 在当前 pheromone update 后才为下一轮更新 u_gb。
+        // 使用上一轮的 restart age，避免在分段边界提前一轮切换。
+        const int restart_age = max(
+            iteration - restart_iteration[task] - 1,
+            0
+        );
+            mmas_resolved_period = restart_age < 25
+                ? 25
+                : (restart_age < 75
+                    ? 5
+                    : (restart_age < 125
+                        ? 3
+                        : (restart_age < 250 ? 2 : 1)));
+        }
+        if (iteration % mmas_resolved_period == 0) {
+            mmas_source_kind = (
+                local_search_active != 0
+                && mmas_resolved_period == 1
+                && iteration - restart_found_best[task] > 50
+            ) ? 2 : 1;
+        }
+#endif
     }
     __syncthreads();
 
@@ -1090,19 +1140,32 @@ extern "C" __global__ void v2_update(
     if (tid < source_count) {
         const uint16_t* source_tour;
         float source_length;
+        float source_ls_gain;
 #if RMTGP_VARIANT == 0
         source_tour = tours + static_cast<size_t>(tid) * (n + 1);
         source_length = colony_lengths[tid];
+        source_ls_gain = ls_gain_workspace[
+            static_cast<size_t>(task) * ants + tid
+        ];
 #elif RMTGP_VARIANT == 1
         source_tour = global_best_tour;
         source_length = global_best_lengths[task];
+        source_ls_gain = global_best_ls_gain[task];
 #else
-        if (iteration % mmas_update_period != 0) {
+        if (mmas_source_kind == 0) {
             source_tour = iteration_best_tour;
             source_length = iteration_best_length;
-        } else {
+            source_ls_gain = ls_gain_workspace[
+                static_cast<size_t>(task) * ants + iteration_best_index
+            ];
+        } else if (mmas_source_kind == 1) {
             source_tour = restart_tour;
             source_length = restart_best_lengths[task];
+            source_ls_gain = restart_best_ls_gain[task];
+        } else {
+            source_tour = global_best_tour;
+            source_length = global_best_lengths[task];
+            source_ls_gain = global_best_ls_gain[task];
         }
 #endif
         prepare_source_deposits(
@@ -1130,6 +1193,7 @@ extern "C" __global__ void v2_update(
             ph_iargs,
             ph_lengths[program],
             ph_required_masks[program],
+            source_ls_gain,
             deposits
         );
     }
@@ -1147,11 +1211,41 @@ extern "C" __global__ void v2_update(
         }
     }
 #else
-    for (int edge = tid; edge < n * n; edge += blockDim.x) {
-        const int u = edge / n;
-        const int v = edge % n;
-        if (u != v) {
-            pheromone[edge] *= 1.0f - rho;
+    if (local_search_active != 0) {
+        // ACOTSP 的 LS profile 只蒸发 construction candidate-list arcs。
+        for (
+            int entry = tid;
+            entry < n * candidate_size;
+            entry += blockDim.x
+        ) {
+            const int u = entry / candidate_size;
+            const int position = entry % candidate_size;
+            const int v = nearest[u * candidate_size + position];
+            const int edge = u * n + v;
+            const float raw = (1.0f - rho) * pheromone[edge];
+#if RMTGP_VARIANT == 2
+            const float bounded = fmaxf(task_tau_min[task], raw);
+            pheromone[edge] = bounded;
+            if (bounded != raw) {
+                atomicAdd(
+                    reinterpret_cast<unsigned long long*>(
+                        diagnostics
+                        + static_cast<size_t>(task) * 8 + 2
+                    ),
+                    1ULL
+                );
+            }
+#else
+            pheromone[edge] = raw;
+#endif
+        }
+    } else {
+        for (int edge = tid; edge < n * n; edge += blockDim.x) {
+            const int u = edge / n;
+            const int v = edge % n;
+            if (u != v) {
+                pheromone[edge] *= 1.0f - rho;
+            }
         }
     }
     __syncthreads();
@@ -1161,9 +1255,11 @@ extern "C" __global__ void v2_update(
 #if RMTGP_VARIANT == 0
             source_tour = tours + static_cast<size_t>(source) * (n + 1);
 #else
-            source_tour = iteration % mmas_update_period != 0
+            source_tour = mmas_source_kind == 0
                 ? iteration_best_tour
-                : restart_tour;
+                : (mmas_source_kind == 1
+                    ? restart_tour
+                    : global_best_tour);
 #endif
             for (int edge = 0; edge < n; ++edge) {
                 const int u = source_tour[edge];
@@ -1176,33 +1272,35 @@ extern "C" __global__ void v2_update(
     }
     __syncthreads();
 #if RMTGP_VARIANT == 2
-    unsigned int local_bound_clips = 0;
-    for (int edge = tid; edge < n * n; edge += blockDim.x) {
-        const int u = edge / n;
-        const int v = edge % n;
-        if (u == v) {
-            pheromone[edge] = 0.0f;
-            continue;
+    if (local_search_active == 0) {
+        unsigned int local_bound_clips = 0;
+        for (int edge = tid; edge < n * n; edge += blockDim.x) {
+            const int u = edge / n;
+            const int v = edge % n;
+            if (u == v) {
+                pheromone[edge] = 0.0f;
+                continue;
+            }
+            const float raw = pheromone[edge];
+            const float clipped = fminf(
+                task_tau_max[task],
+                fmaxf(task_tau_min[task], raw)
+            );
+            pheromone[edge] = clipped;
+            local_bound_clips += clipped != raw;
         }
-        const float raw = pheromone[edge];
-        const float clipped = fminf(
-            task_tau_max[task],
-            fmaxf(task_tau_min[task], raw)
-        );
-        pheromone[edge] = clipped;
-        local_bound_clips += clipped != raw;
-    }
-    bound_counts[tid] = local_bound_clips;
-    __syncthreads();
-    for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
-        if (tid < offset) {
-            bound_counts[tid] += bound_counts[tid + offset];
-        }
+        bound_counts[tid] = local_bound_clips;
         __syncthreads();
-    }
-    if (tid == 0) {
-        diagnostics[static_cast<size_t>(task) * 4 + 2]
-            += static_cast<uint64_t>(bound_counts[0]);
+        for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+            if (tid < offset) {
+                bound_counts[tid] += bound_counts[tid + offset];
+            }
+            __syncthreads();
+        }
+        if (tid == 0) {
+            diagnostics[static_cast<size_t>(task) * 8 + 2]
+                += static_cast<uint64_t>(bound_counts[0]);
+        }
     }
 #endif
 #endif
@@ -1243,7 +1341,9 @@ extern "C" __global__ void v2_update(
             restart_now = 1;
             restart_best_lengths[task] = CUDART_INF_F;
             restart_found_best[task] = iteration;
-            ++diagnostics[static_cast<size_t>(task) * 4 + 3];
+            restart_iteration[task] = iteration;
+            restart_best_ls_gain[task] = -1.0f;
+            ++diagnostics[static_cast<size_t>(task) * 8 + 3];
         }
     }
     __syncthreads();

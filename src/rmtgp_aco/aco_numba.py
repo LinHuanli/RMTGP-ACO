@@ -19,9 +19,12 @@ from numba import njit, prange, set_num_threads
 from .config import (
     ACOConfig,
     ACOVariant,
+    LocalSearch,
     PheromoneIntegration,
     TransitionIntegration,
 )
+from .local_search import _counter_uniform as _ls_counter_uniform
+from .local_search import two_opt_first
 from .model import (
     PopulationQualityResult,
     ProblemBatch,
@@ -80,6 +83,7 @@ _PHEROMONE_TERMINAL_INDEX = {
     "SourceQuality": 4,
     "ACOProg": 5,
     "Stagnation": 6,
+    "LSGain": 7,
 }
 
 # 这些 terminal 对同一次 candidate/edge vector 的全部列取值相同。只存一次，
@@ -103,7 +107,7 @@ _TRANSITION_VECTOR_TERMINAL_MASK = np.uint64(
     | (1 << 9)
 )
 _PHEROMONE_SCALAR_TERMINAL_MASK = np.uint64(
-    (1 << 4) | (1 << 5) | (1 << 6)
+    (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7)
 )
 _PHEROMONE_VECTOR_TERMINAL_MASK = np.uint64(
     (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3)
@@ -580,6 +584,79 @@ def _prepare_initial_pheromone_parameters(
             tau_min[batch_index] = tau_max[batch_index] / (2.0 * n)
             tau0[batch_index] = tau_max[batch_index]
     return tau0, tau_min, tau_max
+
+
+def _apply_local_search_initial_pheromone(
+    distances: np.ndarray,
+    nearest: np.ndarray,
+    seeds: np.ndarray,
+    instance_keys: np.ndarray,
+    variant: int,
+    rho: float,
+    candidate_size: int,
+    use_dlb: bool,
+    tau0: np.ndarray,
+    tau_min: np.ndarray,
+    tau_max: np.ndarray,
+) -> None:
+    """按 ACOTSP 语义以 2-opt 改进 NN 初始化 tour。"""
+
+    batch, n, _ = distances.shape
+    for batch_index in range(batch):
+        seed = int(seeds[batch_index])
+        instance_key = int(instance_keys[batch_index])
+        start = min(
+            int(
+                _ls_counter_uniform(
+                    seed,
+                    instance_key,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+                * n
+            ),
+            n - 1,
+        )
+        tour = np.empty(n + 1, dtype=np.int64)
+        visited = np.zeros(n, dtype=np.bool_)
+        current = start
+        tour[0] = start
+        visited[start] = True
+        for phase in range(1, n):
+            row = np.where(visited, np.inf, distances[batch_index, current])
+            current = int(np.argmin(row))
+            tour[phase] = current
+            visited[current] = True
+        tour[n] = start
+        improved, stats = two_opt_first(
+            tour,
+            distances[batch_index],
+            nearest[batch_index],
+            seed=seed,
+            instance_key=instance_key,
+            iteration=0,
+            ant=0,
+            candidate_size=candidate_size,
+            use_dlb=use_dlb,
+            tolerance=1e-12,
+        )
+        del improved
+        nn_length = stats.length_after
+        if variant == 0:
+            tau0[batch_index] = 1.0 / (rho * nn_length)
+            tau_min[batch_index] = 0.0
+            tau_max[batch_index] = np.inf
+        elif variant == 1:
+            tau0[batch_index] = 1.0 / (n * nn_length)
+            tau_min[batch_index] = 0.0
+            tau_max[batch_index] = np.inf
+        else:
+            maximum = 1.0 / (rho * nn_length)
+            tau0[batch_index] = maximum
+            tau_min[batch_index] = maximum / (2.0 * n)
+            tau_max[batch_index] = maximum
 
 
 @njit(cache=True)
@@ -1122,6 +1199,178 @@ def _tour_lengths(
         lengths[ant] = length
 
 
+@njit(cache=True, inline="always")
+def _reverse_between_edge_starts(
+    tour: np.ndarray,
+    position: np.ndarray,
+    first_start: int,
+    second_start: int,
+) -> None:
+    """以连续片段翻转实现一个对称 TSP 2-opt move。"""
+
+    left = position[first_start]
+    right = position[second_start]
+    if left > right:
+        help = left
+        left = right
+        right = help
+    left += 1
+    while left < right:
+        first_city = tour[left]
+        second_city = tour[right]
+        tour[left] = second_city
+        tour[right] = first_city
+        position[first_city] = right
+        position[second_city] = left
+        left += 1
+        right -= 1
+
+
+@njit(cache=True)
+def _two_opt_first_inplace(
+    distances: np.ndarray,
+    nearest: np.ndarray,
+    tour: np.ndarray,
+    length_before: float,
+    seed: np.uint64,
+    instance_key: np.uint64,
+    iteration: int,
+    ant: int,
+    candidate_size: int,
+    use_dlb: bool,
+    position: np.ndarray,
+    order: np.ndarray,
+    dlb: np.ndarray,
+) -> tuple[float, float, int, int, int]:
+    """ACOTSP 风格的候选表、DLB、first-improvement 2-opt。"""
+
+    n = distances.shape[0]
+    for index in range(n):
+        city = tour[index]
+        position[city] = index
+        order[index] = index
+        dlb[index] = 0
+    for index in range(n - 1):
+        remaining = n - index
+        offset = min(
+            int(
+                _counter_uniform(
+                    seed,
+                    instance_key,
+                    iteration,
+                    ant,
+                    index,
+                    17,
+                )
+                * remaining
+            ),
+            remaining - 1,
+        )
+        other = index + offset
+        help = order[index]
+        order[index] = order[other]
+        order[other] = help
+
+    moves = 0
+    checks = 0
+    passes = 0
+    improvement = True
+    while improvement and moves < n * 100:
+        passes += 1
+        improvement = False
+        for ordinal in range(n):
+            city = order[ordinal]
+            if use_dlb and dlb[city] != 0:
+                continue
+            city_position = position[city]
+            successor = tour[(city_position + 1) % n]
+            successor_radius = distances[city, successor]
+            moved = False
+            for candidate_index in range(candidate_size):
+                candidate = nearest[city, candidate_index]
+                checks += 1
+                candidate_position = position[candidate]
+                candidate_successor = tour[(candidate_position + 1) % n]
+                if (
+                    candidate == city
+                    or candidate == successor
+                    or candidate_successor == city
+                    or distances[city, candidate] >= successor_radius
+                ):
+                    continue
+                delta = (
+                    distances[city, candidate]
+                    + distances[successor, candidate_successor]
+                    - successor_radius
+                    - distances[candidate, candidate_successor]
+                )
+                if delta < -1e-12:
+                    _reverse_between_edge_starts(
+                        tour,
+                        position,
+                        city,
+                        candidate,
+                    )
+                    dlb[city] = 0
+                    dlb[successor] = 0
+                    dlb[candidate] = 0
+                    dlb[candidate_successor] = 0
+                    moves += 1
+                    moved = True
+                    improvement = True
+                    break
+            if moved:
+                continue
+
+            predecessor = tour[(city_position + n - 1) % n]
+            predecessor_radius = distances[predecessor, city]
+            for candidate_index in range(candidate_size):
+                candidate = nearest[city, candidate_index]
+                checks += 1
+                candidate_position = position[candidate]
+                candidate_predecessor = tour[(candidate_position + n - 1) % n]
+                if (
+                    candidate == city
+                    or candidate_predecessor == city
+                    or predecessor == candidate
+                    or distances[city, candidate] >= predecessor_radius
+                ):
+                    continue
+                delta = (
+                    distances[city, candidate]
+                    + distances[predecessor, candidate_predecessor]
+                    - predecessor_radius
+                    - distances[candidate_predecessor, candidate]
+                )
+                if delta < -1e-12:
+                    _reverse_between_edge_starts(
+                        tour,
+                        position,
+                        predecessor,
+                        candidate_predecessor,
+                    )
+                    dlb[predecessor] = 0
+                    dlb[city] = 0
+                    dlb[candidate_predecessor] = 0
+                    dlb[candidate] = 0
+                    moves += 1
+                    moved = True
+                    improvement = True
+                    break
+            if not moved:
+                dlb[city] = 1
+
+    tour[n] = tour[0]
+    length_after = 0.0
+    for edge in range(n):
+        length_after += distances[tour[edge], tour[edge + 1]]
+    gain = min(
+        max((length_before - length_after) / max(length_before, 1e-300), 0.0),
+        1.0,
+    )
+    return length_after, 2.0 * gain - 1.0, moves, checks, passes
+
+
 @njit(cache=True)
 def _prepare_pheromone_terminals(
     heuristic: np.ndarray,
@@ -1138,6 +1387,7 @@ def _prepare_pheromone_terminals(
     iteration: int,
     stagnation: int,
     total_iterations: int,
+    source_ls_gain: float,
     terminals: np.ndarray,
     edge_u: np.ndarray,
     edge_v: np.ndarray,
@@ -1205,12 +1455,15 @@ def _prepare_pheromone_terminals(
     if _mask_has(required_mask, 6):
         value = 2.0 * min(stagnation / total_iterations, 1.0) - 1.0
         terminals[6, 0] = value
+    if _mask_has(required_mask, 7):
+        terminals[7, 0] = source_ls_gain
 
 
 @njit(cache=True)
 def _global_pheromone_update(
     heuristic: np.ndarray,
     log_heuristic: np.ndarray,
+    nearest: np.ndarray,
     full_nn_rank: np.ndarray,
     pheromone: np.ndarray,
     tours: np.ndarray,
@@ -1220,11 +1473,17 @@ def _global_pheromone_update(
     global_best_length: float,
     restart_best_tour: np.ndarray,
     restart_best_length: float,
+    ls_gains: np.ndarray,
+    global_best_ls_gain: float,
+    restart_best_ls_gain: float,
     tau_min: float,
     tau_max: float,
     variant: int,
     rho: float,
     mmas_update_period: int,
+    local_search_active: bool,
+    restart_iteration: int,
+    restart_found_best: int,
     epsilon_numeric: float,
     pheromone_mode: int,
     gamma_pheromone: float,
@@ -1263,19 +1522,57 @@ def _global_pheromone_update(
                 edge_frequency[edge_id] += 1
 
     source_count = tours.shape[0] if variant == 0 else 1
+    resolved_period = mmas_update_period
+    source_kind = 0
+    if variant == 2:
+        if local_search_active:
+            # ACOTSP 在本轮 update 后才为下一轮更新 u_gb。这里按上一轮
+            # 已知的 restart age 解析当前周期，避免在 25/75/125/250
+            # 边界提前一轮切换。
+            restart_age = max(
+                iteration - restart_iteration - 1,
+                0,
+            )
+            if restart_age < 25:
+                resolved_period = 25
+            elif restart_age < 75:
+                resolved_period = 5
+            elif restart_age < 125:
+                resolved_period = 3
+            elif restart_age < 250:
+                resolved_period = 2
+            else:
+                resolved_period = 1
+        if iteration % resolved_period == 0:
+            if (
+                local_search_active
+                and resolved_period == 1
+                and iteration - restart_found_best > 50
+            ):
+                source_kind = 2
+            else:
+                source_kind = 1
     for source in range(source_count):
         if variant == 0:
             source_tour = tours[source]
             source_length = lengths[source]
+            source_ls_gain = ls_gains[source]
         elif variant == 1:
             source_tour = global_best_tour
             source_length = global_best_length
-        elif iteration % mmas_update_period:
+            source_ls_gain = global_best_ls_gain
+        elif source_kind == 0:
             source_tour = tours[iteration_best_index]
             source_length = lengths[iteration_best_index]
-        else:
+            source_ls_gain = ls_gains[iteration_best_index]
+        elif source_kind == 1:
             source_tour = restart_best_tour
             source_length = restart_best_length
+            source_ls_gain = restart_best_ls_gain
+        else:
+            source_tour = global_best_tour
+            source_length = global_best_length
+            source_ls_gain = global_best_ls_gain
 
         _prepare_pheromone_terminals(
             heuristic,
@@ -1292,6 +1589,7 @@ def _global_pheromone_update(
             iteration,
             stagnation,
             total_iterations,
+            source_ls_gain,
             ph_terminals,
             source_edge_u,
             source_edge_v,
@@ -1362,30 +1660,42 @@ def _global_pheromone_update(
             edge_frequency[frequency_active_edges[index]] = 0
         return
 
-    for i in range(n):
-        pheromone[i, i] = 0.0
-        for j in range(i + 1, n):
-            if variant == 0:
-                updated = (1.0 - rho) * pheromone[i, j] + dense[i, j]
-            elif variant == 1:
-                if dense[i, j] > 0.0:
-                    updated = (
-                        (1.0 - rho) * pheromone[i, j]
-                        + rho * dense[i, j]
-                    )
+    if local_search_active:
+        # ACOTSP-LS 只蒸发有向 construction candidate-list arcs。deposit
+        # 仍作用于来源 tour 的全部边；MMAS 仅在蒸发时检查下界。
+        for i in range(n):
+            for candidate_index in range(nearest.shape[1]):
+                j = nearest[i, candidate_index]
+                raw = (1.0 - rho) * pheromone[i, j]
+                if variant == 2:
+                    updated = max(raw, tau_min)
+                    if updated != raw:
+                        diagnostics[2] += 1
+                    pheromone[i, j] = updated
                 else:
-                    updated = pheromone[i, j]
-            else:
-                raw = (1.0 - rho) * pheromone[i, j] + dense[i, j]
-                updated = min(max(raw, tau_min), tau_max)
-                if updated != raw:
-                    # PyTorch 参考计数器统计两个有向位置。
-                    diagnostics[2] += 2
-            pheromone[i, j] = updated
-            pheromone[j, i] = updated
-            # dense 在 solver 生命周期内复用，只清理本轮已经消费的单元。
-            dense[i, j] = 0.0
-            dense[j, i] = 0.0
+                    pheromone[i, j] = raw
+        for i in range(n):
+            pheromone[i, i] = 0.0
+            for j in range(n):
+                if i != j:
+                    pheromone[i, j] += dense[i, j]
+                dense[i, j] = 0.0
+    else:
+        for i in range(n):
+            pheromone[i, i] = 0.0
+            for j in range(i + 1, n):
+                if variant == 0:
+                    updated = (1.0 - rho) * pheromone[i, j] + dense[i, j]
+                else:
+                    raw = (1.0 - rho) * pheromone[i, j] + dense[i, j]
+                    updated = min(max(raw, tau_min), tau_max)
+                    if updated != raw:
+                        # PyTorch 参考计数器统计两个有向位置。
+                        diagnostics[2] += 2
+                pheromone[i, j] = updated
+                pheromone[j, i] = updated
+                dense[i, j] = 0.0
+                dense[j, i] = 0.0
     for index in range(frequency_active_count):
         edge_frequency[frequency_active_edges[index]] = 0
 
@@ -1409,7 +1719,7 @@ def _allocate_solver_workspace(
         np.empty(n + 1, dtype=np.int64),  # global best tour
         np.empty(n + 1, dtype=np.int64),  # restart best tour
         np.empty(iterations, dtype=np.float64),  # anytime
-        np.empty(4, dtype=np.int64),  # diagnostics
+        np.empty(8, dtype=np.int64),  # diagnostics（含四个 LS 计数器）
         np.empty((ants, n + 1), dtype=np.int64),  # tours
         np.empty((ants, n), dtype=np.uint8),  # visited
         np.empty(ants, dtype=np.float64),  # lengths
@@ -1423,11 +1733,15 @@ def _allocate_solver_workspace(
         np.zeros(n * n, dtype=np.int64),  # ACS edge counts
         np.empty(edge_capacity, dtype=np.int64),  # active edges
         local_factors,
-        np.empty((7, n), dtype=np.float64),  # pheromone terminals
+        np.empty((8, n), dtype=np.float64),  # pheromone terminals
         np.zeros((n, n), dtype=np.float64),  # dense deposits
         np.zeros(n * n, dtype=np.int64),  # edge frequency
         np.empty(n * n, dtype=np.int64),  # active frequency edges
         np.empty(n, dtype=np.float64),  # deposits
+        np.empty(ants, dtype=np.float64),  # LSGain
+        np.empty(n, dtype=np.int64),  # LS city -> position
+        np.empty(n, dtype=np.int64),  # LS random order
+        np.empty(n, dtype=np.uint8),  # LS DLB
     )
 
 
@@ -1462,6 +1776,9 @@ def _solve_instance_inplace(
     mmas_branch_lambda: float,
     mmas_branch_threshold: float,
     mmas_restart_stagnation: int,
+    local_search_mode: int,
+    local_search_candidate_size: int,
+    local_search_dlb: bool,
     tr_active: bool,
     tr_opcodes: np.ndarray,
     tr_float_arguments: np.ndarray,
@@ -1503,12 +1820,16 @@ def _solve_instance_inplace(
         edge_frequency,
         frequency_active_edges,
         deposits,
+        ls_gains,
+        ls_position,
+        ls_order,
+        ls_dlb,
     ) = workspace
     for first in range(n):
         for second in range(n):
             pheromone[first, second] = tau0
         pheromone[first, first] = 0.0
-    for index in range(4):
+    for index in range(8):
         diagnostics[index] = 0
 
     global_best_length = np.inf
@@ -1516,6 +1837,9 @@ def _solve_instance_inplace(
     global_best_iteration = 0
     stagnation = 0
     restart_found_best = 0
+    restart_iteration = 1
+    global_best_ls_gain = -1.0
+    restart_best_ls_gain = -1.0
 
     for iteration in range(1, iterations + 1):
         _construct_tours(
@@ -1558,6 +1882,37 @@ def _solve_instance_inplace(
             diagnostics,
         )
         _tour_lengths(distances, tours, lengths)
+        for ant in range(ants):
+            ls_gains[ant] = -1.0
+        if local_search_mode != 0:
+            for ant in range(ants):
+                before = lengths[ant]
+                (
+                    lengths[ant],
+                    ls_gains[ant],
+                    moves,
+                    checks,
+                    passes,
+                ) = _two_opt_first_inplace(
+                    distances,
+                    nearest,
+                    tours[ant],
+                    before,
+                    seed,
+                    instance_key,
+                    iteration,
+                    ant,
+                    local_search_candidate_size,
+                    local_search_dlb,
+                    ls_position,
+                    ls_order,
+                    ls_dlb,
+                )
+                diagnostics[4] += moves
+                diagnostics[5] += checks
+                diagnostics[7] += passes
+                if lengths[ant] < before - 1e-12:
+                    diagnostics[6] += 1
         iteration_best_index = 0
         iteration_best_length = lengths[0]
         for ant in range(1, ants):
@@ -1568,6 +1923,7 @@ def _solve_instance_inplace(
         improved_global = iteration_best_length < global_best_length
         if improved_global:
             global_best_length = iteration_best_length
+            global_best_ls_gain = ls_gains[iteration_best_index]
             global_best_iteration = iteration
             for city in range(n + 1):
                 global_best_tour[city] = tours[iteration_best_index, city]
@@ -1577,20 +1933,25 @@ def _solve_instance_inplace(
 
         if iteration_best_length < restart_best_length:
             restart_best_length = iteration_best_length
+            restart_best_ls_gain = ls_gains[iteration_best_index]
             restart_found_best = iteration
             for city in range(n + 1):
                 restart_best_tour[city] = tours[iteration_best_index, city]
 
         if variant == 2 and improved_global:
-            p_x = np.exp(np.log(mmas_p_best) / n)
-            denominator = p_x * ((nearest.shape[1] + 1) // 2)
-            factor = (1.0 - p_x) / denominator
             tau_max = 1.0 / (rho * global_best_length)
-            tau_min = tau_max * factor
+            if local_search_mode != 0:
+                tau_min = tau_max / (2.0 * n)
+            else:
+                p_x = np.exp(np.log(mmas_p_best) / n)
+                denominator = p_x * ((nearest.shape[1] + 1) // 2)
+                factor = (1.0 - p_x) / denominator
+                tau_min = tau_max * factor
 
         _global_pheromone_update(
             heuristic,
             log_heuristic,
+            nearest,
             full_nn_rank,
             pheromone,
             tours,
@@ -1600,11 +1961,17 @@ def _solve_instance_inplace(
             global_best_length,
             restart_best_tour,
             restart_best_length,
+            ls_gains,
+            global_best_ls_gain,
+            restart_best_ls_gain,
             tau_min,
             tau_max,
             variant,
             rho,
             mmas_update_period,
+            local_search_mode != 0,
+            restart_iteration,
+            restart_found_best,
             epsilon_numeric,
             pheromone_mode,
             gamma_pheromone,
@@ -1659,6 +2026,8 @@ def _solve_instance_inplace(
                     pheromone[first, first] = 0.0
                 restart_best_length = np.inf
                 restart_found_best = iteration
+                restart_iteration = iteration
+                restart_best_ls_gain = -1.0
                 diagnostics[3] += 1
         anytime[iteration - 1] = global_best_length
 
@@ -1707,6 +2076,9 @@ def _solve_population_quality_kernel(
     mmas_branch_lambda: float,
     mmas_branch_threshold: float,
     mmas_restart_stagnation: int,
+    local_search_mode: int,
+    local_search_candidate_size: int,
+    local_search_dlb: bool,
     tr_opcodes: np.ndarray,
     tr_float_arguments: np.ndarray,
     tr_integer_arguments: np.ndarray,
@@ -1733,7 +2105,7 @@ def _solve_population_quality_kernel(
         (population, batch, distances.shape[1] + 1),
         dtype=np.int64,
     )
-    diagnostics = np.empty((population, batch, 4), dtype=np.int64)
+    diagnostics = np.empty((population, batch, 8), dtype=np.int64)
     for batch_index in prange(batch):
         # 一个线程连续求解同一 instance 的整个人口，复用大工作区与几何 cache。
         workspace = _allocate_solver_workspace(
@@ -1782,6 +2154,9 @@ def _solve_population_quality_kernel(
                 mmas_branch_lambda,
                 mmas_branch_threshold,
                 mmas_restart_stagnation,
+                local_search_mode,
+                local_search_candidate_size,
+                local_search_dlb,
                 bool(tr_active[individual]),
                 tr_opcodes[individual, :tr_length],
                 tr_float_arguments[individual, :tr_length],
@@ -1821,6 +2196,21 @@ def solve_population_numba(
         raise ValueError("threads 必须为正整数")
     if not programs:
         raise ValueError("program population 不得为空")
+    if config.local_search is LocalSearch.THREE_OPT:
+        raise NotImplementedError(
+            "Numba 审计后端当前实现 two_opt；three_opt 正式路径使用 CUDA"
+        )
+    local_search_mode = int(config.local_search is LocalSearch.TWO_OPT)
+    local_candidate_size = config.resolve_local_search_candidate_size(problem.n)
+    if (
+        config.uses_local_search
+        and local_candidate_size > problem.nn_indices.shape[-1]
+    ):
+        raise ValueError("局部搜索候选深度超过 ProblemBatch nearest 表宽度")
+    local_candidate_size = min(
+        local_candidate_size,
+        int(problem.nn_indices.shape[-1]),
+    )
 
     transition = _pack_programs(
         [pair[0] for pair in programs],
@@ -1904,6 +2294,20 @@ def solve_population_numba(
             config.rho,
         )
     )
+    if config.uses_local_search:
+        _apply_local_search_initial_pheromone(
+            distances,
+            nearest,
+            seeds,
+            instance_keys,
+            variant,
+            config.rho,
+            local_candidate_size,
+            config.local_search_dlb,
+            initial_tau0,
+            initial_tau_min,
+            initial_tau_max,
+        )
 
     set_num_threads(threads)
     started = perf_counter()
@@ -1938,6 +2342,9 @@ def solve_population_numba(
             config.mmas_branch_lambda,
             config.mmas_branch_threshold,
             config.mmas_restart_stagnation,
+            local_search_mode,
+            local_candidate_size,
+            config.local_search_dlb,
             np.ascontiguousarray(transition.opcodes[representatives]),
             np.ascontiguousarray(
                 transition.float_arguments[representatives]
@@ -2002,6 +2409,21 @@ def solve_numba(
         raise ValueError("Numba ACO 后端仅支持 CPU ProblemBatch")
     if config.dtype != torch.float64 or problem.coords.dtype != torch.float64:
         raise ValueError("正式 Numba ACO 后端仅支持 float64")
+    if config.local_search is LocalSearch.THREE_OPT:
+        raise NotImplementedError(
+            "Numba 审计后端当前实现 two_opt；three_opt 正式路径使用 CUDA"
+        )
+    local_search_mode = int(config.local_search is LocalSearch.TWO_OPT)
+    local_candidate_size = config.resolve_local_search_candidate_size(problem.n)
+    if (
+        config.uses_local_search
+        and local_candidate_size > problem.nn_indices.shape[-1]
+    ):
+        raise ValueError("局部搜索候选深度超过 ProblemBatch nearest 表宽度")
+    local_candidate_size = min(
+        local_candidate_size,
+        int(problem.nn_indices.shape[-1]),
+    )
 
     transition = _encode_program(transition_program, role="transition")
     pheromone = _encode_program(pheromone_program, role="pheromone")
@@ -2064,7 +2486,7 @@ def solve_numba(
     best_lengths = np.empty(batch, dtype=np.float64)
     best_iterations = np.empty(batch, dtype=np.int64)
     anytime = np.empty((batch, config.iterations), dtype=np.float64)
-    diagnostics = np.zeros(4, dtype=np.int64)
+    diagnostics = np.zeros(8, dtype=np.int64)
     seed_value = np.uint64(int(seed) % (2**64))
     seeds = np.full(batch, seed_value, dtype=np.uint64)
     instance_keys = np.asarray(
@@ -2085,6 +2507,20 @@ def solve_numba(
             config.rho,
         )
     )
+    if config.uses_local_search:
+        _apply_local_search_initial_pheromone(
+            distances,
+            nearest,
+            seeds,
+            instance_keys,
+            variant,
+            config.rho,
+            local_candidate_size,
+            config.local_search_dlb,
+            initial_tau0,
+            initial_tau_min,
+            initial_tau_max,
+        )
     workspace = _allocate_solver_workspace(
         n,
         config.resolve_ants(n),
@@ -2131,6 +2567,9 @@ def solve_numba(
             config.mmas_branch_lambda,
             config.mmas_branch_threshold,
             config.mmas_restart_stagnation,
+            local_search_mode,
+            local_candidate_size,
+            config.local_search_dlb,
             transition_active,
             transition.opcodes,
             transition.float_arguments,
@@ -2166,5 +2605,9 @@ def solve_numba(
             uniform_fallback_count=int(diagnostics[1]),
             bound_clip_count=int(diagnostics[2]),
             mmas_restart_count=int(diagnostics[3]),
+            local_search_move_count=int(diagnostics[4]),
+            local_search_candidate_check_count=int(diagnostics[5]),
+            local_search_improved_tour_count=int(diagnostics[6]),
+            local_search_pass_count=int(diagnostics[7]),
         ),
     )

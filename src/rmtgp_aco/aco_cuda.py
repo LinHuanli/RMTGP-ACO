@@ -36,10 +36,12 @@ from .config import (
     CudaTaskOrder,
     ExecutionBackend,
     GPUMode,
+    LocalSearch,
     PheromoneIntegration,
     RuntimeConfig,
     TransitionIntegration,
 )
+from .local_search import two_opt_first
 from .model import (
     PopulationQualityResult,
     PopulationRunResult,
@@ -51,8 +53,9 @@ from .program import TensorProgram
 
 _CUDA_SOURCE = Path(__file__).with_name("cuda") / "aco_fused.cu"
 _CUDA_V2_SOURCE = Path(__file__).with_name("cuda") / "aco_tiled_v2.cu"
+_CUDA_LS_SOURCE = Path(__file__).with_name("cuda") / "aco_local_search.cu"
 _MODULES: dict[tuple[int, str], Any] = {}
-_V2_MODULES: dict[tuple[int, str], tuple[Any, Any, Any]] = {}
+_V2_MODULES: dict[tuple[int, str], tuple[Any, ...]] = {}
 _MODULE_LOCK = threading.Lock()
 _RESIDENT_LOCK = threading.Lock()
 _RESIDENT: OrderedDict[tuple[int, tuple[object, ...]], _ResidentProblem] = (
@@ -542,7 +545,7 @@ def _load_v2_kernels(
     precision: CudaPrecision,
     register_cap: int,
     generated_gp_source: str = "",
-) -> tuple[tuple[Any, Any, Any], float]:
+) -> tuple[tuple[Any, ...], float]:
     """编译按 variant/shape/precision 专门化的 CUDA v2 kernel。"""
 
     import cupy as cp
@@ -579,6 +582,8 @@ def _load_v2_kernels(
         + generated_gp_source
         + "\n"
         + _CUDA_V2_SOURCE.read_text(encoding="utf-8")
+        + "\n"
+        + _CUDA_LS_SOURCE.read_text(encoding="utf-8")
     )
     properties = cp.cuda.runtime.getDeviceProperties(device)
     major = int(properties["major"])
@@ -609,6 +614,8 @@ def _load_v2_kernels(
                 module.get_function("v2_init"),
                 module.get_function("v2_construct"),
                 module.get_function("v2_update"),
+                module.get_function("v2_two_opt"),
+                module.get_function("v2_three_opt"),
             )
             compile_seconds = perf_counter() - started
             _V2_MODULES[key] = kernels
@@ -682,6 +689,7 @@ def _initial_pheromone_parameters(
     """在 FP64 几何上计算 NN 初始化，再显式量化为 FP32。"""
 
     distances = np.ascontiguousarray(problem.distances.detach().numpy())
+    nearest = np.ascontiguousarray(problem.nn_indices.detach().numpy())
     batch, n, _ = distances.shape
     tau0 = np.empty(batch, dtype=np.float32)
     tau_min = np.empty(batch, dtype=np.float32)
@@ -699,14 +707,34 @@ def _initial_pheromone_parameters(
         visited = np.zeros(n, dtype=np.bool_)
         visited[start] = True
         current = start
-        nn_length = 0.0
-        for _ in range(1, n):
+        nn_tour = np.empty(n + 1, dtype=np.int64)
+        nn_tour[0] = start
+        for phase in range(1, n):
             row = np.where(visited, np.inf, distances[batch_index, current])
             chosen = int(np.argmin(row))
-            nn_length += float(distances[batch_index, current, chosen])
             visited[chosen] = True
             current = chosen
-        nn_length += float(distances[batch_index, current, start])
+            nn_tour[phase] = chosen
+        nn_tour[n] = start
+        if config.uses_local_search:
+            nn_tour, _ = two_opt_first(
+                nn_tour,
+                distances[batch_index],
+                nearest[batch_index],
+                seed=seed64,
+                instance_key=key,
+                iteration=0,
+                ant=0,
+                candidate_size=config.resolve_local_search_candidate_size(n),
+                use_dlb=config.local_search_dlb,
+            )
+        nn_length = float(
+            distances[
+                batch_index,
+                nn_tour[:-1],
+                nn_tour[1:],
+            ].sum(dtype=np.float64)
+        )
         if config.variant is ACOVariant.AS:
             tau0[batch_index] = 1.0 / (config.rho * nn_length)
             tau_min[batch_index] = 0.0
@@ -886,16 +914,32 @@ def _task_bytes_v2(
     ants: int,
     iterations: int,
     record_anytime: bool,
+    local_search: LocalSearch = LocalSearch.NONE,
 ) -> int:
     """CUDA v2 staged state 的保守每 task 显存估算。"""
 
-    return (
+    base = (
         _task_bytes(n, ants, iterations, record_anytime)
         + 4 * ants  # incremental colony lengths
         + 4 * ants * n  # fallback/cached transition scores
         + 4 * 4  # best/restart length and tau bounds
         + 4 * 3  # best iteration/stagnation/restart marker
+        + 8 * 4  # v2 扩展 diagnostics
     )
+    if local_search is LocalSearch.NONE:
+        return base + 4 * ants  # LSGain=-1 workspace
+    local = (
+        2 * ants * n  # city -> position
+        + 2 * ants * n  # 随机城市顺序
+        + ants * n  # DLB
+        + 4 * ants  # construction 前长度
+        + 4 * ants  # LSGain
+        + 4 * 2  # global/restart best LSGain
+        + 4  # restart iteration
+    )
+    if local_search is LocalSearch.THREE_OPT:
+        local += 2 * ants * (n + 1)
+    return base + local
 
 
 def _cost_balanced_shards(
@@ -1272,6 +1316,15 @@ def _run_device_v2(
     precision = runtime.cuda_precision
     candidate_lanes = runtime.cuda_candidate_lanes or 8
     candidate_size = config.resolve_candidate_size(problem.n)
+    nearest_stride = int(problem.nn_indices.shape[-1])
+    local_candidate_size = config.resolve_local_search_candidate_size(problem.n)
+    if config.uses_local_search and local_candidate_size > nearest_stride:
+        raise ValueError(
+            "local_search_candidate_size 超过 ProblemBatch 中预计算的 "
+            "nearest-neighbour 表宽度"
+        )
+    if local_candidate_size > 32:
+        raise ValueError("CUDA 局部搜索当前要求 candidate_size <= 32")
     stack_depth = max(
         1,
         int(transition.stack_size),
@@ -1303,7 +1356,13 @@ def _run_device_v2(
                 else ""
             ),
         )
-        init_kernel, construct_kernel, update_kernel = kernels
+        (
+            init_kernel,
+            construct_kernel,
+            update_kernel,
+            two_opt_kernel,
+            three_opt_kernel,
+        ) = kernels
         h2d_started = perf_counter()
         tr_ops = cp.asarray(
             np.ascontiguousarray(transition.opcodes[representatives])
@@ -1368,6 +1427,7 @@ def _run_device_v2(
             raise ValueError(
                 f"ants×candidate_lanes={construct_threads} 超过 CUDA block 上限"
             )
+        ls_threads = 32 * runtime.cuda_ls_warps_per_block
         free_memory, total_memory = cp.cuda.runtime.memGetInfo()
         reserve = int(total_memory * (1.0 - runtime.gpu_memory_fraction))
         usable = max(0, int(free_memory) - reserve)
@@ -1376,6 +1436,7 @@ def _run_device_v2(
             ants,
             config.iterations,
             record_anytime,
+            config.local_search,
         )
         max_tasks = usable // max(bytes_per_task, 1)
         if runtime.gpu_task_chunk_size:
@@ -1461,12 +1522,49 @@ def _run_device_v2(
             best_iterations = cp.empty(count, dtype=cp.int32)
             stagnation = cp.empty(count, dtype=cp.int32)
             restart_found_best = cp.empty(count, dtype=cp.int32)
+            restart_iteration = cp.empty(count, dtype=cp.int32)
+            global_best_ls_gain = cp.empty(count, dtype=cp.float32)
+            restart_best_ls_gain = cp.empty(count, dtype=cp.float32)
+            ls_gain_workspace = cp.full(
+                (count, ants),
+                -1.0,
+                dtype=cp.float32,
+            )
+            length_before_workspace = cp.empty(
+                (count, ants),
+                dtype=cp.float32,
+            )
+            if config.uses_local_search:
+                position_workspace = cp.empty(
+                    (count, ants, n),
+                    dtype=cp.uint16,
+                )
+                order_workspace = cp.empty(
+                    (count, ants, n),
+                    dtype=cp.uint16,
+                )
+                dlb_workspace = cp.empty(
+                    (count, ants, n),
+                    dtype=cp.uint8,
+                )
+            else:
+                position_workspace = cp.empty(1, dtype=cp.uint16)
+                order_workspace = cp.empty(1, dtype=cp.uint16)
+                dlb_workspace = cp.empty(1, dtype=cp.uint8)
+            scratch_tour_workspace = (
+                cp.empty(
+                    (count, ants, n + 1),
+                    dtype=cp.uint16,
+                )
+                if config.local_search is LocalSearch.THREE_OPT
+                else cp.empty(1, dtype=cp.uint16)
+            )
             anytime = (
                 cp.empty((count, config.iterations), dtype=cp.float32)
                 if record_anytime
                 else cp.empty(1, dtype=cp.float32)
             )
-            diagnostics = cp.empty((count, 4), dtype=cp.uint64)
+            diagnostics = cp.empty((count, 8), dtype=cp.uint64)
 
             start_event = cp.cuda.Event()
             end_event = cp.cuda.Event()
@@ -1490,6 +1588,9 @@ def _run_device_v2(
                     best_iterations,
                     stagnation,
                     restart_found_best,
+                    restart_iteration,
+                    global_best_ls_gain,
+                    restart_best_ls_gain,
                     diagnostics,
                 ),
             )
@@ -1536,6 +1637,67 @@ def _run_device_v2(
                         diagnostics,
                     ),
                 )
+                if config.uses_local_search:
+                    total_tours = count * ants
+                    ls_blocks = (
+                        total_tours
+                        + runtime.cuda_ls_warps_per_block
+                        - 1
+                    ) // runtime.cuda_ls_warps_per_block
+                    two_opt_kernel(
+                        (ls_blocks,),
+                        (ls_threads,),
+                        (
+                            resident.distances,
+                            resident.nearest,
+                            task_instance,
+                            np.int32(count),
+                            np.int32(n),
+                            np.int32(nearest_stride),
+                            np.int32(local_candidate_size),
+                            np.int32(ants),
+                            np.int32(iteration),
+                            np.int32(config.local_search_dlb),
+                            np.int32(
+                                config.local_search is LocalSearch.TWO_OPT
+                            ),
+                            np.uint64(int(seed) % (2**64)),
+                            resident.instance_keys,
+                            tour_workspace,
+                            length_workspace,
+                            length_before_workspace,
+                            ls_gain_workspace,
+                            position_workspace,
+                            order_workspace,
+                            dlb_workspace,
+                            diagnostics,
+                        ),
+                    )
+                    if config.local_search is LocalSearch.THREE_OPT:
+                        three_opt_kernel(
+                            (total_tours,),
+                            (runtime.cuda_three_opt_block_threads,),
+                            (
+                                resident.distances,
+                                resident.nearest,
+                                task_instance,
+                                np.int32(count),
+                                np.int32(n),
+                                np.int32(nearest_stride),
+                                np.int32(local_candidate_size),
+                                np.int32(ants),
+                                np.int32(config.local_search_dlb),
+                                tour_workspace,
+                                length_workspace,
+                                length_before_workspace,
+                                ls_gain_workspace,
+                                position_workspace,
+                                order_workspace,
+                                dlb_workspace,
+                                scratch_tour_workspace,
+                                diagnostics,
+                            ),
+                        )
                 update_kernel(
                     (count,),
                     (256,),
@@ -1569,9 +1731,11 @@ def _run_device_v2(
                         np.float32(config.mmas_branch_lambda),
                         np.float32(config.mmas_branch_threshold),
                         np.int32(config.mmas_restart_stagnation),
+                        np.int32(config.uses_local_search),
                         pheromone_workspace,
                         tour_workspace,
                         length_workspace,
+                        ls_gain_workspace,
                         deposit_workspace,
                         edge_frequency,
                         restart_tour,
@@ -1583,6 +1747,9 @@ def _run_device_v2(
                         best_iterations,
                         stagnation,
                         restart_found_best,
+                        restart_iteration,
+                        global_best_ls_gain,
+                        restart_best_ls_gain,
                         anytime,
                         np.int32(record_anytime),
                         diagnostics,
@@ -1649,6 +1816,8 @@ def _solve_population_impl(
     if not programs:
         raise ValueError("program population 不得为空")
     use_v2 = runtime.aco_backend is ExecutionBackend.CUDA_TILED_V2
+    if config.uses_local_search and not use_v2:
+        raise ValueError("CUDA 局部搜索只由 cuda_tiled_v2 后端实现")
     if config.resolve_ants(problem.n) > 32:
         raise ValueError("CUDA 后端最多支持 32 只蚂蚁")
     if use_v2 and config.resolve_ants(problem.n) != 32:
@@ -1751,7 +1920,11 @@ def _solve_population_impl(
     )
     gpu_length_flat = np.empty(task_count, dtype=np.float32)
     best_iteration_flat = np.empty(task_count, dtype=np.int32)
-    diagnostics_flat = np.empty((task_count, 4), dtype=np.uint64)
+    diagnostic_width = 8 if use_v2 else 4
+    diagnostics_flat = np.empty(
+        (task_count, diagnostic_width),
+        dtype=np.uint64,
+    )
     anytime_flat = (
         np.empty((task_count, config.iterations), dtype=np.float32)
         if record_anytime
@@ -1789,7 +1962,7 @@ def _solve_population_impl(
         diagnostics_flat.reshape(
             representative_count,
             problem.batch_size,
-            4,
+            diagnostic_width,
         ).sum(axis=1, dtype=np.uint64).astype(np.int64)
     )
 
@@ -1837,6 +2010,12 @@ def _solve_population_impl(
         "candidate_lanes": device_results[0].candidate_lanes,
         "register_cap": device_results[0].register_cap,
         "gpu_fp32_length_checksum": float(gpu_length_flat.sum(dtype=np.float64)),
+        "local_search": config.local_search.value,
+        "local_search_candidate_size": (
+            config.resolve_local_search_candidate_size(problem.n)
+        ),
+        "local_search_warps_per_block": runtime.cuda_ls_warps_per_block,
+        "three_opt_block_threads": runtime.cuda_three_opt_block_threads,
     }
     if tuning_manifest_hash:
         metrics["tuning_manifest_sha256"] = tuning_manifest_hash
@@ -1930,6 +2109,12 @@ def solve_cuda(
     )
     assert anytime is not None
     diagnostic = quality.diagnostics[0]
+    local_values = [
+        int(diagnostic[index].item())
+        if diagnostic.numel() > index
+        else 0
+        for index in range(4, 8)
+    ]
     return RunResult(
         best_tour=quality.best_tour[0],
         best_length=quality.best_length[0],
@@ -1942,6 +2127,10 @@ def solve_cuda(
             uniform_fallback_count=int(diagnostic[1].item()),
             bound_clip_count=int(diagnostic[2].item()),
             mmas_restart_count=int(diagnostic[3].item()),
+            local_search_move_count=local_values[0],
+            local_search_candidate_check_count=local_values[1],
+            local_search_improved_tour_count=local_values[2],
+            local_search_pass_count=local_values[3],
         ),
         backend_metrics=quality.backend_metrics,
     )

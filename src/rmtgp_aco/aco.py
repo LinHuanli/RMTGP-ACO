@@ -874,6 +874,10 @@ def _build_deposit_events(
         terminals["Stagnation"] = stagnation_value[:, None, None].expand_as(
             base_deposit
         )
+    if "LSGain" in required_terminals:
+        # 无局部搜索的参考语义。启用 LS 时正式求解由 Numba/CUDA 后端在
+        # post-LS tour 上写入来源对应的实际归一化增益。
+        terminals["LSGain"] = torch.full_like(base_deposit, -1.0)
 
     return DepositEventBatch(
         edge_u=u,
@@ -1302,6 +1306,11 @@ def solve(
             transition_program=transition_program,
             pheromone_program=pheromone_program,
             seed=seed,
+        )
+    if config.uses_local_search:
+        raise NotImplementedError(
+            "PyTorch 审计后端尚未实现局部搜索；请使用 numba(two_opt) "
+            "或 cuda_tiled_v2"
         )
     return _solve_torch(
         problem,

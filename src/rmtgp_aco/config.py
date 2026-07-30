@@ -19,6 +19,20 @@ class ACOVariant(StrEnum):
     MMAS = "mmas"
 
 
+class LocalSearch(StrEnum):
+    """在每轮构造后作用于全部蚂蚁 tour 的局部搜索。"""
+
+    NONE = "none"
+    TWO_OPT = "two_opt"
+    THREE_OPT = "three_opt"
+
+
+class LocalSearchProfile(StrEnum):
+    """局部搜索及其配套 ACO 动力学的语义 profile。"""
+
+    ACOTSP = "acotsp"
+
+
 class ExecutionBackend(StrEnum):
     """ACO 数值内核后端。
 
@@ -128,6 +142,10 @@ class ACOConfig:
     mmas_branch_lambda: float = 0.05
     mmas_branch_threshold: float = 1.00001
     mmas_restart_stagnation: int = 250
+    local_search: LocalSearch = LocalSearch.NONE
+    local_search_profile: LocalSearchProfile = LocalSearchProfile.ACOTSP
+    local_search_candidate_size: int = 20
+    local_search_dlb: bool = True
 
     @classmethod
     def acotsp_default(
@@ -164,6 +182,50 @@ class ACOConfig:
             )
         return cls(ants=None, alpha=1.0, beta=2.0, rho=0.02, **common)
 
+    @classmethod
+    def acotsp_local_search_default(
+        cls,
+        variant: ACOVariant | str,
+        *,
+        local_search: LocalSearch | str = LocalSearch.TWO_OPT,
+        iterations: int = 100,
+        ants: int = 32,
+        device: str = "cpu",
+        dtype: torch.dtype = torch.float64,
+        acs_synchronous: bool = True,
+    ) -> ACOConfig:
+        """建立采用 ACOTSP 局部搜索语义、但统一 32 只蚂蚁的配置。
+
+        原始 ACOTSP 的局部搜索默认参数随算法改变蚂蚁数。本文为了让
+        AS/ACS/MMAS 的计算预算可比，固定蚂蚁数，保留其 rho、q0、候选表、
+        DLB、MMAS 边界及动态强化周期等其余语义。
+        """
+
+        selected = ACOVariant(variant)
+        search = LocalSearch(local_search)
+        if search is LocalSearch.NONE:
+            raise ValueError("局部搜索默认配置要求 two_opt 或 three_opt")
+        common: dict[str, Any] = {
+            "variant": selected,
+            "ants": ants,
+            "alpha": 1.0,
+            "beta": 2.0,
+            "candidate_size": 20,
+            "iterations": iterations,
+            "device": device,
+            "dtype": dtype,
+            "acs_synchronous": acs_synchronous,
+            "local_search": search,
+            "local_search_profile": LocalSearchProfile.ACOTSP,
+            "local_search_candidate_size": 20,
+            "local_search_dlb": True,
+        }
+        if selected is ACOVariant.AS:
+            return cls(rho=0.5, q0=0.0, **common)
+        if selected is ACOVariant.ACS:
+            return cls(rho=0.1, q0=0.98, xi=0.1, **common)
+        return cls(rho=0.2, q0=0.0, **common)
+
     def __post_init__(self) -> None:
         """尽早拒绝会破坏概率或残差边界的配置。"""
 
@@ -177,6 +239,12 @@ class ACOConfig:
             self,
             "pheromone_integration",
             PheromoneIntegration(self.pheromone_integration),
+        )
+        object.__setattr__(self, "local_search", LocalSearch(self.local_search))
+        object.__setattr__(
+            self,
+            "local_search_profile",
+            LocalSearchProfile(self.local_search_profile),
         )
         if self.ants is not None and self.ants < 1:
             raise ValueError("ants 必须为正整数或 None")
@@ -206,6 +274,8 @@ class ACOConfig:
             raise ValueError("mmas_branch_threshold 不得为负")
         if self.mmas_restart_stagnation < 0:
             raise ValueError("mmas_restart_stagnation 不得为负")
+        if self.local_search_candidate_size < 1:
+            raise ValueError("local_search_candidate_size 必须为正整数")
 
     def resolve_ants(self, n: int) -> int:
         """把 ACOTSP 的 `ants=n` 约定解析为实际蚂蚁数。"""
@@ -219,6 +289,19 @@ class ACOConfig:
 
         return min(self.candidate_size, n - 1)
 
+    def resolve_local_search_candidate_size(self, n: int) -> int:
+        """局部搜索候选表深度，至多包含其余 ``n-1`` 个城市。"""
+
+        if n < 2:
+            raise ValueError("TSP 至少需要两个城市")
+        return min(self.local_search_candidate_size, n - 1)
+
+    @property
+    def uses_local_search(self) -> bool:
+        """是否在每轮构造后对全部蚂蚁执行局部搜索。"""
+
+        return self.local_search is not LocalSearch.NONE
+
     def stable_dict(self) -> dict[str, Any]:
         """返回可序列化、可哈希的配置。"""
 
@@ -226,6 +309,8 @@ class ACOConfig:
         values["variant"] = self.variant.value
         values["transition_integration"] = self.transition_integration.value
         values["pheromone_integration"] = self.pheromone_integration.value
+        values["local_search"] = self.local_search.value
+        values["local_search_profile"] = self.local_search_profile.value
         values["dtype"] = str(self.dtype).removeprefix("torch.")
         return values
 
@@ -371,6 +456,8 @@ class RuntimeConfig:
     cuda_generated_gp: bool = True
     cuda_graph_replay: bool = False
     cuda_tuning_manifest: str | None = None
+    cuda_ls_warps_per_block: int = 8
+    cuda_three_opt_block_threads: int = 256
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -423,6 +510,12 @@ class RuntimeConfig:
             raise ValueError("cuda_candidate_lanes 必须为 0/1/4/8/16/32")
         if self.cuda_register_cap not in {0, 64, 80, 96, 112, 128}:
             raise ValueError("cuda_register_cap 必须为 0/64/80/96/112/128")
+        if self.cuda_ls_warps_per_block not in {4, 8}:
+            raise ValueError("cuda_ls_warps_per_block 必须为 4 或 8")
+        if self.cuda_three_opt_block_threads not in {128, 256, 512}:
+            raise ValueError(
+                "cuda_three_opt_block_threads 必须为 128/256/512"
+            )
         if self.cuda_provider is CudaProvider.CUTILE and (
             self.cuda_precision
             not in {

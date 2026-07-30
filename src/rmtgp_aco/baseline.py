@@ -26,13 +26,13 @@ from .config import (
 from .model import RunResult
 from .sampling import EvaluationCase
 
-BASELINE_ARCHIVE_SCHEMA_VERSION = 3
-_READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3})
-NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v2-mmas-restart"
+BASELINE_ARCHIVE_SCHEMA_VERSION = 4
+_READABLE_BASELINE_ARCHIVE_SCHEMAS = frozenset({2, 3, 4})
+NUMBA_KERNEL_SEMANTIC_VERSION = "counter-rng-numba-v3-acotsp-ls"
 TORCH_KERNEL_SEMANTIC_VERSION = "torch-generator-v1"
 CUDA_KERNEL_SEMANTIC_VERSION = "counter-rng-cuda-fp32-search-v1"
 CUDA_V2_KERNEL_SEMANTIC_VERSION = (
-    "counter-rng-cuda-tiled-v2-search-v2"
+    "counter-rng-cuda-tiled-v2-search-v3-acotsp-ls"
 )
 
 
@@ -55,7 +55,9 @@ def _cuda_v2_manifest_profile(path_text: str) -> tuple[str, str, int]:
     return provider, precision, lanes
 
 
-def _cuda_v2_profile(runtime: RuntimeConfig | None) -> tuple[str, str, int]:
+def _cuda_v2_profile(
+    runtime: RuntimeConfig | None,
+) -> tuple[str, str, int, int, int]:
     """解析会改变 CUDA v2 搜索轨迹的 runtime 字段。
 
     tuning manifest 的 selected 字段优先于 YAML/CLI 默认值。这里只读取
@@ -68,10 +70,12 @@ def _cuda_v2_profile(runtime: RuntimeConfig | None) -> tuple[str, str, int]:
     provider = selected_runtime.cuda_provider.value
     precision = selected_runtime.cuda_precision.value
     lanes = selected_runtime.cuda_candidate_lanes or 8
+    ls_warps = selected_runtime.cuda_ls_warps_per_block
+    three_opt_threads = selected_runtime.cuda_three_opt_block_threads
     if selected_runtime.cuda_tuning_manifest is not None:
         path = str(Path(selected_runtime.cuda_tuning_manifest).resolve())
         provider, precision, lanes = _cuda_v2_manifest_profile(path)
-    return provider, precision, lanes
+    return provider, precision, lanes, ls_warps, three_opt_threads
 
 
 def backend_semantic_id(
@@ -86,9 +90,12 @@ def backend_semantic_id(
     if selected is ExecutionBackend.CUDA_FUSED_FP32:
         return CUDA_KERNEL_SEMANTIC_VERSION
     if selected is ExecutionBackend.CUDA_TILED_V2:
-        provider, precision, lanes = _cuda_v2_profile(runtime)
+        provider, precision, lanes, ls_warps, three_opt_threads = (
+            _cuda_v2_profile(runtime)
+        )
         return (
             f"{CUDA_V2_KERNEL_SEMANTIC_VERSION}-"
+            f"lsw{ls_warps}-3t{three_opt_threads}-"
             f"{provider}-{precision}-lanes{lanes}"
         )
     return TORCH_KERNEL_SEMANTIC_VERSION
@@ -128,6 +135,10 @@ class BaselineRecord:
     uniform_fallback_count: int
     bound_clip_count: int
     mmas_restart_count: int
+    local_search_move_count: int = 0
+    local_search_candidate_check_count: int = 0
+    local_search_improved_tour_count: int = 0
+    local_search_pass_count: int = 0
 
 
 def records_from_result(
@@ -171,6 +182,18 @@ def records_from_result(
                 uniform_fallback_count=result.diagnostics.uniform_fallback_count,
                 bound_clip_count=result.diagnostics.bound_clip_count,
                 mmas_restart_count=result.diagnostics.mmas_restart_count,
+                local_search_move_count=(
+                    result.diagnostics.local_search_move_count
+                ),
+                local_search_candidate_check_count=(
+                    result.diagnostics.local_search_candidate_check_count
+                ),
+                local_search_improved_tour_count=(
+                    result.diagnostics.local_search_improved_tour_count
+                ),
+                local_search_pass_count=(
+                    result.diagnostics.local_search_pass_count
+                ),
             )
         )
     return records
@@ -225,7 +248,11 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
             if name in payload.files
         }
         required = set(BaselineRecord.__dataclass_fields__) - {
-            "baseline_behavior_hash"
+            "baseline_behavior_hash",
+            "local_search_move_count",
+            "local_search_candidate_check_count",
+            "local_search_improved_tour_count",
+            "local_search_pass_count",
         }
         missing = required - set(fields)
         if missing:
@@ -259,6 +286,26 @@ def read_baseline_shard(path: str | Path) -> tuple[list[BaselineRecord], dict]:
                 ),
                 bound_clip_count=int(fields["bound_clip_count"][index]),
                 mmas_restart_count=int(fields["mmas_restart_count"][index]),
+                local_search_move_count=(
+                    int(fields["local_search_move_count"][index])
+                    if "local_search_move_count" in fields
+                    else 0
+                ),
+                local_search_candidate_check_count=(
+                    int(fields["local_search_candidate_check_count"][index])
+                    if "local_search_candidate_check_count" in fields
+                    else 0
+                ),
+                local_search_improved_tour_count=(
+                    int(fields["local_search_improved_tour_count"][index])
+                    if "local_search_improved_tour_count" in fields
+                    else 0
+                ),
+                local_search_pass_count=(
+                    int(fields["local_search_pass_count"][index])
+                    if "local_search_pass_count" in fields
+                    else 0
+                ),
             )
             for index in range(count)
         ]
@@ -443,6 +490,26 @@ def precompute_baseline_cases(
                         uniform_fallback_count=int(diagnostic[1].item()),
                         bound_clip_count=int(diagnostic[2].item()),
                         mmas_restart_count=int(diagnostic[3].item()),
+                        local_search_move_count=(
+                            int(diagnostic[4].item())
+                            if diagnostic.numel() > 4
+                            else 0
+                        ),
+                        local_search_candidate_check_count=(
+                            int(diagnostic[5].item())
+                            if diagnostic.numel() > 5
+                            else 0
+                        ),
+                        local_search_improved_tour_count=(
+                            int(diagnostic[6].item())
+                            if diagnostic.numel() > 6
+                            else 0
+                        ),
+                        local_search_pass_count=(
+                            int(diagnostic[7].item())
+                            if diagnostic.numel() > 7
+                            else 0
+                        ),
                     )
                 )
             continue

@@ -104,6 +104,7 @@ PHEROMONE_TERMINALS: tuple[str, ...] = (
     "SourceQuality",
     "ACOProg",
     "Stagnation",
+    "LSGain",
 )
 
 CORE_PHEROMONE_TERMINALS: tuple[str, ...] = (

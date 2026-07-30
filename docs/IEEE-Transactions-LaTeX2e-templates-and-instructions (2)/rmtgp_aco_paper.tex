@@ -444,6 +444,25 @@ Progress since the last global-best improvement.\\
 \end{tabular}
 \end{table*}
 
+The local-search extension adds an eighth pheromone terminal,
+\texttt{LSGain}.
+Its strong type is \(\mathrm{PhField}\), and its logical shape is
+\([B,R,n]\).
+For source tour \(r\), it is
+\[
+2\operatorname{clip}\!\left(
+\frac{L^{\mathrm{pre}}_r-L^{\mathrm{post}}_r}
+{\max(L^{\mathrm{pre}}_r,\epsilon)},0,1\right)-1.
+\]
+The inputs are the current tour and its lengths before and after local search.
+No reference solution is used.
+The resulting \([B,R]\) value is broadcast over the \(n\) source-tour edges.
+It is fixed at \(-1\) when local search is disabled.
+The main study retains the seven terminals in
+Table~\ref{tab:pheromone-terminals}.
+Both training conditions in the local-search extension use the same
+eight-terminal grammar.
+
 Both primitive sets also contain the constants
 \(-1,-0.5,0,0.5,1\).
 They contain one ephemeral random constant sampled from \(U[-1,1]\).

@@ -33,11 +33,13 @@ from .baseline import (
     write_baseline_shard,
 )
 from .config import (
+    ACOVariant,
     CudaPrecision,
     CudaProvider,
     CudaTaskOrder,
     ExecutionBackend,
     GPUMode,
+    LocalSearch,
     PheromoneIntegration,
     TransitionIntegration,
 )
@@ -178,6 +180,43 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
     seed = getattr(args, "root_seed", None)
     if seed is not None:
         experiment = replace(experiment, root_seed=seed)
+    experiment_id = getattr(args, "experiment_id", None)
+    if experiment_id is not None:
+        experiment = replace(experiment, experiment_id=experiment_id)
+    aco_variant = getattr(args, "aco_variant", None)
+    local_search = getattr(args, "local_search", None)
+    if aco_variant is not None or local_search is not None:
+        variant = (
+            experiment.aco.variant
+            if aco_variant is None
+            else ACOVariant(aco_variant)
+        )
+        search = (
+            experiment.aco.local_search
+            if local_search is None
+            else LocalSearch(local_search)
+        )
+        parameters = {
+            ACOVariant.AS: {"rho": 0.5, "q0": 0.0},
+            ACOVariant.ACS: {"rho": 0.1, "q0": 0.98},
+            ACOVariant.MMAS: {"rho": 0.2, "q0": 0.0},
+        }[variant]
+        experiment = replace(
+            experiment,
+            aco=replace(
+                experiment.aco,
+                variant=variant,
+                ants=32,
+                alpha=1.0,
+                beta=2.0,
+                rho=parameters["rho"],
+                q0=parameters["q0"],
+                xi=0.1,
+                local_search=search,
+                local_search_candidate_size=20,
+                local_search_dlb=True,
+            ),
+        )
     processes = getattr(args, "processes", None)
     if processes is not None:
         selected_backend = experiment.runtime.aco_backend
@@ -209,6 +248,12 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
     cuda_generated_gp = getattr(args, "cuda_generated_gp", None)
     cuda_graph_replay = getattr(args, "cuda_graph_replay", None)
     cuda_tuning_manifest = getattr(args, "cuda_tuning_manifest", None)
+    cuda_ls_warps_per_block = getattr(args, "cuda_ls_warps_per_block", None)
+    cuda_three_opt_block_threads = getattr(
+        args,
+        "cuda_three_opt_block_threads",
+        None,
+    )
     runtime_updates: dict[str, object] = {}
     if gpu_devices is not None:
         runtime_updates["gpu_devices"] = tuple(gpu_devices)
@@ -234,6 +279,12 @@ def _apply_runtime_overrides(spec, args: argparse.Namespace):
         runtime_updates["cuda_graph_replay"] = cuda_graph_replay
     if cuda_tuning_manifest is not None:
         runtime_updates["cuda_tuning_manifest"] = cuda_tuning_manifest
+    if cuda_ls_warps_per_block is not None:
+        runtime_updates["cuda_ls_warps_per_block"] = cuda_ls_warps_per_block
+    if cuda_three_opt_block_threads is not None:
+        runtime_updates["cuda_three_opt_block_threads"] = (
+            cuda_three_opt_block_threads
+        )
     if runtime_updates:
         experiment = replace(
             experiment,
@@ -2413,6 +2464,35 @@ def _add_gpu_arguments(parser: argparse.ArgumentParser) -> None:
         "--cuda-tuning-manifest",
         help="已通过质量门的 CUDA v2 tuning manifest",
     )
+    parser.add_argument(
+        "--cuda-ls-warps-per-block",
+        type=int,
+        choices=[4, 8],
+        help="局部搜索 kernel 每个 block 同时处理的 tour 数",
+    )
+    parser.add_argument(
+        "--cuda-three-opt-block-threads",
+        type=int,
+        choices=[128, 256, 512],
+        help="3-opt 每条 tour 的 CUDA block 线程数",
+    )
+
+
+def _add_aco_profile_arguments(parser: argparse.ArgumentParser) -> None:
+    """加入 ACOTSP-LS 对照实验所需的科学配置覆盖。"""
+
+    parser.add_argument(
+        "--aco-variant",
+        choices=[variant.value for variant in ACOVariant],
+    )
+    parser.add_argument(
+        "--local-search",
+        choices=[search.value for search in LocalSearch],
+    )
+    parser.add_argument(
+        "--experiment-id",
+        help="写入 artifact 的唯一实验标识",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2471,6 +2551,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=[backend.value for backend in ExecutionBackend],
     )
+    _add_aco_profile_arguments(baseline_parser)
     _add_gpu_arguments(baseline_parser)
     baseline_parser.set_defaults(handler=_command_precompute_baselines)
 
@@ -2622,6 +2703,7 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         default="rmtgp-full-f1",
     )
+    _add_aco_profile_arguments(training_benchmark)
     _add_gpu_arguments(training_benchmark)
     training_benchmark.set_defaults(handler=_command_benchmark_training)
 
@@ -2681,6 +2763,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="E1 组件/上一篇研究对照；默认训练双 residual",
     )
     train_parser.add_argument("--traceback", action="store_true")
+    _add_aco_profile_arguments(train_parser)
     _add_gpu_arguments(train_parser)
     train_parser.set_defaults(handler=_command_train)
 
@@ -2706,6 +2789,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=[backend.value for backend in ExecutionBackend],
     )
+    _add_aco_profile_arguments(evaluate)
     _add_gpu_arguments(evaluate)
     evaluate.set_defaults(handler=_command_evaluate)
 

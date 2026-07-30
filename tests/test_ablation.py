@@ -79,6 +79,20 @@ def test_cuda_v2_baseline_semantic_tracks_precision_and_lanes() -> None:
     assert len(semantics) == 3
 
 
+def test_cuda_v2_baseline_semantic_tracks_local_search_launch_shape() -> None:
+    base = RuntimeConfig(aco_backend=ExecutionBackend.CUDA_TILED_V2)
+    configurations = (
+        base,
+        replace(base, cuda_ls_warps_per_block=4),
+        replace(base, cuda_three_opt_block_threads=512),
+    )
+    semantics = {
+        backend_semantic_id(ExecutionBackend.CUDA_TILED_V2, runtime)
+        for runtime in configurations
+    }
+    assert len(semantics) == len(configurations)
+
+
 def test_cuda_v2_baseline_semantic_uses_manifest_selection(tmp_path) -> None:
     manifest = tmp_path / "tuning.json"
     manifest.write_text(

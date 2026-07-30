@@ -2878,12 +2878,78 @@ M_{ij}
 
 ## 22.11 E10：Local-search robustness
 
-主模型训练完成后，分别增加：
+该实验检验局部搜索是否只在测试时提供独立收益，以及 GP 是否能在训练时
+适应局部搜索后的搜索动力学。正式实现采用以下四个条件：
 
-- ACOTSP-style 2-opt；
-- ACOTSP-style 3-opt。
+1. 原始 ACO + 2-opt；
+2. 原始 ACO + 3-opt；
+3. 不含局部搜索训练的 RMTGP-ACO，测试时接 2-opt；
+4. 含 2-opt 联合训练的 RMTGP-ACO，测试时接 2-opt。
 
-先做 test-time plug-in，不重新训练；若存在稳定收益，再追加 trained-with-LS 实验。
+后两个条件都在相同的 ACO+2-opt validation 环境中从各 run 的 checkpoints
+重新选择最终个体。因此，比较不会混入不同模型选择环境的影响。每个条件
+分别对 AS、ACS 和 MMAS 运行三个 GP seeds。局部搜索训练仅使用纯 TSP100。
+每代使用 64 个实例。GP 种群为 100，进化 50 代。ACO 固定为 32 只蚂蚁和
+500 次迭代。
+
+为允许两棵树在局部搜索压缩解空间后表示更细的条件规则，本实验把初始深度
+设为 2--5，最大深度设为 7。两棵树共享 62 个节点的总预算。任一单树也不能
+超过 62 个节点。这里增加的是总容量，不把每棵树分别赋予 62 个节点。
+
+局部搜索参考 ACOTSP-1.03。它对每轮构造出的全部蚂蚁路线执行搜索。2-opt
+使用 20-nearest-neighbour candidate list、don't-look bits、随机城市扫描
+和 first improvement。3-opt 先达到相同的 2-opt 局部最优，再检查候选受限
+的真 3-opt 重连。本文使用连续欧氏距离和 counter-based RNG。因此，语义是
+ACOTSP-style，而不是原 C 程序的逐位复现。
+
+局部搜索条件增加一个可选的信息素终端
+\(\mathrm{LSGain}\)。设来源路线在局部搜索前后的长度分别为
+\(L^{\mathrm{pre}}_r\) 和 \(L^{\mathrm{post}}_r\)，则
+
+\[
+g^{\mathrm{LS}}_r
+=
+2\,\operatorname{clip}
+\left(
+\frac{L^{\mathrm{pre}}_r-L^{\mathrm{post}}_r}
+{\max(L^{\mathrm{pre}}_r,\epsilon)},
+0,1
+\right)-1.
+\]
+
+它是强类型 \(\texttt{PhField}\)。一个来源路线先得到一个 scalar
+\(g^{\mathrm{LS}}_r\)，再沿该路线的 \(n\) 条增强边广播。因此，其逻辑
+shape 为 \([B,R,n]\)。输入仅包括当前构造路线、局部搜索前长度和局部搜索
+后长度。它不读取最优标签。AS 的 \(R=M\)，因为全部蚂蚁都增强信息素。
+ACS 和 MMAS 的 \(R=1\)，因为每轮只选择一个增强来源。全局最优或
+restart-best 路线在被发现时同时保存其 LSGain。关闭局部搜索时该终端恒为
+\(-1\)。这保持两个训练条件的 grammar 一致。
+
+最终测试只使用锁定后的最终个体，不测试整个 population。TSP100 使用前
+128 个独立测试实例。TSP500 使用前 32 个独立测试实例。每个实例使用三个
+共同 ACO seeds。所有方法均运行 5000 次 ACO 迭代。主要指标是相对最优标签
+的 gap%。RMTGP+2-opt 与 ACO+3-opt 的直接差异定义为
+
+\[
+\Delta_{3\mathrm{opt}}
+=
+\operatorname{Gap}(\mathrm{RMTGP+2opt})
+-
+\operatorname{Gap}(\mathrm{ACO+3opt}).
+\]
+
+对该差异执行 GP run、instance 和 ACO seed 三层 bootstrap。若 95% 区间
+上界小于 0，则记为优于 ACO+3-opt；若上界不超过预先固定的 0.10
+percentage-point margin，则只记为非劣。在线时间用单个 program 独立运行
+测量。CUDA 编译时间单独报告，不计入在线求解时间。
+
+GPU 实现把 individual×instance 平铺为任务。每条 2-opt 路线由一个 warp
+处理，一个 block 同时处理 8 条路线。每条 3-opt 路线由一个 512-thread
+block 处理，并行检查 \(20^2\) 个候选对。候选对用最小 pair index 归约，
+从而保持确定性的 first-improvement 顺序。RTX PRO 5000 Blackwell 的短
+基准中，8 warps/block 比 4 warps/block 快约 4.5%。3-opt 的 block 化相对
+旧的一 warp/tour 实现，在 TSP100 和 TSP500 小工作负载上分别把局部搜索
+内核时间降低约 1.9 倍和 3.5 倍。正式结论仍以完整运行 artifact 为准。
 
 ## 22.12 E11：ACS 语义审计
 

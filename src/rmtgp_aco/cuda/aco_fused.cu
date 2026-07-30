@@ -693,6 +693,7 @@ __device__ float pheromone_terminal(
     float edge_tau_mean,
     float edge_tau_std,
     float source_quality,
+    float source_ls_gain,
     float epsilon_numeric
 ) {
     if (terminal == 0) {
@@ -728,10 +729,14 @@ __device__ float pheromone_terminal(
         return 2.0f * static_cast<float>(iteration - 1)
             / static_cast<float>(max(total_iterations - 1, 1)) - 1.0f;
     }
-    return 2.0f * fminf(
-        static_cast<float>(stagnation) / static_cast<float>(total_iterations),
-        1.0f
-    ) - 1.0f;
+    if (terminal == 6) {
+        return 2.0f * fminf(
+            static_cast<float>(stagnation)
+                / static_cast<float>(total_iterations),
+            1.0f
+        ) - 1.0f;
+    }
+    return source_ls_gain;
 }
 
 __device__ void prepare_source_deposits(
@@ -759,6 +764,7 @@ __device__ void prepare_source_deposits(
     const int16_t* integer_arguments,
     int program_length,
     uint64_t required_mask,
+    float source_ls_gain,
     float* deposits
 ) {
     const float base_deposit = 1.0f / source_length;
@@ -848,8 +854,8 @@ __device__ void prepare_source_deposits(
         float deposit = base_deposit;
         const int u = source_tour[edge];
         const int v = source_tour[edge + 1];
-        float terminals[7];
-        for (int terminal = 0; terminal < 7; ++terminal) {
+        float terminals[8];
+        for (int terminal = 0; terminal < 8; ++terminal) {
             if ((required_mask & (UINT64_C(1) << terminal)) != 0) {
                 terminals[terminal] = pheromone_terminal(
                     terminal,
@@ -871,6 +877,7 @@ __device__ void prepare_source_deposits(
                     edge_tau_mean,
                     edge_tau_std,
                     source_quality,
+                    source_ls_gain,
                     epsilon_numeric
                 );
             }
@@ -1295,6 +1302,7 @@ extern "C" __global__ void fused_aco(
                     ph_iargs,
                     ph_lengths[program],
                     ph_required_masks[program],
+                    -1.0f,
                     deposits
                 );
             }

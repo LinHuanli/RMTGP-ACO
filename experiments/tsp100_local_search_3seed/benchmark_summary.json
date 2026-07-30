@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "purpose": "Implementation selection and one-generation feasibility benchmark; not final scientific results",
+  "hardware": {
+    "device": "NVIDIA RTX PRO 5000 Blackwell",
+    "compute_capability": "12.0",
+    "memory_mib": 48935
+  },
+  "software_profile": {
+    "backend": "cuda_tiled_v2",
+    "precision": "fp32_fast",
+    "candidate_lanes": 8,
+    "generated_gp": true
+  },
+  "local_search_launch_tuning": {
+    "two_opt": {
+      "workload": "ACS, TSP100, 64 instances, population 100, 10 ACO iterations",
+      "median_kernel_seconds": {
+        "4_warps_per_block": 0.32205163574218754,
+        "8_warps_per_block": 0.3081268157958984
+      },
+      "selected_warps_per_block": 8,
+      "speedup": 1.0451853541362028
+    },
+    "three_opt": {
+      "selected_block_threads": 512,
+      "one_block_per_tour": true,
+      "block_thread_probe": {
+        "tsp100_32_instances_20_iterations": {
+          "128": 0.058438127517700195,
+          "256": 0.04785513496398926,
+          "512": 0.0462172794342041
+        },
+        "tsp500_8_instances_4_iterations": {
+          "128": 0.12293420791625977,
+          "256": 0.08968828582763672,
+          "512": 0.07756072235107422
+        }
+      },
+      "speedup_over_old_one_warp_per_tour": {
+        "tsp100": 1.908706648470348,
+        "tsp500": 3.5112517963456604
+      }
+    }
+  },
+  "one_generation_formal_scale": {
+    "schedule_hash": "27d05cf90f1e3584125c53f0d7b849cc741ba6cb6b404208bc8c139ead402258",
+    "instances": 64,
+    "population": 100,
+    "ants": 32,
+    "aco_iterations": 500,
+    "records": [
+      {
+        "variant": "as",
+        "training_local_search": "none",
+        "generation_seconds": 18.177584784003557,
+        "evaluation_seconds": 17.597488970000995,
+        "best_train_gap_percent": 5.266004113168789,
+        "baseline_train_gap_percent": 6.281716221133392,
+        "delta_pp": -1.0157121079646034,
+        "tours_per_second": 4713399.743645091
+      },
+      {
+        "variant": "as",
+        "training_local_search": "two_opt",
+        "generation_seconds": 24.953997222997714,
+        "evaluation_seconds": 24.064731605991255,
+        "best_train_gap_percent": 0.10229606335181346,
+        "baseline_train_gap_percent": 0.14528624170688184,
+        "delta_pp": -0.042990178355068395,
+        "tours_per_second": 3446703.722195261
+      },
+      {
+        "variant": "acs",
+        "training_local_search": "none",
+        "generation_seconds": 11.377036928010057,
+        "evaluation_seconds": 10.901060354997753,
+        "best_train_gap_percent": 1.4956889544751326,
+        "baseline_train_gap_percent": 1.819748975692474,
+        "delta_pp": -0.32406002121734134,
+        "tours_per_second": 7608801.098140245
+      },
+      {
+        "variant": "acs",
+        "training_local_search": "two_opt",
+        "generation_seconds": 17.324364945001435,
+        "evaluation_seconds": 16.590123425005004,
+        "best_train_gap_percent": 0.016149808457594894,
+        "baseline_train_gap_percent": 0.07234578259091926,
+        "delta_pp": -0.05619597413332436,
+        "tours_per_second": 4999601.1406994695
+      },
+      {
+        "variant": "mmas",
+        "training_local_search": "none",
+        "generation_seconds": 10.807889392992365,
+        "evaluation_seconds": 10.384359329997096,
+        "best_train_gap_percent": 1.5240132563208224,
+        "baseline_train_gap_percent": 1.6888880731214555,
+        "delta_pp": -0.16487481680063326,
+        "tours_per_second": 7987396.946136223
+      },
+      {
+        "variant": "mmas",
+        "training_local_search": "two_opt",
+        "generation_seconds": 17.202140326000517,
+        "evaluation_seconds": 16.500990983011434,
+        "best_train_gap_percent": 0.004782013568872867,
+        "baseline_train_gap_percent": 0.018638578424601693,
+        "delta_pp": -0.013856564855728828,
+        "tours_per_second": 5026607.195009976
+      }
+    ]
+  },
+  "interpretation": "All six paths completed and showed a negative same-batch gap delta in generation 1. These observations validate execution and learning signal only. They are not validation or test evidence."
+}

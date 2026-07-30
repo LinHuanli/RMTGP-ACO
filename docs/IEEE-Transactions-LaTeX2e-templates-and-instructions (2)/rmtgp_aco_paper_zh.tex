@@ -595,6 +595,23 @@ Full\\
 该划分使 Core 同时包含几何、信息素和来源质量。
 Full 再加入群体与时间信息。
 
+局部搜索扩展使用第八个信息素终端 \texttt{LSGain}。
+它的强类型为 \texttt{PhField}，逻辑 shape 为 \([B,R,n]\)。
+设来源路线在局部搜索前后的长度为
+\(L^{\mathrm{pre}}_r\) 和 \(L^{\mathrm{post}}_r\)。
+先计算
+\[
+2\operatorname{clip}\!\left(
+\frac{L^{\mathrm{pre}}_r-L^{\mathrm{post}}_r}
+{\max(L^{\mathrm{pre}}_r,\epsilon)},0,1\right)-1.
+\]
+该值的输入是当前路线及其局部搜索前后长度。
+它不读取参考路线或最优标签。
+所得 \([B,R]\) scalar 沿来源路线的 \(n\) 条边广播。
+关闭局部搜索时，该终端固定为 \(-1\)。
+主实验仍使用表~\ref{tab:pheromone-terminals-zh} 的七个终端。
+局部搜索扩展的两个训练条件使用同一个八终端 grammar。
+
 两个终端集合都包含常数 \(-1,-0.5,0,0.5,1\)。
 它们还包含一个从 \(U[-1,1]\) 采样的随机常数。
 这些常数也是强类型终端。

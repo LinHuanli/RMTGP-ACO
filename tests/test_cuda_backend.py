@@ -24,6 +24,7 @@ from rmtgp_aco.config import (
     ExperimentConfig,
     GPConfig,
     GPUMode,
+    LocalSearch,
     RuntimeConfig,
 )
 from rmtgp_aco.data import make_problem_batch
@@ -420,6 +421,89 @@ def test_cuda_v2_interpreter_sizes_stack_for_both_trees(
     assert torch.equal(interpreted.best_length, generated.best_length)
     assert torch.equal(interpreted.best_iteration, generated.best_iteration)
     assert torch.equal(interpreted.diagnostics, generated.diagnostics)
+
+
+@pytest.mark.parametrize(
+    "local_search",
+    [LocalSearch.TWO_OPT, LocalSearch.THREE_OPT],
+)
+def test_cuda_v2_local_search_is_audited_and_repeatable(
+    local_search,
+    small_instances,
+) -> None:
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "acs",
+            local_search=local_search,
+            iterations=2,
+        ),
+        candidate_size=2,
+        local_search_candidate_size=2,
+    )
+    runtime = replace(
+        _runtime_v2(),
+        cuda_three_opt_block_threads=512,
+    )
+    first = solve_population_cuda(
+        batch,
+        config,
+        [(None, None)],
+        seed=991,
+        runtime=runtime,
+    )
+    repeated = solve_population_cuda(
+        batch,
+        config,
+        [(None, None)],
+        seed=991,
+        runtime=replace(runtime, gpu_task_chunk_size=1),
+    )
+    assert torch.equal(first.best_tour, repeated.best_tour)
+    assert torch.equal(first.best_length, repeated.best_length)
+    assert torch.equal(first.diagnostics, repeated.diagnostics)
+    assert first.diagnostics.shape == (1, 8)
+    assert int(first.diagnostics[0, 4]) > 0
+    assert int(first.diagnostics[0, 5]) > 0
+    assert int(first.diagnostics[0, 6]) > 0
+
+
+@pytest.mark.parametrize("variant", list(ACOVariant))
+def test_cuda_v2_local_search_is_monotone_after_one_construction(
+    variant,
+    small_instances,
+) -> None:
+    """同一首轮构造上，2-opt 不变差，3-opt 也不弱于 2-opt。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    two_opt = replace(
+        ACOConfig.acotsp_local_search_default(
+            variant,
+            local_search=LocalSearch.TWO_OPT,
+            iterations=1,
+        ),
+        candidate_size=2,
+        local_search_candidate_size=2,
+    )
+    no_search = replace(two_opt, local_search=LocalSearch.NONE)
+    three_opt = replace(two_opt, local_search=LocalSearch.THREE_OPT)
+    results = [
+        solve_population_cuda(
+            batch,
+            config,
+            [(None, None)],
+            seed=1771,
+            runtime=replace(
+                _runtime_v2(),
+                cuda_three_opt_block_threads=512,
+            ),
+        )
+        for config in (no_search, two_opt, three_opt)
+    ]
+    for result in results:
+        _assert_valid_population_tours(result.best_tour)
+    assert torch.all(results[1].best_length <= results[0].best_length + 1e-10)
+    assert torch.all(results[2].best_length <= results[1].best_length + 1e-10)
 
 
 def test_cuda_backend_connects_to_population_fitness(small_instances) -> None:

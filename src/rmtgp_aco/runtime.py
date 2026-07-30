@@ -57,6 +57,10 @@ def runtime_state(config: RuntimeConfig) -> dict[str, int | bool | str]:
         "cuda_generated_gp": config.cuda_generated_gp,
         "cuda_graph_replay": config.cuda_graph_replay,
         "cuda_tuning_manifest": config.cuda_tuning_manifest or "",
+        "cuda_ls_warps_per_block": config.cuda_ls_warps_per_block,
+        "cuda_three_opt_block_threads": (
+            config.cuda_three_opt_block_threads
+        ),
         "torch_threads": torch.get_num_threads(),
         "torch_interop_threads": torch.get_num_interop_threads(),
         "multiprocessing_start_method": config.multiprocessing_start_method,

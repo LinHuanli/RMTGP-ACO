@@ -101,6 +101,10 @@ class RunDiagnostics:
     candidate_fallback_count: int = 0
     bound_clip_count: int = 0
     mmas_restart_count: int = 0
+    local_search_move_count: int = 0
+    local_search_candidate_check_count: int = 0
+    local_search_improved_tour_count: int = 0
+    local_search_pass_count: int = 0
 
 
 @dataclass(slots=True)
@@ -144,8 +148,12 @@ class PopulationQualityResult:
             raise ValueError("population best_tour 必须具有 [P,B,n+1] shape")
         if self.best_iteration.shape != self.best_length.shape:
             raise ValueError("population best_iteration shape 不一致")
-        if self.diagnostics.shape != (self.best_length.shape[0], 4):
-            raise ValueError("population diagnostics 必须具有 [P,4] shape")
+        if (
+            self.diagnostics.ndim != 2
+            or self.diagnostics.shape[0] != self.best_length.shape[0]
+            or self.diagnostics.shape[1] < 4
+        ):
+            raise ValueError("population diagnostics 必须具有 [P,D] shape，D>=4")
 
 
 @dataclass(slots=True)
@@ -174,5 +182,9 @@ class PopulationRunResult:
             raise ValueError("population run best_iteration shape 不一致")
         if self.anytime_best.shape[:2] != self.best_length.shape:
             raise ValueError("population run anytime_best shape 不一致")
-        if self.diagnostics.shape != (self.best_length.shape[0], 4):
-            raise ValueError("population run diagnostics 必须具有 [P,4] shape")
+        if (
+            self.diagnostics.ndim != 2
+            or self.diagnostics.shape[0] != self.best_length.shape[0]
+            or self.diagnostics.shape[1] < 4
+        ):
+            raise ValueError("population run diagnostics 必须具有 [P,D] shape，D>=4")
