@@ -211,6 +211,8 @@ class GenerationRecord:
     racing_high_fitness_by_hash: dict[str, float] = field(
         default_factory=dict
     )
+    # 放在 slots 末尾，保证旧 checkpoint 的 positional state 不发生位移。
+    validation_monitor_aco_iterations: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -2191,6 +2193,7 @@ def _write_training_validation_curve(
             "racing_high_instances,"
             "validation_candidate_gap_percent,"
             "validation_baseline_gap_percent,validation_delta_pp,"
+            "validation_aco_iterations,"
             "generation_wall_time_sec,validation_monitor_wall_time_sec\n"
         )
     ]
@@ -2248,6 +2251,7 @@ def _write_training_validation_curve(
                     scale,
                     float("nan"),
                 ),
+                record.validation_monitor_aco_iterations,
             )
             rendered = ",".join(f"{value:.17g}" for value in values)
             lines.append(
@@ -3367,10 +3371,11 @@ def train(
                 and generation % experiment.validation_monitor_interval == 0
             ):
                 monitor_started = perf_counter()
-                evaluator.set_experiment(experiment)
-                if active_iterations != experiment.aco.iterations:
-                    evaluator.warm(validation_monitor_cases[0])
-                    active_iterations = experiment.aco.iterations
+                # 逐代 validation 只用于监控泛化趋势，不参与最终模型选择。
+                # 它必须沿用本代 high-fidelity horizon；若切回正式配置的
+                # 5000 iterations，监控成本会反而超过整代训练。最终
+                # selection/gate 仍在训练结束后使用完整 experiment 配置。
+                evaluator.set_experiment(generation_experiment)
                 monitor_pool = (
                     _learned_candidates(population)
                     if experiment.gp.baseline_anchor
@@ -3411,10 +3416,9 @@ def train(
                 record.validation_monitor_wall_time = (
                     perf_counter() - monitor_started
                 )
-                evaluator.set_experiment(generation_experiment)
-                if active_iterations != generation_experiment.aco.iterations:
-                    evaluator.warm(warm_case)
-                    active_iterations = generation_experiment.aco.iterations
+                record.validation_monitor_aco_iterations = (
+                    generation_experiment.aco.iterations
+                )
 
             breeding_started = perf_counter()
             if generation < experiment.gp.generations:

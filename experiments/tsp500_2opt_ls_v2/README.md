@@ -16,6 +16,11 @@ Screen fitness 是 paired basin mean。High fitness 是 final 与 anytime
 各占 0.5 的 paired mean。育种不加入标准误惩罚。风险控制只用于独立
 validation selection/gate。
 
+每 5 代的 validation monitor 只画泛化曲线，不参与育种或最终选择。
+它沿用本代 high-fidelity ACO horizon，即前、中、后三段分别为
+100、200、500 iterations。训练结束后的 selection/gate 和独立 test
+才使用完整的 5000 iterations，避免监控时间超过一代训练时间。
+
 GP 使用三个阶段：
 
 1. 第 1--10 代只进化 pheromone tree，transition residual 为零；

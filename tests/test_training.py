@@ -433,6 +433,7 @@ def test_training_horizon_schedule_is_recorded(tmp_path) -> None:
     ] == [1, 2, 3]
     assert result.history[0].validation_monitor_delta_by_scale == {}
     assert result.history[1].validation_monitor_delta_by_scale
+    assert result.history[1].validation_monitor_aco_iterations == 2
     assert all(record.baseline_anchor_count == 1 for record in result.history)
 
 
