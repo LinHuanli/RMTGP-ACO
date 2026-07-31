@@ -2354,9 +2354,17 @@ def _hydrate_fitness_breakdown(
         object.__setattr__(breakdown, descriptor.name, value)
 
 
-def _hydrate_generation_record(record: GenerationRecord) -> None:
+def _hydrate_generation_record(
+    record: GenerationRecord,
+    *,
+    legacy_validation_monitor_iterations: int = 0,
+) -> None:
     """为旧 pickle 中后来新增、且有默认值的审计字段补默认值。"""
 
+    missing_monitor_horizon = not hasattr(
+        record,
+        "validation_monitor_aco_iterations",
+    )
     for descriptor in fields(GenerationRecord):
         if hasattr(record, descriptor.name):
             continue
@@ -2370,6 +2378,13 @@ def _hydrate_generation_record(record: GenerationRecord) -> None:
                 f"GenerationRecord.{descriptor.name}"
             )
         setattr(record, descriptor.name, value)
+    if (
+        missing_monitor_horizon
+        and record.validation_monitor_delta_by_scale
+    ):
+        record.validation_monitor_aco_iterations = (
+            legacy_validation_monitor_iterations
+        )
 
 
 def _sampler_owner(
@@ -2449,7 +2464,12 @@ def _load_resume_checkpoint(
     for record in payload.get("history", ()):
         if not isinstance(record, GenerationRecord):
             raise TypeError("training checkpoint history 类型错误")
-        _hydrate_generation_record(record)
+        _hydrate_generation_record(
+            record,
+            legacy_validation_monitor_iterations=(
+                experiment.aco.iterations
+            ),
+        )
     hydrated_breakdowns: set[int] = set()
     for collection_name in ("population", "checkpoints"):
         for individual in payload.get(collection_name, ()):
