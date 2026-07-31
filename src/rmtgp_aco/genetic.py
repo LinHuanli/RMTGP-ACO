@@ -237,6 +237,14 @@ def valid_size(individual: RMTGPIndividual, config: GPConfig) -> bool:
     )
 
 
+def _active_role(config: GPConfig) -> int:
+    """按冻结的角色概率选择要修改的树。"""
+
+    if config.train_transition and config.train_pheromone:
+        return 1 if random.random() < config.pheromone_role_probability else 0
+    return 0 if config.train_transition else 1
+
+
 def mate_role_preserving(
     first: RMTGPIndividual,
     second: RMTGPIndividual,
@@ -246,14 +254,7 @@ def mate_role_preserving(
 
     backup_first = first.clone()
     backup_second = second.clone()
-    active_roles = [
-        role
-        for role, enabled in enumerate(
-            (config.train_transition, config.train_pheromone)
-        )
-        if enabled
-    ]
-    role = random.choice(active_roles)
+    role = _active_role(config)
     gp.cxOnePoint(first[role], second[role])
     first_changed = valid_size(first, config)
     second_changed = valid_size(second, config)
@@ -283,14 +284,7 @@ def mutate_role_preserving(
     """在随机角色内执行 subtree、point 或 ERC mutation。"""
 
     backup = individual.clone()
-    active_roles = [
-        role
-        for role, enabled in enumerate(
-            (config.train_transition, config.train_pheromone)
-        )
-        if enabled
-    ]
-    role = random.choice(active_roles)
+    role = _active_role(config)
     tree = individual[role]
     pset = transition_pset if role == 0 else pheromone_pset
     draw = random.random()
@@ -311,6 +305,80 @@ def mutate_role_preserving(
     if individual.fitness.valid:
         del individual.fitness.values
     return (individual,)
+
+
+def _fresh_active_individual(
+    template: RMTGPIndividual,
+    transition_pset: gp.PrimitiveSetTyped,
+    pheromone_pset: gp.PrimitiveSetTyped,
+    config: GPConfig,
+) -> RMTGPIndividual:
+    """重新生成活动树，同时原样保留冻结角色。"""
+
+    mode = (
+        "joint"
+        if config.train_transition and config.train_pheromone
+        else ("transition" if config.train_transition else "pheromone")
+    )
+    for _ in range(10_000):
+        fresh = make_individual(
+            transition_pset,
+            pheromone_pset,
+            config,
+            mode=mode,
+        )
+        if not config.train_transition:
+            fresh.transition_tree = deepcopy(template.transition_tree)
+        if not config.train_pheromone:
+            fresh.pheromone_tree = deepcopy(template.pheromone_tree)
+        if valid_size(fresh, config):
+            fresh.metadata["baseline_passthrough"] = False
+            _clear_evaluation_metadata(fresh)
+            if fresh.fitness.valid:
+                del fresh.fitness.values
+            return fresh
+    raise RuntimeError("无法在结构副本约束下生成合法的新个体")
+
+
+def _enforce_structural_copy_limit(
+    population: list[RMTGPIndividual],
+    transition_pset: gp.PrimitiveSetTyped,
+    pheromone_pset: gp.PrimitiveSetTyped,
+    config: GPConfig,
+) -> list[RMTGPIndividual]:
+    """限制完整双树 genotype 的副本数，避免 racing 后种群塌缩。"""
+
+    limit = config.max_structural_copies
+    if limit <= 0:
+        return population
+    counts: dict[str, int] = {}
+    result: list[RMTGPIndividual] = []
+    for original in population:
+        candidate = original
+        attempts = 0
+        while counts.get(candidate.structural_hash, 0) >= limit:
+            if attempts < 32:
+                candidate = candidate.clone()
+                (candidate,) = mutate_role_preserving(
+                    candidate,
+                    transition_pset,
+                    pheromone_pset,
+                    config,
+                )
+            else:
+                candidate = _fresh_active_individual(
+                    original,
+                    transition_pset,
+                    pheromone_pset,
+                    config,
+                )
+            attempts += 1
+            if attempts > 10_000:
+                raise RuntimeError("无法满足 max_structural_copies 约束")
+        key = candidate.structural_hash
+        counts[key] = counts.get(key, 0) + 1
+        result.append(candidate)
+    return result
 
 
 def evolve_generation(
@@ -386,7 +454,12 @@ def evolve_generation(
             parent = tournament(1)[0]
             offspring.append(parent.clone())
 
-    result = (elites + offspring)[:target_size]
+    result = _enforce_structural_copy_limit(
+        (elites + offspring)[:target_size],
+        transition_pset,
+        pheromone_pset,
+        config,
+    )
     if anchor is not None:
         result.append(anchor)
     return result

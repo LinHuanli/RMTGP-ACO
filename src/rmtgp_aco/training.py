@@ -30,6 +30,7 @@ from .config import (
     ExecutionBackend,
     ExperimentConfig,
     FitnessMode,
+    GPConfig,
     GPUMode,
     SelectionMode,
 )
@@ -40,6 +41,7 @@ from .genetic import (
     initialise_population,
     is_baseline_individual,
     make_individual,
+    valid_size,
 )
 from .program import create_primitive_sets
 from .sampling import EvaluationCase
@@ -861,34 +863,31 @@ def _batched_population_breakdowns(
             FitnessMode.PAIRED_FINAL_UCB,
         }:
             fitness_observation = final_delta
-        elif mode is FitnessMode.PAIRED_BASIN_UCB:
+        elif mode in {
+            FitnessMode.PAIRED_BASIN_UCB,
+            FitnessMode.PAIRED_BASIN_MEAN,
+        }:
             assert basin_delta is not None
             fitness_observation = basin_delta
         elif mode is FitnessMode.PAIRED_COMBINED_UCB:
             assert basin_delta is not None
             weight = experiment.gp.basin_weight
-            fitness_observation = (
-                weight * basin_delta + (1.0 - weight) * final_delta
-            )
+            fitness_observation = weight * basin_delta + (1.0 - weight) * final_delta
         elif mode is FitnessMode.PAIRED_ANYTIME_UCB:
             assert anytime_delta is not None
             fitness_observation = anytime_delta
-        elif mode is FitnessMode.PAIRED_FINAL_ANYTIME_UCB:
+        elif mode in {
+            FitnessMode.PAIRED_FINAL_ANYTIME_UCB,
+            FitnessMode.PAIRED_FINAL_ANYTIME_MEAN,
+        }:
             assert anytime_delta is not None
             weight = experiment.gp.anytime_weight
-            fitness_observation = (
-                weight * anytime_delta + (1.0 - weight) * final_delta
-            )
+            fitness_observation = weight * anytime_delta + (1.0 - weight) * final_delta
         else:
             fitness_observation = candidate_gap
-        audit_observation = (
-            fitness_observation
-            if mode.is_paired
-            else final_delta
-        )
+        audit_observation = fitness_observation if mode.is_paired else final_delta
         standard_error = (
-            audit_observation.std(dim=1, unbiased=True)
-            / np.sqrt(audit_observation.shape[1])
+            audit_observation.std(dim=1, unbiased=True) / np.sqrt(audit_observation.shape[1])
             if audit_observation.shape[1] > 1
             else audit_observation.new_zeros(audit_observation.shape[0])
         )
@@ -959,12 +958,14 @@ def _batched_population_breakdowns(
             scale: float(values["standard_error"][index].item())
             for scale, values in scale_values.items()
         }
-        if experiment.gp.fitness_mode.is_paired:
+        if experiment.gp.fitness_mode.uses_training_ucb:
             fitness_terms = [
                 fitness_delta[scale]
                 + experiment.gp.fitness_ucb_z * standard_error[scale]
                 for scale in sorted(fitness_delta)
             ]
+        elif experiment.gp.fitness_mode.is_paired:
+            fitness_terms = [fitness_delta[scale] for scale in sorted(fitness_delta)]
         else:
             fitness_terms = list(mean_gap.values())
         breakdowns.append(
@@ -2771,6 +2772,96 @@ def _training_experiment_for_generation(
     )
 
 
+def _load_fixed_transition_tree(
+    config: GPConfig,
+):
+    """读取三阶段训练使用的 no-LS transition champion。"""
+
+    if config.fixed_transition_checkpoint is None:
+        return None
+    source = Path(config.fixed_transition_checkpoint).expanduser().resolve()
+    if source.is_dir():
+        source = source / "selected_candidate.pkl"
+    if not source.is_file():
+        raise FileNotFoundError(f"fixed transition checkpoint 不存在: {source}")
+    with source.open("rb") as handle:
+        individual = pickle.load(handle)
+    if not isinstance(individual, RMTGPIndividual):
+        raise TypeError("fixed transition checkpoint 不是 RMTGPIndividual")
+    return deepcopy(individual.transition_tree)
+
+
+def _gp_config_for_generation(
+    config: GPConfig,
+    generation: int,
+    *,
+    fixed_transition_nodes: int,
+) -> GPConfig:
+    """把声明式三阶段协议解析为本代实际遗传算子配置。"""
+
+    staged = config.phase_a_end_generation > 0
+    common = {
+        "phase_a_end_generation": 0,
+        "phase_b_end_generation": 0,
+        "fixed_transition_checkpoint": None,
+    }
+    if not staged:
+        return replace(config, **common)
+    if generation <= config.phase_a_end_generation:
+        reserved_budget = config.max_total_nodes - fixed_transition_nodes
+        if reserved_budget < 1:
+            raise ValueError(
+                "fixed transition tree 已占满 max_total_nodes，无法为 pheromone tree 预留容量"
+            )
+        return replace(
+            config,
+            train_transition=False,
+            train_pheromone=True,
+            max_total_nodes=reserved_budget,
+            **common,
+        )
+    if generation <= config.phase_b_end_generation:
+        return replace(
+            config,
+            train_transition=False,
+            train_pheromone=True,
+            **common,
+        )
+    return replace(
+        config,
+        train_transition=True,
+        train_pheromone=True,
+        **common,
+    )
+
+
+def _inject_fixed_transition(
+    population: Sequence[RMTGPIndividual],
+    transition_tree,
+    config: GPConfig,
+) -> None:
+    """在 Phase B 边界一次性注入冻结 transition tree。"""
+
+    for individual in population:
+        if is_baseline_individual(individual):
+            continue
+        individual.transition_tree = deepcopy(transition_tree)
+        individual.metadata["baseline_passthrough"] = False
+        for name in (
+            "fitness_breakdown",
+            "racing_screen_breakdown",
+            "racing_screen_score",
+            "racing_high_breakdown",
+            "racing_high_score",
+            "racing_fidelity_tier",
+        ):
+            individual.metadata.pop(name, None)
+        if individual.fitness.valid:
+            del individual.fitness.values
+        if not valid_size(individual, config):
+            raise ValueError("Phase A 的 pheromone tree 与 fixed transition 合并后超过结构预算")
+
+
 def _racing_screen_experiment_for_generation(
     experiment: ExperimentConfig,
     generation: int,
@@ -2783,20 +2874,31 @@ def _racing_screen_experiment_for_generation(
         generations=experiment.gp.generations,
         fallback=high_iterations,
     )
+    screen_mode = (
+        experiment.gp.fitness_mode
+        if experiment.racing.screen_fitness_mode is None
+        else experiment.racing.screen_fitness_mode
+    )
     return replace(
         experiment,
         aco=replace(experiment.aco, iterations=screen_iterations),
+        gp=replace(experiment.gp, fitness_mode=screen_mode),
     )
 
 
 def _racing_screen_cases(
     cases: Sequence[EvaluationCase],
     instances_per_scale: int,
+    seeds_per_scale: int = 1,
 ) -> tuple[EvaluationCase, ...]:
-    """从已冻结的本代 batch 取前缀，保证两阶段严格共享实例与 seed。"""
+    """取实例前缀与 seed 前缀，保证两阶段共享 common random numbers。"""
 
     selected: list[EvaluationCase] = []
+    selected_seeds: dict[int, int] = {}
     for case in cases:
+        used = selected_seeds.get(case.scale, 0)
+        if used >= seeds_per_scale:
+            continue
         if case.batch.batch_size < instances_per_scale:
             raise ValueError(
                 f"TSP{case.scale} 本代仅有 {case.batch.batch_size} 个实例，"
@@ -2809,6 +2911,14 @@ def _racing_screen_cases(
                 seed=case.seed,
             )
         )
+        selected_seeds[case.scale] = used + 1
+    missing = {
+        scale: seeds_per_scale - selected_seeds.get(scale, 0)
+        for scale in {case.scale for case in cases}
+        if selected_seeds.get(scale, 0) < seeds_per_scale
+    }
+    if missing:
+        raise ValueError(f"racing cases 缺少训练 seed: {missing}")
     return tuple(selected)
 
 
@@ -2882,17 +2992,29 @@ def _evaluate_population_with_racing(
         experiment,
         generation,
     )
+    generations = experiment.gp.generations
+    screen_instances = experiment.racing.screen_instances_for_generation(
+        generation,
+        generations=generations,
+    )
+    high_instances = experiment.racing.high_instances_for_generation(
+        generation,
+        generations=generations,
+        fallback=max(case.batch.batch_size for case in cases),
+    )
+    high_seeds = experiment.racing.high_seeds_for_generation(
+        generation,
+        generations=generations,
+    )
     screen_cases = _racing_screen_cases(
         cases,
-        experiment.racing.screen_instances_per_scale,
+        screen_instances,
+        1,
     )
-    high_cases = (
-        tuple(cases)
-        if experiment.racing.high_instances_per_scale is None
-        else _racing_screen_cases(
-            cases,
-            experiment.racing.high_instances_per_scale,
-        )
+    high_cases = _racing_screen_cases(
+        cases,
+        high_instances,
+        high_seeds,
     )
 
     evaluator.set_experiment(screen_experiment)
@@ -3079,6 +3201,13 @@ def train(
     if target is not None:
         target.mkdir(parents=True, exist_ok=True)
     sampler_owner = _sampler_owner(training_cases_for_generation)
+    fixed_transition_tree = _load_fixed_transition_tree(experiment.gp)
+    fixed_transition_nodes = (
+        0
+        if fixed_transition_tree is None
+        or (len(fixed_transition_tree) == 1 and str(fixed_transition_tree) == "ZERO_TR")
+        else len(fixed_transition_tree)
+    )
 
     if resume_from is None:
         random.seed(experiment.root_seed)
@@ -3088,7 +3217,13 @@ def train(
             population,
             transition_pset,
             pheromone_pset,
-        ) = initialise_population(experiment.gp)
+        ) = initialise_population(
+            _gp_config_for_generation(
+                experiment.gp,
+                1,
+                fixed_transition_nodes=fixed_transition_nodes,
+            )
+        )
         history: list[GenerationRecord] = []
         checkpoints: list[RMTGPIndividual] = []
         completed_generation = 0
@@ -3141,6 +3276,20 @@ def train(
             experiment.gp.generations + 1,
         ):
             generation_started = perf_counter()
+            generation_gp = _gp_config_for_generation(
+                experiment.gp,
+                generation,
+                fixed_transition_nodes=fixed_transition_nodes,
+            )
+            if (
+                fixed_transition_tree is not None
+                and generation == experiment.gp.phase_a_end_generation + 1
+            ):
+                _inject_fixed_transition(
+                    population,
+                    fixed_transition_tree,
+                    generation_gp,
+                )
             generation_experiment = _training_experiment_for_generation(
                 experiment,
                 generation,
@@ -3269,11 +3418,16 @@ def train(
 
             breeding_started = perf_counter()
             if generation < experiment.gp.generations:
+                next_generation_gp = _gp_config_for_generation(
+                    experiment.gp,
+                    generation + 1,
+                    fixed_transition_nodes=fixed_transition_nodes,
+                )
                 next_population = evolve_generation(
                     population,
                     transition_pset,
                     pheromone_pset,
-                    experiment.gp,
+                    next_generation_gp,
                     selection_key=(
                         _racing_selection_key
                         if experiment.racing.enabled

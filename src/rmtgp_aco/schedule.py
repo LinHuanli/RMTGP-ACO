@@ -248,6 +248,45 @@ def _train_seed(
     return int(rng.integers(0, 2**63 - 1))
 
 
+def _training_seeds(
+    root_seed: int,
+    *,
+    phase: str,
+    replicate_id: int,
+    generation: int,
+    scale: int,
+    count: int,
+) -> tuple[int, ...]:
+    """生成训练 seed 前缀；第一个值与 schema v1 历史 schedule 一致。"""
+
+    if count < 1:
+        raise ValueError("training seed 数必须为正整数")
+    first = _train_seed(
+        root_seed,
+        phase=phase,
+        replicate_id=replicate_id,
+        generation=generation,
+        scale=scale,
+    )
+    values = [first]
+    for seed_index in range(1, count):
+        rng = np.random.default_rng(
+            np.random.SeedSequence(
+                [
+                    root_seed,
+                    replicate_id,
+                    _PHASE_CODE[phase],
+                    generation,
+                    scale,
+                    0x41434F,
+                    seed_index,
+                ]
+            )
+        )
+        values.append(int(rng.integers(0, 2**63 - 1)))
+    return tuple(values)
+
+
 def build_protocol_schedule(
     training_pools: Mapping[int, ScalePool],
     validation_pools: Mapping[int, ScalePool],
@@ -261,11 +300,12 @@ def build_protocol_schedule(
     validation_selection_instances_per_scale: int,
     validation_gate_instances_per_scale: int,
     validation_seeds: int,
+    training_seeds: int = 1,
 ) -> ScheduleManifest:
     """建立 mixed-scale train + 独立 selection/gate schedule。"""
 
-    if generations < 1 or validation_seeds < 1:
-        raise ValueError("generations 和 validation_seeds 必须为正整数")
+    if generations < 1 or validation_seeds < 1 or training_seeds < 1:
+        raise ValueError("generations、training_seeds 和 validation_seeds 必须为正整数")
     if phase not in _PHASE_CODE:
         raise ValueError(f"未知 schedule phase: {phase}")
     train_rngs = {
@@ -313,14 +353,13 @@ def build_protocol_schedule(
                     logical_indices=tuple(int(index) for index in indices),
                     instance_ids=instance_ids,
                     coordinate_hashes=coordinate_hashes,
-                    aco_seeds=(
-                        _train_seed(
-                            root_seed,
-                            phase=phase,
-                            replicate_id=replicate_id,
-                            generation=generation,
-                            scale=scale,
-                        ),
+                    aco_seeds=_training_seeds(
+                        root_seed,
+                        phase=phase,
+                        replicate_id=replicate_id,
+                        generation=generation,
+                        scale=scale,
+                        count=training_seeds,
                     ),
                 )
             )
@@ -416,6 +455,7 @@ def validate_schedule_contract(
     validation_selection_instances_per_scale: int,
     validation_gate_instances_per_scale: int,
     validation_seeds: int,
+    training_seeds: int = 1,
 ) -> None:
     """验证冻结 schedule 与本次运行的全部科研合同完全一致。"""
 
@@ -453,7 +493,7 @@ def validate_schedule_contract(
         if (
             record.role != "generation"
             or len(record.logical_indices) != train_instances_per_scale
-            or len(record.aco_seeds) != 1
+            or len(record.aco_seeds) != training_seeds
         ):
             raise ValueError("schedule train record 的 role/count/seed 数不符合配置")
 
@@ -601,17 +641,19 @@ class ScheduledTrainingSampler:
                     f"schedule 缺少 generation={generation}, scale={scale}"
                 ) from exc
             instances = _load_record_instances(record, self.pools)
-            cases.append(
+            batch = make_problem_batch(
+                instances,
+                candidate_size=self.candidate_size,
+                dtype=self.dtype,
+                device=self.device,
+            )
+            cases.extend(
                 EvaluationCase(
                     scale=scale,
-                    batch=make_problem_batch(
-                        instances,
-                        candidate_size=self.candidate_size,
-                        dtype=self.dtype,
-                        device=self.device,
-                    ),
-                    seed=record.aco_seeds[0],
+                    batch=batch,
+                    seed=seed,
                 )
+                for seed in record.aco_seeds
             )
         return cases
 

@@ -687,14 +687,20 @@ __device__ float pheromone_terminal(
     const float* pheromone,
     const uint16_t* full_nn_rank,
     const float* node_log_eta_mean,
-    const uint8_t* edge_frequency,
+    const uint8_t* pre_edge_frequency,
+    const uint8_t* post_edge_frequency,
     float edge_eta_mean,
     float edge_eta_std,
     float edge_tau_mean,
     float edge_tau_std,
     float source_quality,
     float source_ls_gain,
+    const float* source_edge_gain,
     const int8_t* source_origin,
+    int ls_gain_semantics,
+    float tau_min,
+    float tau_max,
+    float rho,
     float epsilon_numeric
 ) {
     if (terminal == 0) {
@@ -720,7 +726,7 @@ __device__ float pheromone_terminal(
         const int first = min(u, v);
         const int second = max(u, v);
         return 2.0f * static_cast<float>(
-            edge_frequency[first * n + second]
+            post_edge_frequency[first * n + second]
         ) / static_cast<float>(ants) - 1.0f;
     }
     if (terminal == 4) {
@@ -738,9 +744,34 @@ __device__ float pheromone_terminal(
         ) - 1.0f;
     }
     if (terminal == 7) {
-        return source_ls_gain;
+        return ls_gain_semantics == 1
+            ? source_edge_gain[edge]
+            : source_ls_gain;
     }
-    return static_cast<float>(source_origin[edge]);
+    if (terminal == 8) {
+        return static_cast<float>(source_origin[edge]);
+    }
+    if (terminal == 9) {
+        const float evaporated = (1.0f - rho) * pheromone[u * n + v];
+        return fminf(
+            1.0f,
+            fmaxf(
+                0.0f,
+                (tau_max - evaporated)
+                    / (tau_max - tau_min + epsilon_numeric)
+            )
+        );
+    }
+    const int first = min(u, v);
+    const int second = max(u, v);
+    if (terminal == 10) {
+        return 2.0f * static_cast<float>(
+            pre_edge_frequency[first * n + second]
+        ) / static_cast<float>(ants) - 1.0f;
+    }
+    return 2.0f * static_cast<float>(
+        post_edge_frequency[first * n + second]
+    ) / static_cast<float>(ants) - 1.0f;
 }
 
 __device__ void prepare_source_deposits(
@@ -756,7 +787,8 @@ __device__ void prepare_source_deposits(
     const float* pheromone,
     const uint16_t* full_nn_rank,
     const float* node_log_eta_mean,
-    const uint8_t* edge_frequency,
+    const uint8_t* pre_edge_frequency,
+    const uint8_t* post_edge_frequency,
     const float* colony_lengths,
     float epsilon_numeric,
     int pheromone_mode,
@@ -769,7 +801,12 @@ __device__ void prepare_source_deposits(
     int program_length,
     uint64_t required_mask,
     float source_ls_gain,
+    const float* source_edge_gain,
     const int8_t* source_origin,
+    int ls_gain_semantics,
+    float tau_min,
+    float tau_max,
+    float rho,
     float* deposits
 ) {
     const float base_deposit = 1.0f / source_length;
@@ -859,8 +896,8 @@ __device__ void prepare_source_deposits(
         float deposit = base_deposit;
         const int u = source_tour[edge];
         const int v = source_tour[edge + 1];
-        float terminals[9];
-        for (int terminal = 0; terminal < 9; ++terminal) {
+        float terminals[12];
+        for (int terminal = 0; terminal < 12; ++terminal) {
             if ((required_mask & (UINT64_C(1) << terminal)) != 0) {
                 terminals[terminal] = pheromone_terminal(
                     terminal,
@@ -876,14 +913,20 @@ __device__ void prepare_source_deposits(
                     pheromone,
                     full_nn_rank,
                     node_log_eta_mean,
-                    edge_frequency,
+                    pre_edge_frequency,
+                    post_edge_frequency,
                     edge_eta_mean,
                     edge_eta_std,
                     edge_tau_mean,
                     edge_tau_std,
                     source_quality,
                     source_ls_gain,
+                    source_edge_gain,
                     source_origin,
+                    ls_gain_semantics,
+                    tau_min,
+                    tau_max,
+                    rho,
                     epsilon_numeric
                 );
             }
@@ -1297,6 +1340,7 @@ extern "C" __global__ void fused_aco(
                     full_nn_rank,
                     node_log_eta_mean,
                     edge_frequency,
+                    edge_frequency,
                     colony_lengths,
                     epsilon_numeric,
                     pheromone_mode,
@@ -1310,6 +1354,11 @@ extern "C" __global__ void fused_aco(
                     ph_required_masks[program],
                     -1.0f,
                     nullptr,
+                    nullptr,
+                    0,
+                    tau_min,
+                    tau_max,
+                    rho,
                     deposits
                 );
             }

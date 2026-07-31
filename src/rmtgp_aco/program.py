@@ -87,6 +87,8 @@ TRANSITION_TERMINALS: tuple[str, ...] = (
     "ConstructProg",
     "ACOProg",
     "Stagnation",
+    "MutualRank",
+    "TurnCos",
 )
 
 CORE_TRANSITION_TERMINALS: tuple[str, ...] = (
@@ -106,13 +108,16 @@ PHEROMONE_TERMINALS: tuple[str, ...] = (
     "Stagnation",
 )
 
-# 旧实验的 ``LSGain`` 是 source-tour 级常数，不能给单条更新边分配局部
-# 搜索信用。保留为可读 legacy terminal，但不再进入默认搜索空间。
+# ``LSGain`` 的数值语义由 ACOConfig.ls_gain_semantics 显式控制。旧实验
+# 默认读取 tour-level 常数；LS-v2 配置使用逐边最后一次引入增益。
 LEGACY_LS_PHEROMONE_TERMINAL = "LSGain"
 ORIGIN_PHEROMONE_TERMINALS: tuple[str, ...] = PHEROMONE_TERMINALS + ("Origin",)
 ALLOWED_PHEROMONE_TERMINALS: tuple[str, ...] = (
     *ORIGIN_PHEROMONE_TERMINALS,
     LEGACY_LS_PHEROMONE_TERMINAL,
+    "TauHeadroom",
+    "PreFreq",
+    "PostFreq",
 )
 
 CORE_PHEROMONE_TERMINALS: tuple[str, ...] = (

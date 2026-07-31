@@ -331,4 +331,20 @@ def load_run_spec(path: str | Path) -> RunSpec:
             "racing high_instances_per_scale 不得超过 "
             "data.train_instances_per_scale"
         )
+    if experiment.racing.enabled:
+        for label, schedule in (
+            (
+                "screen_instance_schedule",
+                experiment.racing.screen_instance_schedule,
+            ),
+            (
+                "high_instance_schedule",
+                experiment.racing.high_instance_schedule,
+            ),
+        ):
+            if (
+                schedule is not None
+                and max(value for _, value in schedule) > data.train_instances_per_scale
+            ):
+                raise ValueError(f"racing {label} 不得超过 data.train_instances_per_scale")
     return RunSpec(experiment=experiment, data=data, source_path=source)

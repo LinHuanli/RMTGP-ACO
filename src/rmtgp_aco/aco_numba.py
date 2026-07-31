@@ -20,6 +20,7 @@ from .config import (
     ACOConfig,
     ACOVariant,
     LocalSearch,
+    LSGainSemantics,
     PheromoneIntegration,
     TransitionIntegration,
 )
@@ -73,6 +74,8 @@ _TRANSITION_TERMINAL_INDEX = {
     "MeanDistance": 11,
     "Size": 12,
     "FeasibleCount": 13,
+    "MutualRank": 14,
+    "TurnCos": 15,
 }
 
 _PHEROMONE_TERMINAL_INDEX = {
@@ -85,33 +88,30 @@ _PHEROMONE_TERMINAL_INDEX = {
     "Stagnation": 6,
     "LSGain": 7,
     "Origin": 8,
+    "TauHeadroom": 9,
+    "PreFreq": 10,
+    "PostFreq": 11,
 }
 
 # 这些 terminal 对同一次 candidate/edge vector 的全部列取值相同。只存一次，
 # interpreter 再广播到工作栈，以内存换掉热循环中的重复写入。
 _TRANSITION_SCALAR_TERMINAL_MASK = np.uint64(
-    (1 << 4)
-    | (1 << 5)
-    | (1 << 6)
-    | (1 << 7)
-    | (1 << 10)
-    | (1 << 11)
-    | (1 << 12)
-    | (1 << 13)
+    (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 13)
 )
 _TRANSITION_VECTOR_TERMINAL_MASK = np.uint64(
+    (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 8) | (1 << 9) | (1 << 14) | (1 << 15)
+)
+_PHEROMONE_SCALAR_TERMINAL_MASK = np.uint64((1 << 4) | (1 << 5) | (1 << 6))
+_PHEROMONE_VECTOR_TERMINAL_MASK = np.uint64(
     (1 << 0)
     | (1 << 1)
     | (1 << 2)
     | (1 << 3)
+    | (1 << 7)
     | (1 << 8)
     | (1 << 9)
-)
-_PHEROMONE_SCALAR_TERMINAL_MASK = np.uint64(
-    (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7)
-)
-_PHEROMONE_VECTOR_TERMINAL_MASK = np.uint64(
-    (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 8)
+    | (1 << 10)
+    | (1 << 11)
 )
 
 
@@ -682,11 +682,14 @@ def _masked_stdrel_values(
 
 @njit(cache=True)
 def _prepare_transition_scores(
+    coords: np.ndarray,
     distances: np.ndarray,
     heuristic: np.ndarray,
     log_heuristic: np.ndarray,
     pheromone: np.ndarray,
     current_city: int,
+    previous_city: int,
+    full_nn_rank: np.ndarray,
     candidates: np.ndarray,
     count: int,
     candidate_fallback: bool,
@@ -851,6 +854,33 @@ def _prepare_transition_scores(
         terminals[12, 0] = float(distances.shape[0])
     if _mask_has(required_mask, 13):
         terminals[13, 0] = float(count)
+    if _mask_has(required_mask, 14):
+        denominator = float(max(distances.shape[0] - 2, 1))
+        for index in range(count):
+            candidate = candidates[index]
+            forward = float(full_nn_rank[current_city, candidate] - 1)
+            reverse = float(full_nn_rank[candidate, current_city] - 1)
+            terminals[14, index] = min(
+                max(1.0 - (forward + reverse) / (2.0 * denominator), 0.0),
+                1.0,
+            )
+    if _mask_has(required_mask, 15):
+        if previous_city < 0:
+            for index in range(count):
+                terminals[15, index] = 0.0
+        else:
+            incoming_x = coords[current_city, 0] - coords[previous_city, 0]
+            incoming_y = coords[current_city, 1] - coords[previous_city, 1]
+            incoming_norm = np.sqrt(incoming_x * incoming_x + incoming_y * incoming_y)
+            for index in range(count):
+                candidate = candidates[index]
+                outgoing_x = coords[candidate, 0] - coords[current_city, 0]
+                outgoing_y = coords[candidate, 1] - coords[current_city, 1]
+                outgoing_norm = np.sqrt(outgoing_x * outgoing_x + outgoing_y * outgoing_y)
+                value = (incoming_x * outgoing_x + incoming_y * outgoing_y) / (
+                    incoming_norm * outgoing_norm + epsilon_numeric
+                )
+                terminals[15, index] = min(max(value, -1.0), 1.0)
 
     _evaluate_program_columns(
         opcodes,
@@ -875,39 +905,53 @@ def _prepare_transition_scores(
 
 @njit(cache=True)
 def _choose_city(
-    distances: np.ndarray,
-    heuristic: np.ndarray,
-    log_heuristic: np.ndarray,
-    nearest: np.ndarray,
+    geometry: tuple,
     pheromone: np.ndarray,
     visited: np.ndarray,
-    ant: int,
-    current_city: int,
-    variant: int,
-    alpha: float,
-    beta: float,
-    q0: float,
-    epsilon_numeric: float,
-    transition_mode: int,
-    gamma_transition: float,
-    program_active: bool,
-    opcodes: np.ndarray,
-    float_arguments: np.ndarray,
-    integer_arguments: np.ndarray,
-    required_mask: np.uint64,
-    seed: np.uint64,
-    instance_key: np.uint64,
-    construction_step: int,
-    iteration: int,
-    stagnation: int,
-    total_iterations: int,
-    candidates: np.ndarray,
-    terminals: np.ndarray,
-    scores: np.ndarray,
-    scratch: np.ndarray,
-    stack: np.ndarray,
-    diagnostics: np.ndarray,
+    candidate_state: tuple,
+    transition_state: tuple,
+    random_state: tuple,
+    workspace: tuple,
 ) -> int:
+    (
+        coords,
+        distances,
+        heuristic,
+        log_heuristic,
+        nearest,
+        full_nn_rank,
+    ) = geometry
+    ant, current_city, previous_city = candidate_state
+    (
+        variant,
+        alpha,
+        beta,
+        q0,
+        epsilon_numeric,
+        transition_mode,
+        gamma_transition,
+        program_active,
+        opcodes,
+        float_arguments,
+        integer_arguments,
+        required_mask,
+    ) = transition_state
+    (
+        seed,
+        instance_key,
+        construction_step,
+        iteration,
+        stagnation,
+        total_iterations,
+    ) = random_state
+    (
+        candidates,
+        terminals,
+        scores,
+        scratch,
+        stack,
+        diagnostics,
+    ) = workspace
     count = 0
     for candidate_index in range(nearest.shape[1]):
         city = nearest[current_city, candidate_index]
@@ -926,11 +970,14 @@ def _choose_city(
                 count += 1
 
     base_uniform = _prepare_transition_scores(
+        coords,
         distances,
         heuristic,
         log_heuristic,
         pheromone,
         current_city,
+        previous_city,
+        full_nn_rank,
         candidates,
         count,
         candidate_fallback,
@@ -1050,46 +1097,93 @@ def _apply_acs_edges(
 
 @njit(cache=True)
 def _construct_tours(
-    distances: np.ndarray,
-    heuristic: np.ndarray,
-    log_heuristic: np.ndarray,
-    nearest: np.ndarray,
+    geometry: tuple,
     pheromone: np.ndarray,
     tours: np.ndarray,
     visited: np.ndarray,
-    variant: int,
-    synchronous_acs: bool,
-    alpha: float,
-    beta: float,
-    q0: float,
-    local_factors: np.ndarray,
-    tau0: float,
-    epsilon_numeric: float,
-    transition_mode: int,
-    gamma_transition: float,
-    transition_active: bool,
-    tr_opcodes: np.ndarray,
-    tr_float_arguments: np.ndarray,
-    tr_integer_arguments: np.ndarray,
-    tr_required_mask: np.uint64,
-    seed: np.uint64,
-    instance_key: np.uint64,
-    iteration: int,
-    stagnation: int,
-    total_iterations: int,
-    candidates: np.ndarray,
-    tr_terminals: np.ndarray,
-    scores: np.ndarray,
-    scratch: np.ndarray,
-    stack: np.ndarray,
-    edge_u: np.ndarray,
-    edge_v: np.ndarray,
-    edge_counts: np.ndarray,
-    active_edges: np.ndarray,
-    diagnostics: np.ndarray,
+    aco_state: tuple,
+    transition_program_state: tuple,
+    random_state: tuple,
+    construction_workspace: tuple,
 ) -> None:
+    (
+        coords,
+        distances,
+        heuristic,
+        log_heuristic,
+        nearest,
+        full_nn_rank,
+    ) = geometry
+    (
+        variant,
+        synchronous_acs,
+        alpha,
+        beta,
+        q0,
+        local_factors,
+        tau0,
+        epsilon_numeric,
+        transition_mode,
+        gamma_transition,
+    ) = aco_state
+    (
+        transition_active,
+        tr_opcodes,
+        tr_float_arguments,
+        tr_integer_arguments,
+        tr_required_mask,
+    ) = transition_program_state
+    (
+        seed,
+        instance_key,
+        iteration,
+        stagnation,
+        total_iterations,
+    ) = random_state
+    (
+        candidates,
+        tr_terminals,
+        scores,
+        scratch,
+        stack,
+        edge_u,
+        edge_v,
+        edge_counts,
+        active_edges,
+        diagnostics,
+    ) = construction_workspace
     ants, n_plus_one = tours.shape
     n = n_plus_one - 1
+    choice_geometry = (
+        coords,
+        distances,
+        heuristic,
+        log_heuristic,
+        nearest,
+        full_nn_rank,
+    )
+    choice_transition_state = (
+        variant,
+        alpha,
+        beta,
+        q0,
+        epsilon_numeric,
+        transition_mode,
+        gamma_transition,
+        transition_active,
+        tr_opcodes,
+        tr_float_arguments,
+        tr_integer_arguments,
+        tr_required_mask,
+    )
+    choice_workspace = (
+        candidates,
+        tr_terminals,
+        scores,
+        scratch,
+        stack,
+        diagnostics,
+    )
     for ant in range(ants):
         for city in range(n):
             visited[ant, city] = 0
@@ -1106,41 +1200,26 @@ def _construct_tours(
         visited[ant, start] = 1
 
     for step in range(1, n):
+        choice_random_state = (
+            seed,
+            instance_key,
+            step,
+            iteration,
+            stagnation,
+            total_iterations,
+        )
         for ant in range(ants):
             current = tours[ant, step - 1]
+            previous = -1 if step < 2 else tours[ant, step - 2]
+            candidate_state = (ant, current, previous)
             chosen = _choose_city(
-                distances,
-                heuristic,
-                log_heuristic,
-                nearest,
+                choice_geometry,
                 pheromone,
                 visited,
-                ant,
-                current,
-                variant,
-                alpha,
-                beta,
-                q0,
-                epsilon_numeric,
-                transition_mode,
-                gamma_transition,
-                transition_active,
-                tr_opcodes,
-                tr_float_arguments,
-                tr_integer_arguments,
-                tr_required_mask,
-                seed,
-                instance_key,
-                step,
-                iteration,
-                stagnation,
-                total_iterations,
-                candidates,
-                tr_terminals,
-                scores,
-                scratch,
-                stack,
-                diagnostics,
+                candidate_state,
+                choice_transition_state,
+                choice_random_state,
+                choice_workspace,
             )
             tours[ant, step] = chosen
             edge_u[ant] = current
@@ -1204,8 +1283,11 @@ def _tour_lengths(
 def _reverse_between_edge_starts(
     tour: np.ndarray,
     position: np.ndarray,
+    edge_gain: np.ndarray,
     first_start: int,
     second_start: int,
+    accepted_gain: float,
+    track_edge_gain: bool,
 ) -> None:
     """以连续片段翻转实现一个对称 TSP 2-opt move。"""
 
@@ -1216,6 +1298,8 @@ def _reverse_between_edge_starts(
         left = right
         right = help
     left += 1
+    segment_left = left
+    segment_right = right
     while left < right:
         first_city = tour[left]
         second_city = tour[right]
@@ -1225,6 +1309,17 @@ def _reverse_between_edge_starts(
         position[second_city] = left
         left += 1
         right -= 1
+    if track_edge_gain:
+        gain_left = segment_left
+        gain_right = segment_right - 1
+        while gain_left < gain_right:
+            value = edge_gain[gain_left]
+            edge_gain[gain_left] = edge_gain[gain_right]
+            edge_gain[gain_right] = value
+            gain_left += 1
+            gain_right -= 1
+        edge_gain[segment_left - 1] = accepted_gain
+        edge_gain[segment_right] = accepted_gain
 
 
 @njit(cache=True)
@@ -1242,6 +1337,8 @@ def _two_opt_first_inplace(
     position: np.ndarray,
     order: np.ndarray,
     dlb: np.ndarray,
+    edge_gain: np.ndarray,
+    track_edge_gain: bool,
 ) -> tuple[float, float, int, int, int]:
     """ACOTSP 风格的候选表、DLB、first-improvement 2-opt。"""
 
@@ -1251,6 +1348,8 @@ def _two_opt_first_inplace(
         position[city] = index
         order[index] = index
         dlb[index] = 0
+        if track_edge_gain:
+            edge_gain[index] = 0.0
     for index in range(n - 1):
         remaining = n - index
         offset = min(
@@ -1306,11 +1405,21 @@ def _two_opt_first_inplace(
                     - distances[candidate, candidate_successor]
                 )
                 if delta < -1e-12:
+                    accepted_gain = min(
+                        max(
+                            -delta / (length_before / n + 1e-300),
+                            0.0,
+                        ),
+                        1.0,
+                    )
                     _reverse_between_edge_starts(
                         tour,
                         position,
+                        edge_gain,
                         city,
                         candidate,
+                        accepted_gain,
+                        track_edge_gain,
                     )
                     dlb[city] = 0
                     dlb[successor] = 0
@@ -1344,11 +1453,21 @@ def _two_opt_first_inplace(
                     - distances[candidate_predecessor, candidate]
                 )
                 if delta < -1e-12:
+                    accepted_gain = min(
+                        max(
+                            -delta / (length_before / n + 1e-300),
+                            0.0,
+                        ),
+                        1.0,
+                    )
                     _reverse_between_edge_starts(
                         tour,
                         position,
+                        edge_gain,
                         predecessor,
                         candidate_predecessor,
+                        accepted_gain,
+                        track_edge_gain,
                     )
                     dlb[predecessor] = 0
                     dlb[city] = 0
@@ -1382,14 +1501,20 @@ def _prepare_pheromone_terminals(
     source_tour: np.ndarray,
     source_length: float,
     colony_lengths: np.ndarray,
-    edge_frequency: np.ndarray,
+    pre_edge_frequency: np.ndarray,
+    post_edge_frequency: np.ndarray,
     required_mask: np.uint64,
     epsilon_numeric: float,
     iteration: int,
     stagnation: int,
     total_iterations: int,
     source_ls_gain: float,
+    source_edge_gain: np.ndarray,
     source_origin: np.ndarray,
+    ls_gain_semantics: int,
+    tau_min: float,
+    tau_max: float,
+    rho: float,
     terminals: np.ndarray,
     edge_u: np.ndarray,
     edge_v: np.ndarray,
@@ -1433,9 +1558,7 @@ def _prepare_pheromone_terminals(
         for edge in range(n):
             u = min(edge_u[edge], edge_v[edge])
             v = max(edge_u[edge], edge_v[edge])
-            terminals[3, edge] = (
-                2.0 * edge_frequency[u * n + v] / ants - 1.0
-            )
+            terminals[3, edge] = 2.0 * post_edge_frequency[u * n + v] / ants - 1.0
     if _mask_has(required_mask, 4):
         mean = 0.0
         for ant in range(colony_lengths.shape[0]):
@@ -1458,67 +1581,114 @@ def _prepare_pheromone_terminals(
         value = 2.0 * min(stagnation / total_iterations, 1.0) - 1.0
         terminals[6, 0] = value
     if _mask_has(required_mask, 7):
-        terminals[7, 0] = source_ls_gain
+        if ls_gain_semantics == 1:
+            for edge in range(n):
+                terminals[7, edge] = source_edge_gain[edge]
+        else:
+            for edge in range(n):
+                terminals[7, edge] = source_ls_gain
     if _mask_has(required_mask, 8):
         for edge in range(n):
             terminals[8, edge] = source_origin[edge]
+    if _mask_has(required_mask, 9):
+        denominator = tau_max - tau_min + epsilon_numeric
+        for edge in range(n):
+            value = (tau_max - (1.0 - rho) * pheromone[edge_u[edge], edge_v[edge]]) / denominator
+            terminals[9, edge] = min(max(value, 0.0), 1.0)
+    if _mask_has(required_mask, 10):
+        ants = colony_lengths.shape[0]
+        for edge in range(n):
+            u = min(edge_u[edge], edge_v[edge])
+            v = max(edge_u[edge], edge_v[edge])
+            terminals[10, edge] = 2.0 * pre_edge_frequency[u * n + v] / ants - 1.0
+    if _mask_has(required_mask, 11):
+        ants = colony_lengths.shape[0]
+        for edge in range(n):
+            u = min(edge_u[edge], edge_v[edge])
+            v = max(edge_u[edge], edge_v[edge])
+            terminals[11, edge] = 2.0 * post_edge_frequency[u * n + v] / ants - 1.0
 
 
 @njit(cache=True)
 def _global_pheromone_update(
-    heuristic: np.ndarray,
-    log_heuristic: np.ndarray,
-    nearest: np.ndarray,
-    full_nn_rank: np.ndarray,
+    geometry: tuple,
     pheromone: np.ndarray,
     tours: np.ndarray,
     lengths: np.ndarray,
-    iteration_best_index: int,
-    global_best_tour: np.ndarray,
-    global_best_length: float,
-    restart_best_tour: np.ndarray,
-    restart_best_length: float,
-    ls_gains: np.ndarray,
-    global_best_ls_gain: float,
-    restart_best_ls_gain: float,
-    origins: np.ndarray,
-    global_best_origin: np.ndarray,
-    restart_best_origin: np.ndarray,
-    tau_min: float,
-    tau_max: float,
-    variant: int,
-    rho: float,
-    mmas_update_period: int,
-    local_search_active: bool,
-    restart_iteration: int,
-    restart_found_best: int,
-    epsilon_numeric: float,
-    pheromone_mode: int,
-    gamma_pheromone: float,
-    pheromone_active: bool,
-    ph_opcodes: np.ndarray,
-    ph_float_arguments: np.ndarray,
-    ph_integer_arguments: np.ndarray,
-    ph_required_mask: np.uint64,
+    best_state: tuple,
+    local_search_state: tuple,
+    aco_state: tuple,
+    pheromone_program_state: tuple,
     iteration: int,
     stagnation: int,
     total_iterations: int,
-    node_log_eta_mean: np.ndarray,
-    ph_terminals: np.ndarray,
-    dense: np.ndarray,
-    edge_frequency: np.ndarray,
-    frequency_active_edges: np.ndarray,
-    source_edge_u: np.ndarray,
-    source_edge_v: np.ndarray,
-    scratch: np.ndarray,
-    deposits: np.ndarray,
-    stack: np.ndarray,
-    diagnostics: np.ndarray,
+    update_workspace: tuple,
 ) -> None:
+    (
+        heuristic,
+        log_heuristic,
+        nearest,
+        full_nn_rank,
+        node_log_eta_mean,
+    ) = geometry
+    (
+        iteration_best_index,
+        global_best_tour,
+        global_best_length,
+        restart_best_tour,
+        restart_best_length,
+    ) = best_state
+    (
+        ls_gains,
+        global_best_ls_gain,
+        restart_best_ls_gain,
+        edge_gains,
+        global_best_edge_gain,
+        restart_best_edge_gain,
+        origins,
+        global_best_origin,
+        restart_best_origin,
+        pre_tours,
+        ls_gain_semantics,
+    ) = local_search_state
+    (
+        tau_min,
+        tau_max,
+        variant,
+        rho,
+        mmas_update_period,
+        local_search_active,
+        restart_iteration,
+        restart_found_best,
+        epsilon_numeric,
+        pheromone_mode,
+        gamma_pheromone,
+    ) = aco_state
+    (
+        pheromone_active,
+        ph_opcodes,
+        ph_float_arguments,
+        ph_integer_arguments,
+        ph_required_mask,
+    ) = pheromone_program_state
+    (
+        ph_terminals,
+        dense,
+        edge_frequency,
+        frequency_active_edges,
+        pre_edge_frequency,
+        pre_frequency_active_edges,
+        source_edge_u,
+        source_edge_v,
+        scratch,
+        deposits,
+        stack,
+        diagnostics,
+    ) = update_workspace
     n = pheromone.shape[0]
 
     frequency_active_count = 0
-    if _mask_has(ph_required_mask, 3):
+    if _mask_has(ph_required_mask, 3) or _mask_has(ph_required_mask, 11):
         for ant in range(tours.shape[0]):
             for edge in range(n):
                 u = min(tours[ant, edge], tours[ant, edge + 1])
@@ -1528,6 +1698,17 @@ def _global_pheromone_update(
                     frequency_active_edges[frequency_active_count] = edge_id
                     frequency_active_count += 1
                 edge_frequency[edge_id] += 1
+    pre_frequency_active_count = 0
+    if _mask_has(ph_required_mask, 10):
+        for ant in range(pre_tours.shape[0]):
+            for edge in range(n):
+                u = min(pre_tours[ant, edge], pre_tours[ant, edge + 1])
+                v = max(pre_tours[ant, edge], pre_tours[ant, edge + 1])
+                edge_id = u * n + v
+                if pre_edge_frequency[edge_id] == 0:
+                    pre_frequency_active_edges[pre_frequency_active_count] = edge_id
+                    pre_frequency_active_count += 1
+                pre_edge_frequency[edge_id] += 1
 
     source_count = tours.shape[0] if variant == 0 else 1
     resolved_period = mmas_update_period
@@ -1565,26 +1746,31 @@ def _global_pheromone_update(
             source_tour = tours[source]
             source_length = lengths[source]
             source_ls_gain = ls_gains[source]
+            source_edge_gain = edge_gains[source]
             source_origin = origins[source]
         elif variant == 1:
             source_tour = global_best_tour
             source_length = global_best_length
             source_ls_gain = global_best_ls_gain
+            source_edge_gain = global_best_edge_gain
             source_origin = global_best_origin
         elif source_kind == 0:
             source_tour = tours[iteration_best_index]
             source_length = lengths[iteration_best_index]
             source_ls_gain = ls_gains[iteration_best_index]
+            source_edge_gain = edge_gains[iteration_best_index]
             source_origin = origins[iteration_best_index]
         elif source_kind == 1:
             source_tour = restart_best_tour
             source_length = restart_best_length
             source_ls_gain = restart_best_ls_gain
+            source_edge_gain = restart_best_edge_gain
             source_origin = restart_best_origin
         else:
             source_tour = global_best_tour
             source_length = global_best_length
             source_ls_gain = global_best_ls_gain
+            source_edge_gain = global_best_edge_gain
             source_origin = global_best_origin
 
         _prepare_pheromone_terminals(
@@ -1596,6 +1782,7 @@ def _global_pheromone_update(
             source_tour,
             source_length,
             lengths,
+            pre_edge_frequency,
             edge_frequency,
             ph_required_mask,
             epsilon_numeric,
@@ -1603,7 +1790,12 @@ def _global_pheromone_update(
             stagnation,
             total_iterations,
             source_ls_gain,
+            source_edge_gain,
             source_origin,
+            ls_gain_semantics,
+            tau_min,
+            tau_max,
+            rho,
             ph_terminals,
             source_edge_u,
             source_edge_v,
@@ -1672,6 +1864,8 @@ def _global_pheromone_update(
     if variant == 1:
         for index in range(frequency_active_count):
             edge_frequency[frequency_active_edges[index]] = 0
+        for index in range(pre_frequency_active_count):
+            pre_edge_frequency[pre_frequency_active_edges[index]] = 0
         return
 
     if local_search_active:
@@ -1712,6 +1906,8 @@ def _global_pheromone_update(
                 dense[j, i] = 0.0
     for index in range(frequency_active_count):
         edge_frequency[frequency_active_edges[index]] = 0
+    for index in range(pre_frequency_active_count):
+        pre_edge_frequency[pre_frequency_active_edges[index]] = 0
 
 
 @njit(cache=True)
@@ -1738,7 +1934,7 @@ def _allocate_solver_workspace(
         np.empty((ants, n), dtype=np.uint8),  # visited
         np.empty(ants, dtype=np.float64),  # lengths
         np.empty(n, dtype=np.int64),  # candidates
-        np.empty((14, n), dtype=np.float64),  # transition terminals
+        np.empty((16, n), dtype=np.float64),  # transition terminals
         np.empty(n, dtype=np.float64),  # scores
         np.empty(n, dtype=np.float64),  # scratch
         np.empty((stack_size, n), dtype=np.float64),  # GP stack
@@ -1747,12 +1943,17 @@ def _allocate_solver_workspace(
         np.zeros(n * n, dtype=np.int64),  # ACS edge counts
         np.empty(edge_capacity, dtype=np.int64),  # active edges
         local_factors,
-        np.empty((9, n), dtype=np.float64),  # pheromone terminals
+        np.empty((12, n), dtype=np.float64),  # pheromone terminals
         np.zeros((n, n), dtype=np.float64),  # dense deposits
         np.zeros(n * n, dtype=np.int64),  # edge frequency
         np.empty(n * n, dtype=np.int64),  # active frequency edges
+        np.zeros(n * n, dtype=np.int64),  # construction 前 edge frequency
+        np.empty(n * n, dtype=np.int64),  # active pre-frequency edges
         np.empty(n, dtype=np.float64),  # deposits
         np.empty(ants, dtype=np.float64),  # LSGain
+        np.empty((ants, n), dtype=np.float64),  # 逐边 last-move LSGain
+        np.empty(n, dtype=np.float64),  # global-best 逐边 LSGain
+        np.empty(n, dtype=np.float64),  # restart-best 逐边 LSGain
         np.empty(n, dtype=np.int64),  # LS city -> position
         np.empty(n, dtype=np.int64),  # LS random order
         np.empty(n, dtype=np.uint8),  # LS DLB
@@ -1791,56 +1992,67 @@ def _top_q_mean(
 
 @njit(cache=True, nogil=True)
 def _solve_instance_inplace(
-    distances: np.ndarray,
-    heuristic: np.ndarray,
-    log_heuristic: np.ndarray,
-    nearest: np.ndarray,
-    full_nn_rank: np.ndarray,
-    node_log_eta_mean: np.ndarray,
-    tau0: float,
-    tau_min: float,
-    tau_max: float,
-    variant: int,
-    ants: int,
-    iterations: int,
-    alpha: float,
-    beta: float,
-    rho: float,
-    q0: float,
-    xi: float,
-    gamma_transition: float,
-    gamma_pheromone: float,
-    transition_mode: int,
-    pheromone_mode: int,
-    synchronous_acs: bool,
-    epsilon_numeric: float,
-    mmas_update_period: int,
-    mmas_p_best: float,
-    mmas_branch_check_period: int,
-    mmas_branch_lambda: float,
-    mmas_branch_threshold: float,
-    mmas_restart_stagnation: int,
-    local_search_mode: int,
-    local_search_candidate_size: int,
-    local_search_dlb: bool,
-    tr_active: bool,
-    tr_opcodes: np.ndarray,
-    tr_float_arguments: np.ndarray,
-    tr_integer_arguments: np.ndarray,
-    tr_required_mask: np.uint64,
-    ph_active: bool,
-    ph_opcodes: np.ndarray,
-    ph_float_arguments: np.ndarray,
-    ph_integer_arguments: np.ndarray,
-    ph_required_mask: np.uint64,
-    seed: np.uint64,
-    instance_key: np.uint64,
-    basin_top_q: int,
-    audit_local_search: bool,
+    geometry: tuple,
+    initial_pheromone: tuple,
+    solver_parameters: tuple,
+    transition_program: tuple,
+    pheromone_program: tuple,
+    task_parameters: tuple,
     workspace: tuple,
 ) -> tuple:
     """在调用方提供的可复用工作区内求解一个 TSP 实例。"""
 
+    (
+        coords,
+        distances,
+        heuristic,
+        log_heuristic,
+        nearest,
+        full_nn_rank,
+        node_log_eta_mean,
+    ) = geometry
+    tau0, tau_min, tau_max = initial_pheromone
+    (
+        variant,
+        ants,
+        iterations,
+        alpha,
+        beta,
+        rho,
+        q0,
+        xi,
+        gamma_transition,
+        gamma_pheromone,
+        transition_mode,
+        pheromone_mode,
+        synchronous_acs,
+        epsilon_numeric,
+        mmas_update_period,
+        mmas_p_best,
+        mmas_branch_check_period,
+        mmas_branch_lambda,
+        mmas_branch_threshold,
+        mmas_restart_stagnation,
+        local_search_mode,
+        local_search_candidate_size,
+        local_search_dlb,
+        ls_gain_semantics,
+    ) = solver_parameters
+    (
+        tr_active,
+        tr_opcodes,
+        tr_float_arguments,
+        tr_integer_arguments,
+        tr_required_mask,
+    ) = transition_program
+    (
+        ph_active,
+        ph_opcodes,
+        ph_float_arguments,
+        ph_integer_arguments,
+        ph_required_mask,
+    ) = pheromone_program
+    seed, instance_key, basin_top_q, audit_local_search = task_parameters
     n = distances.shape[0]
     (
         pheromone,
@@ -1865,8 +2077,13 @@ def _solve_instance_inplace(
         dense,
         edge_frequency,
         frequency_active_edges,
+        pre_edge_frequency,
+        pre_frequency_active_edges,
         deposits,
         ls_gains,
+        edge_gains,
+        global_best_edge_gain,
+        restart_best_edge_gain,
         ls_position,
         ls_order,
         ls_dlb,
@@ -1895,51 +2112,70 @@ def _solve_instance_inplace(
     pre_basin_sum = 0.0
     retained_edges = 0
     track_origin = audit_local_search or _mask_has(ph_required_mask, 8)
+    track_pre_tour = track_origin or _mask_has(ph_required_mask, 10)
+    track_edge_gain = ls_gain_semantics == 1 and _mask_has(ph_required_mask, 7)
+    construction_geometry = (
+        coords,
+        distances,
+        heuristic,
+        log_heuristic,
+        nearest,
+        full_nn_rank,
+    )
+    construction_aco_state = (
+        variant,
+        synchronous_acs,
+        alpha,
+        beta,
+        q0,
+        local_factors,
+        tau0,
+        epsilon_numeric,
+        transition_mode,
+        gamma_transition,
+    )
+    transition_program_state = (
+        tr_active,
+        tr_opcodes,
+        tr_float_arguments,
+        tr_integer_arguments,
+        tr_required_mask,
+    )
+    construction_workspace = (
+        candidates,
+        tr_terminals,
+        scores,
+        scratch,
+        stack,
+        edge_u,
+        edge_v,
+        edge_counts,
+        active_edges,
+        diagnostics,
+    )
 
     for iteration in range(1, iterations + 1):
-        _construct_tours(
-            distances,
-            heuristic,
-            log_heuristic,
-            nearest,
-            pheromone,
-            tours,
-            visited,
-            variant,
-            synchronous_acs,
-            alpha,
-            beta,
-            q0,
-            local_factors,
-            tau0,
-            epsilon_numeric,
-            transition_mode,
-            gamma_transition,
-            tr_active,
-            tr_opcodes,
-            tr_float_arguments,
-            tr_integer_arguments,
-            tr_required_mask,
+        construction_random_state = (
             seed,
             instance_key,
             iteration,
             stagnation,
             iterations,
-            candidates,
-            tr_terminals,
-            scores,
-            scratch,
-            stack,
-            edge_u,
-            edge_v,
-            edge_counts,
-            active_edges,
-            diagnostics,
+        )
+        _construct_tours(
+            construction_geometry,
+            pheromone,
+            tours,
+            visited,
+            construction_aco_state,
+            transition_program_state,
+            construction_random_state,
+            construction_workspace,
         )
         _tour_lengths(distances, tours, lengths)
         if basin_top_q > 0:
             pre_basin_sum += _top_q_mean(lengths, basin_top_q, top_q_buffer)
-        if track_origin:
+        if track_pre_tour:
             for ant in range(ants):
                 for city in range(n + 1):
                     pre_tours[ant, city] = tours[ant, city]
@@ -1968,6 +2204,8 @@ def _solve_instance_inplace(
                     ls_position,
                     ls_order,
                     ls_dlb,
+                    edge_gains[ant],
+                    track_edge_gain,
                 )
                 diagnostics[4] += moves
                 diagnostics[5] += checks
@@ -2023,6 +2261,11 @@ def _solve_instance_inplace(
                 global_best_tour[city] = tours[iteration_best_index, city]
             for edge in range(n):
                 global_best_origin[edge] = origins[iteration_best_index, edge]
+                if track_edge_gain:
+                    global_best_edge_gain[edge] = edge_gains[
+                        iteration_best_index,
+                        edge,
+                    ]
             stagnation = 0
         else:
             stagnation += 1
@@ -2035,6 +2278,11 @@ def _solve_instance_inplace(
                 restart_best_tour[city] = tours[iteration_best_index, city]
             for edge in range(n):
                 restart_best_origin[edge] = origins[iteration_best_index, edge]
+                if track_edge_gain:
+                    restart_best_edge_gain[edge] = edge_gains[
+                        iteration_best_index,
+                        edge,
+                    ]
 
         if variant == 2 and improved_global:
             tau_max = 1.0 / (rho * global_best_length)
@@ -2046,55 +2294,82 @@ def _solve_instance_inplace(
                 factor = (1.0 - p_x) / denominator
                 tau_min = tau_max * factor
 
-        _global_pheromone_update(
+        resolved_ls_gain_semantics = ls_gain_semantics if track_edge_gain else 0
+        geometry_state = (
             heuristic,
             log_heuristic,
             nearest,
             full_nn_rank,
-            pheromone,
-            tours,
-            lengths,
+            node_log_eta_mean,
+        )
+        best_state = (
             iteration_best_index,
             global_best_tour,
             global_best_length,
             restart_best_tour,
             restart_best_length,
+        )
+        local_search_state = (
             ls_gains,
             global_best_ls_gain,
             restart_best_ls_gain,
+            edge_gains,
+            global_best_edge_gain,
+            restart_best_edge_gain,
             origins,
             global_best_origin,
             restart_best_origin,
+            pre_tours,
+            resolved_ls_gain_semantics,
+        )
+        local_search_active = local_search_mode != 0
+        aco_state = (
             tau_min,
             tau_max,
             variant,
             rho,
             mmas_update_period,
-            local_search_mode != 0,
+            local_search_active,
             restart_iteration,
             restart_found_best,
             epsilon_numeric,
             pheromone_mode,
             gamma_pheromone,
+        )
+        pheromone_program_state = (
             ph_active,
             ph_opcodes,
             ph_float_arguments,
             ph_integer_arguments,
             ph_required_mask,
-            iteration,
-            stagnation,
-            iterations,
-            node_log_eta_mean,
+        )
+        update_workspace = (
             ph_terminals,
             dense,
             edge_frequency,
             frequency_active_edges,
+            pre_edge_frequency,
+            pre_frequency_active_edges,
             edge_u,
             edge_v,
             scratch,
             deposits,
             stack,
             diagnostics,
+        )
+        _global_pheromone_update(
+            geometry_state,
+            pheromone,
+            tours,
+            lengths,
+            best_state,
+            local_search_state,
+            aco_state,
+            pheromone_program_state,
+            iteration,
+            stagnation,
+            iterations,
+            update_workspace,
         )
         if (
             variant == 2
@@ -2157,6 +2432,7 @@ def _instance_key(instance_id: str) -> np.uint64:
 
 @njit(cache=True, nogil=True, parallel=True)
 def _solve_population_quality_kernel(
+    coords: np.ndarray,
     distances: np.ndarray,
     heuristic: np.ndarray,
     log_heuristic: np.ndarray,
@@ -2189,6 +2465,7 @@ def _solve_population_quality_kernel(
     local_search_mode: int,
     local_search_candidate_size: int,
     local_search_dlb: bool,
+    ls_gain_semantics: int,
     tr_opcodes: np.ndarray,
     tr_float_arguments: np.ndarray,
     tr_integer_arguments: np.ndarray,
@@ -2227,6 +2504,32 @@ def _solve_population_quality_kernel(
         dtype=np.int64,
     )
     final_pre_colony_tours = np.empty_like(final_colony_tours)
+    solver_parameters = (
+        variant,
+        ants,
+        iterations,
+        alpha,
+        beta,
+        rho,
+        q0,
+        xi,
+        gamma_transition,
+        gamma_pheromone,
+        transition_mode,
+        pheromone_mode,
+        synchronous_acs,
+        epsilon_numeric,
+        mmas_update_period,
+        mmas_p_best,
+        mmas_branch_check_period,
+        mmas_branch_lambda,
+        mmas_branch_threshold,
+        mmas_restart_stagnation,
+        local_search_mode,
+        local_search_candidate_size,
+        local_search_dlb,
+        ls_gain_semantics,
+    )
     for batch_index in prange(batch):
         # 一个线程连续求解同一 instance 的整个人口，复用大工作区与几何 cache。
         workspace = _allocate_solver_workspace(
@@ -2239,6 +2542,40 @@ def _solve_population_quality_kernel(
         for individual in range(population):
             tr_length = int(tr_lengths[individual])
             ph_length = int(ph_lengths[individual])
+            geometry = (
+                coords[batch_index],
+                distances[batch_index],
+                heuristic[batch_index],
+                log_heuristic[batch_index],
+                nearest[batch_index],
+                full_nn_rank[batch_index],
+                node_log_eta_mean[batch_index],
+            )
+            initial_pheromone = (
+                initial_tau0[batch_index],
+                initial_tau_min[batch_index],
+                initial_tau_max[batch_index],
+            )
+            transition_program = (
+                bool(tr_active[individual]),
+                tr_opcodes[individual, :tr_length],
+                tr_float_arguments[individual, :tr_length],
+                tr_integer_arguments[individual, :tr_length],
+                tr_required_masks[individual],
+            )
+            pheromone_program = (
+                bool(ph_active[individual]),
+                ph_opcodes[individual, :ph_length],
+                ph_float_arguments[individual, :ph_length],
+                ph_integer_arguments[individual, :ph_length],
+                ph_required_masks[individual],
+            )
+            task_parameters = (
+                seeds[batch_index],
+                instance_keys[batch_index],
+                basin_top_q,
+                audit_local_search,
+            )
             (
                 best_tour,
                 best_length,
@@ -2251,52 +2588,12 @@ def _solve_population_quality_kernel(
                 final_colony,
                 final_pre_colony,
             ) = _solve_instance_inplace(
-                distances[batch_index],
-                heuristic[batch_index],
-                log_heuristic[batch_index],
-                nearest[batch_index],
-                full_nn_rank[batch_index],
-                node_log_eta_mean[batch_index],
-                initial_tau0[batch_index],
-                initial_tau_min[batch_index],
-                initial_tau_max[batch_index],
-                variant,
-                ants,
-                iterations,
-                alpha,
-                beta,
-                rho,
-                q0,
-                xi,
-                gamma_transition,
-                gamma_pheromone,
-                transition_mode,
-                pheromone_mode,
-                synchronous_acs,
-                epsilon_numeric,
-                mmas_update_period,
-                mmas_p_best,
-                mmas_branch_check_period,
-                mmas_branch_lambda,
-                mmas_branch_threshold,
-                mmas_restart_stagnation,
-                local_search_mode,
-                local_search_candidate_size,
-                local_search_dlb,
-                bool(tr_active[individual]),
-                tr_opcodes[individual, :tr_length],
-                tr_float_arguments[individual, :tr_length],
-                tr_integer_arguments[individual, :tr_length],
-                tr_required_masks[individual],
-                bool(ph_active[individual]),
-                ph_opcodes[individual, :ph_length],
-                ph_float_arguments[individual, :ph_length],
-                ph_integer_arguments[individual, :ph_length],
-                ph_required_masks[individual],
-                seeds[batch_index],
-                instance_keys[batch_index],
-                basin_top_q,
-                audit_local_search,
+                geometry,
+                initial_pheromone,
+                solver_parameters,
+                transition_program,
+                pheromone_program,
+                task_parameters,
                 workspace,
             )
             best_lengths[individual, batch_index] = best_length
@@ -2428,7 +2725,19 @@ def solve_population_numba(
         tr_active,
         ph_active,
     )
+    selected_ph_masks = pheromone.required_masks[representatives]
+    needs_two_opt_provenance = bool(
+        np.any((selected_ph_masks & np.uint64((1 << 8) | (1 << 10))) != 0)
+    )
+    needs_edge_gain = config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE and bool(
+        np.any((selected_ph_masks & np.uint64(1 << 7)) != 0)
+    )
+    if (
+        needs_two_opt_provenance or needs_edge_gain
+    ) and config.local_search is not LocalSearch.TWO_OPT:
+        raise ValueError("Origin/PreFreq/逐边 LSGain terminal 要求 local_search=two_opt")
 
+    coords = np.ascontiguousarray(problem.coords.detach().numpy())
     distances = np.ascontiguousarray(problem.distances.detach().numpy())
     heuristic = np.ascontiguousarray(problem.heuristic.detach().numpy())
     nearest = np.ascontiguousarray(problem.nn_indices.detach().numpy())
@@ -2481,70 +2790,58 @@ def solve_population_numba(
         edge_retention,
         final_colony_tours,
         final_pre_colony_tours,
-    ) = (
-        _solve_population_quality_kernel(
-            distances,
-            heuristic,
-            log_heuristic,
-            nearest,
-            ranks,
-            node_log_eta_mean,
-            initial_tau0,
-            initial_tau_min,
-            initial_tau_max,
-            variant,
-            config.resolve_ants(problem.n),
-            config.iterations,
-            config.alpha,
-            config.beta,
-            config.rho,
-            config.q0,
-            config.xi,
-            config.gamma_transition,
-            config.gamma_pheromone,
-            transition_mode,
-            pheromone_mode,
-            config.acs_synchronous,
-            config.epsilon_numeric,
-            config.mmas_update_period,
-            config.mmas_p_best,
-            config.mmas_branch_check_period,
-            config.mmas_branch_lambda,
-            config.mmas_branch_threshold,
-            config.mmas_restart_stagnation,
-            local_search_mode,
-            local_candidate_size,
-            config.local_search_dlb,
-            np.ascontiguousarray(transition.opcodes[representatives]),
-            np.ascontiguousarray(
-                transition.float_arguments[representatives]
-            ),
-            np.ascontiguousarray(
-                transition.integer_arguments[representatives]
-            ),
-            np.ascontiguousarray(transition.lengths[representatives]),
-            np.ascontiguousarray(
-                transition.required_masks[representatives]
-            ),
-            np.ascontiguousarray(tr_active[representatives]),
-            np.ascontiguousarray(pheromone.opcodes[representatives]),
-            np.ascontiguousarray(
-                pheromone.float_arguments[representatives]
-            ),
-            np.ascontiguousarray(
-                pheromone.integer_arguments[representatives]
-            ),
-            np.ascontiguousarray(pheromone.lengths[representatives]),
-            np.ascontiguousarray(
-                pheromone.required_masks[representatives]
-            ),
-            np.ascontiguousarray(ph_active[representatives]),
-            seeds,
-            instance_keys,
-            max(transition.stack_size, pheromone.stack_size),
-            basin_top_q,
-            audit_local_search,
-        )
+    ) = _solve_population_quality_kernel(
+        coords,
+        distances,
+        heuristic,
+        log_heuristic,
+        nearest,
+        ranks,
+        node_log_eta_mean,
+        initial_tau0,
+        initial_tau_min,
+        initial_tau_max,
+        variant,
+        config.resolve_ants(problem.n),
+        config.iterations,
+        config.alpha,
+        config.beta,
+        config.rho,
+        config.q0,
+        config.xi,
+        config.gamma_transition,
+        config.gamma_pheromone,
+        transition_mode,
+        pheromone_mode,
+        config.acs_synchronous,
+        config.epsilon_numeric,
+        config.mmas_update_period,
+        config.mmas_p_best,
+        config.mmas_branch_check_period,
+        config.mmas_branch_lambda,
+        config.mmas_branch_threshold,
+        config.mmas_restart_stagnation,
+        local_search_mode,
+        local_candidate_size,
+        config.local_search_dlb,
+        int(config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE),
+        np.ascontiguousarray(transition.opcodes[representatives]),
+        np.ascontiguousarray(transition.float_arguments[representatives]),
+        np.ascontiguousarray(transition.integer_arguments[representatives]),
+        np.ascontiguousarray(transition.lengths[representatives]),
+        np.ascontiguousarray(transition.required_masks[representatives]),
+        np.ascontiguousarray(tr_active[representatives]),
+        np.ascontiguousarray(pheromone.opcodes[representatives]),
+        np.ascontiguousarray(pheromone.float_arguments[representatives]),
+        np.ascontiguousarray(pheromone.integer_arguments[representatives]),
+        np.ascontiguousarray(pheromone.lengths[representatives]),
+        np.ascontiguousarray(pheromone.required_masks[representatives]),
+        np.ascontiguousarray(ph_active[representatives]),
+        seeds,
+        instance_keys,
+        max(transition.stack_size, pheromone.stack_size),
+        basin_top_q,
+        audit_local_search,
     )
     if representatives.size != len(programs):
         best_tours = best_tours[inverse]
@@ -2683,7 +2980,17 @@ def solve_numba(
         )
     ):
         pheromone_active = False
+    needs_two_opt_provenance = bool(pheromone.required_mask & np.uint64((1 << 8) | (1 << 10)))
+    needs_edge_gain = bool(
+        config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE
+        and pheromone.required_mask & np.uint64(1 << 7)
+    )
+    if (
+        needs_two_opt_provenance or needs_edge_gain
+    ) and config.local_search is not LocalSearch.TWO_OPT:
+        raise ValueError("Origin/PreFreq/逐边 LSGain terminal 要求 local_search=two_opt")
 
+    coords = np.ascontiguousarray(problem.coords.detach().numpy())
     distances = np.ascontiguousarray(problem.distances.detach().numpy())
     heuristic = np.ascontiguousarray(problem.heuristic.detach().numpy())
     nearest = np.ascontiguousarray(problem.nn_indices.detach().numpy())
@@ -2736,9 +3043,69 @@ def solve_numba(
         max(transition.stack_size, pheromone.stack_size),
         config.xi,
     )
+    solver_parameters = (
+        variant,
+        config.resolve_ants(n),
+        config.iterations,
+        config.alpha,
+        config.beta,
+        config.rho,
+        config.q0,
+        config.xi,
+        config.gamma_transition,
+        config.gamma_pheromone,
+        transition_mode,
+        pheromone_mode,
+        config.acs_synchronous,
+        config.epsilon_numeric,
+        config.mmas_update_period,
+        config.mmas_p_best,
+        config.mmas_branch_check_period,
+        config.mmas_branch_lambda,
+        config.mmas_branch_threshold,
+        config.mmas_restart_stagnation,
+        local_search_mode,
+        local_candidate_size,
+        config.local_search_dlb,
+        int(config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE),
+    )
+    transition_program_state = (
+        transition_active,
+        transition.opcodes,
+        transition.float_arguments,
+        transition.integer_arguments,
+        transition.required_mask,
+    )
+    pheromone_program_state = (
+        pheromone_active,
+        pheromone.opcodes,
+        pheromone.float_arguments,
+        pheromone.integer_arguments,
+        pheromone.required_mask,
+    )
 
     started = perf_counter()
     for batch_index in range(batch):
+        geometry = (
+            coords[batch_index],
+            distances[batch_index],
+            heuristic[batch_index],
+            log_heuristic[batch_index],
+            nearest[batch_index],
+            ranks[batch_index],
+            node_log_eta_mean[batch_index],
+        )
+        initial_pheromone = (
+            initial_tau0[batch_index],
+            initial_tau_min[batch_index],
+            initial_tau_max[batch_index],
+        )
+        task_parameters = (
+            seed_value,
+            instance_keys[batch_index],
+            0,
+            False,
+        )
         (
             best_tour,
             best_length,
@@ -2751,52 +3118,12 @@ def solve_numba(
             _,
             _,
         ) = _solve_instance_inplace(
-            distances[batch_index],
-            heuristic[batch_index],
-            log_heuristic[batch_index],
-            nearest[batch_index],
-            ranks[batch_index],
-            node_log_eta_mean[batch_index],
-            initial_tau0[batch_index],
-            initial_tau_min[batch_index],
-            initial_tau_max[batch_index],
-            variant,
-            config.resolve_ants(n),
-            config.iterations,
-            config.alpha,
-            config.beta,
-            config.rho,
-            config.q0,
-            config.xi,
-            config.gamma_transition,
-            config.gamma_pheromone,
-            transition_mode,
-            pheromone_mode,
-            config.acs_synchronous,
-            config.epsilon_numeric,
-            config.mmas_update_period,
-            config.mmas_p_best,
-            config.mmas_branch_check_period,
-            config.mmas_branch_lambda,
-            config.mmas_branch_threshold,
-            config.mmas_restart_stagnation,
-            local_search_mode,
-            local_candidate_size,
-            config.local_search_dlb,
-            transition_active,
-            transition.opcodes,
-            transition.float_arguments,
-            transition.integer_arguments,
-            transition.required_mask,
-            pheromone_active,
-            pheromone.opcodes,
-            pheromone.float_arguments,
-            pheromone.integer_arguments,
-            pheromone.required_mask,
-            seed_value,
-            instance_keys[batch_index],
-            0,
-            False,
+            geometry,
+            initial_pheromone,
+            solver_parameters,
+            transition_program_state,
+            pheromone_program_state,
+            task_parameters,
             workspace,
         )
         best_tours[batch_index] = best_tour

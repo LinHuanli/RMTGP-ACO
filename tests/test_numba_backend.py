@@ -16,7 +16,12 @@ from rmtgp_aco.aco_numba import (
     _evaluate_program,
     solve_population_numba,
 )
-from rmtgp_aco.config import ACOConfig, ACOVariant, LocalSearch
+from rmtgp_aco.config import (
+    ACOConfig,
+    ACOVariant,
+    LocalSearch,
+    LSGainSemantics,
+)
 from rmtgp_aco.data import make_problem_batch
 from rmtgp_aco.program import (
     ORIGIN_PHEROMONE_TERMINALS,
@@ -315,4 +320,65 @@ def test_numba_origin_pheromone_terminal_is_repeatable(
     assert torch.equal(first.best_tour, repeated.best_tour)
     assert torch.equal(first.best_length, repeated.best_length)
     assert torch.equal(first.basin_mean_length, repeated.basin_mean_length)
+    assert torch.isfinite(first.best_length).all()
+
+
+def test_numba_ls_aware_terminals_are_repeatable(
+    small_instances,
+) -> None:
+    """CPU oracle 应覆盖 CUDA v2 的全部 LS-aware terminal 数据流。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "as",
+            local_search=LocalSearch.TWO_OPT,
+            iterations=2,
+        ),
+        ants=4,
+        candidate_size=2,
+        local_search_candidate_size=2,
+        ls_gain_semantics=LSGainSemantics.EDGE_LAST_MOVE,
+    )
+    transition_pset, pheromone_pset = create_primitive_sets(
+        pheromone_terminals=(
+            "LSGain",
+            "TauHeadroom",
+            "PreFreq",
+            "PostFreq",
+            "Origin",
+        ),
+    )
+    transition = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "ADD(MutualRank, TurnCos)",
+            transition_pset,
+        ),
+        role="transition",
+    )
+    pheromone = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "ADD(ADD(LSGain, TauHeadroom), ADD(PreFreq, PostFreq))",
+            pheromone_pset,
+        ),
+        role="pheromone",
+    )
+    programs = [(transition, pheromone)]
+    first = solve_population_numba(
+        batch,
+        config,
+        programs,
+        seed=2081,
+        threads=2,
+    )
+    repeated = solve_population_numba(
+        batch,
+        config,
+        programs,
+        seed=2081,
+        threads=2,
+    )
+    assert torch.equal(first.best_tour, repeated.best_tour)
+    assert torch.equal(first.best_length, repeated.best_length)
+    assert torch.equal(first.diagnostics, repeated.diagnostics)
     assert torch.isfinite(first.best_length).all()

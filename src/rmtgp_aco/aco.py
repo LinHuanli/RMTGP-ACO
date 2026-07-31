@@ -125,6 +125,7 @@ def _build_transition_context(
     problem: ProblemBatch,
     pheromone: torch.Tensor,
     current_city: torch.Tensor,
+    previous_city: torch.Tensor | None,
     candidates: torch.Tensor,
     feasible_mask: torch.Tensor,
     config: ACOConfig,
@@ -194,6 +195,54 @@ def _build_transition_context(
     if "DistRank" in required_terminals:
         assert distance is not None
         terminals["DistRank"] = _normalized_distance_rank(distance, feasible_mask)
+    if "MutualRank" in required_terminals:
+        current = current_city.unsqueeze(-1).expand_as(candidates)
+        rank_forward = _gather_edges(
+            problem.full_nn_rank,
+            current,
+            candidates,
+        ).to(base_score.dtype)
+        rank_reverse = _gather_edges(
+            problem.full_nn_rank,
+            candidates,
+            current,
+        ).to(base_score.dtype)
+        denominator = float(max(problem.n - 2, 1))
+        mutual = 1.0 - ((rank_forward - 1.0) + (rank_reverse - 1.0)) / (2.0 * denominator)
+        terminals["MutualRank"] = torch.where(
+            feasible_mask,
+            torch.clamp(mutual, 0.0, 1.0),
+            torch.zeros_like(mutual),
+        )
+    if "TurnCos" in required_terminals:
+        if previous_city is None:
+            terminals["TurnCos"] = torch.zeros_like(base_score)
+        else:
+            batch_index = _batch_indices(
+                problem.batch_size,
+                current_city.shape[1],
+                device=problem.device,
+            )
+            previous_xy = problem.coords[batch_index, previous_city]
+            current_xy = problem.coords[batch_index, current_city]
+            candidate_xy = problem.coords[
+                batch_index.unsqueeze(-1).expand_as(candidates),
+                candidates,
+            ]
+            incoming = current_xy - previous_xy
+            outgoing = candidate_xy - current_xy.unsqueeze(-2)
+            numerator = (incoming.unsqueeze(-2) * outgoing).sum(dim=-1)
+            denominator = (
+                torch.linalg.vector_norm(incoming, dim=-1).unsqueeze(-1)
+                * torch.linalg.vector_norm(outgoing, dim=-1)
+                + config.epsilon_numeric
+            )
+            turn = torch.clamp(numerator / denominator, -1.0, 1.0)
+            terminals["TurnCos"] = torch.where(
+                feasible_mask,
+                turn,
+                torch.zeros_like(turn),
+            )
     if "Entropy" in required_terminals:
         count = counts()
         entropy_value = -(
@@ -339,6 +388,7 @@ def _choose_next(
     problem: ProblemBatch,
     pheromone: torch.Tensor,
     current_city: torch.Tensor,
+    previous_city: torch.Tensor | None,
     visited: torch.Tensor,
     config: ACOConfig,
     transition_program: TensorProgram | None,
@@ -367,6 +417,7 @@ def _choose_next(
         problem,
         pheromone,
         current_city,
+        previous_city,
         candidates,
         feasible_mask,
         config,
@@ -412,6 +463,7 @@ def _choose_next(
             problem,
             pheromone,
             current_city,
+            previous_city,
             all_candidates,
             full_mask,
             config,
@@ -600,6 +652,7 @@ def _construct_solutions(
                     problem,
                     pheromone,
                     current[:, ant_index : ant_index + 1],
+                    (None if step < 2 else tours[:, ant_index : ant_index + 1, step - 2]),
                     visited[:, ant_index : ant_index + 1],
                     config,
                     transition_program,
@@ -623,6 +676,7 @@ def _construct_solutions(
                 problem,
                 pheromone,
                 current,
+                None if step < 2 else tours[:, :, step - 2],
                 visited,
                 config,
                 transition_program,

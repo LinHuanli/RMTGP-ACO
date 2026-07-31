@@ -31,7 +31,9 @@
     "register_cap": 0,
     "task_order": "instance_major",
     "generated_gp": true,
-    "graph_replay": false
+    "graph_replay": false,
+    "cuda_ls_warps_per_block": 8,
+    "cuda_three_opt_block_threads": 512
   },
   "evidence": {
     "legacy_single_gpu_kernel_seconds": 15.5405263671875,
@@ -43,7 +45,21 @@
     "quality_pooled_upper_bound_95_pp": 0.00145010189200751,
     "quality_tolerance_pp": 0.1,
     "quality_passed": true,
-    "cutile_over_raw_subkernel_speedup": 0.9387019103796503
+    "cutile_over_raw_subkernel_speedup": 0.9387019103796503,
+    "tsp500_two_opt_kernel_seconds": 7.25632861328125,
+    "tsp500_two_opt_task_iterations_per_second": 2690.0656020832034,
+    "tsp500_three_opt_256_threads_seconds": 3.51698779296875,
+    "tsp500_three_opt_512_threads_seconds": 2.7014346923828123,
+    "tsp500_three_opt_512_over_256_speedup": 1.301883636158579,
+    "tsp500_p65_edge_eta_seconds": 1.601682373046875,
+    "tsp500_p65_pre_freq_matrix_seconds": 1.6057989501953125,
+    "tsp500_p65_pre_freq_overhead_fraction": 0.0025701582396804312,
+    "tsp500_p65_post_freq_matrix_seconds": 1.61322802734375,
+    "tsp500_p65_post_freq_overhead_fraction": 0.007208454367211292,
+    "tsp500_p65_edge_gain_old_seconds": 56.853923828125,
+    "tsp500_p65_edge_gain_matrix_seconds": 2.21730908203125,
+    "tsp500_p65_edge_gain_matrix_speedup": 25.640955647032214,
+    "tsp500_p65_edge_gain_matrix_overhead_fraction": 0.38436254237678247
   },
   "selection_rule": "Select the fastest full-solver profile that passes the paired 0.10 percentage-point noninferiority gate. Reject a lower-precision profile when it has no material full-solver speed advantage."
 }

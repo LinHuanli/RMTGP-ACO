@@ -25,6 +25,7 @@ from rmtgp_aco.config import (
     GPConfig,
     GPUMode,
     LocalSearch,
+    LSGainSemantics,
     RuntimeConfig,
 )
 from rmtgp_aco.data import make_problem_batch
@@ -609,6 +610,112 @@ def test_cuda_v2_origin_pheromone_terminal_is_repeatable(
     assert torch.equal(first.best_length, repeated.best_length)
     assert torch.equal(first.basin_mean_length, repeated.basin_mean_length)
     assert torch.isfinite(first.best_length).all()
+
+
+def test_cuda_v2_ls_aware_terminals_are_repeatable(
+    small_instances,
+) -> None:
+    """逐边 LS credit、pre/post consensus 与新几何量必须可批量执行。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "as",
+            local_search=LocalSearch.TWO_OPT,
+            iterations=3,
+        ),
+        candidate_size=2,
+        local_search_candidate_size=2,
+        ls_gain_semantics=LSGainSemantics.EDGE_LAST_MOVE,
+    )
+    transition_pset, pheromone_pset = create_primitive_sets(
+        pheromone_terminals=(
+            "LSGain",
+            "TauHeadroom",
+            "PreFreq",
+            "PostFreq",
+            "Origin",
+        ),
+    )
+    transition = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "ADD(MutualRank, TurnCos)",
+            transition_pset,
+        ),
+        role="transition",
+    )
+    pheromone = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "ADD(ADD(LSGain, TauHeadroom), ADD(PreFreq, PostFreq))",
+            pheromone_pset,
+        ),
+        role="pheromone",
+    )
+    programs = [(transition, pheromone)]
+    first = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=2081,
+        runtime=_runtime_v2(),
+    )
+    repeated = solve_population_cuda(
+        batch,
+        config,
+        programs,
+        seed=2081,
+        runtime=_runtime_v2(chunk_size=1),
+    )
+    assert torch.equal(first.best_tour, repeated.best_tour)
+    assert torch.equal(first.best_length, repeated.best_length)
+    assert torch.equal(first.diagnostics, repeated.diagnostics)
+    assert torch.isfinite(first.best_length).all()
+
+
+def test_cuda_v2_edge_gain_tracking_does_not_change_zero_residual(
+    small_instances,
+) -> None:
+    """读取逐边 Gain 但输出零时，2-opt 轨迹必须与 baseline 完全相同。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_local_search_default(
+            "as",
+            local_search=LocalSearch.TWO_OPT,
+            iterations=3,
+        ),
+        candidate_size=2,
+        local_search_candidate_size=2,
+        ls_gain_semantics=LSGainSemantics.EDGE_LAST_MOVE,
+    )
+    _, pheromone_pset = create_primitive_sets(
+        pheromone_terminals=("LSGain",),
+    )
+    zero_gain = compile_tree(
+        gp.PrimitiveTree.from_string(
+            "MUL(LSGain, ZERO_PH)",
+            pheromone_pset,
+        ),
+        role="pheromone",
+    )
+    baseline = solve_population_cuda(
+        batch,
+        config,
+        [(None, None)],
+        seed=2087,
+        runtime=_runtime_v2(),
+    )
+    tracked = solve_population_cuda(
+        batch,
+        config,
+        [(None, zero_gain)],
+        seed=2087,
+        runtime=_runtime_v2(),
+    )
+    assert torch.equal(tracked.best_tour, baseline.best_tour)
+    assert torch.equal(tracked.best_length, baseline.best_length)
+    assert torch.equal(tracked.best_iteration, baseline.best_iteration)
+    assert torch.equal(tracked.diagnostics, baseline.diagnostics)
 
 
 @pytest.mark.parametrize("variant", list(ACOVariant))

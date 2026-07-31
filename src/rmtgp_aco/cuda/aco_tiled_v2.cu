@@ -30,6 +30,28 @@ namespace rmtgp_v2 {
 constexpr int V2_MAX_ANTS = 32;
 constexpr int V2_UPDATE_THREADS = 256;
 
+__device__ __forceinline__ void atomic_increment_u8(uint8_t* address) {
+    // CUDA 没有原生 byte atomicAdd。一个 32-bit CAS 同时保留相邻三个
+    // counter；蚂蚁数固定为 32，因此单 byte 不会溢出。
+    const size_t raw = reinterpret_cast<size_t>(address);
+    unsigned int* word = reinterpret_cast<unsigned int*>(raw & ~size_t(3));
+    const unsigned int shift = static_cast<unsigned int>((raw & 3U) * 8U);
+    const unsigned int mask = 0xffU << shift;
+    unsigned int observed = *word;
+    while (true) {
+        const unsigned int count = (observed & mask) >> shift;
+        const unsigned int updated = (
+            (observed & ~mask)
+            | (((count + 1U) & 0xffU) << shift)
+        );
+        const unsigned int previous = atomicCAS(word, observed, updated);
+        if (previous == observed) {
+            return;
+        }
+        observed = previous;
+    }
+}
+
 struct Stats {
     int count;
     float base_total;
@@ -182,15 +204,19 @@ __device__ __forceinline__ int candidate_ordinal(
 }
 
 __device__ __forceinline__ float transition_score_tiled(
+    const float* coords_all,
     const void* distances_all,
     const void* heuristic_all,
     const void* log_heuristic_all,
+    const uint16_t* full_nn_rank_all,
     size_t instance_base,
+    size_t coordinate_base,
     const float* pheromone,
     const uint16_t* nearest,
     const uint64_t* visited,
     int n,
     int current,
+    int previous,
     int city,
     int position,
     bool fallback,
@@ -227,7 +253,7 @@ __device__ __forceinline__ float transition_score_tiled(
         return baseline;
     }
 
-    float terminals[14];
+    float terminals[16];
     if ((required_mask & (UINT64_C(1) << 0)) != 0) {
         terminals[0] = tanhf(
             (
@@ -300,6 +326,59 @@ __device__ __forceinline__ float transition_score_tiled(
     terminals[11] = stats.distance_mean;
     terminals[12] = static_cast<float>(n);
     terminals[13] = static_cast<float>(stats.count);
+    if ((required_mask & (UINT64_C(1) << 14)) != 0) {
+        const float denominator = static_cast<float>(max(n - 2, 1));
+        const float forward = static_cast<float>(
+            full_nn_rank_all[instance_base + current * n + city]
+        ) - 1.0f;
+        const float reverse = static_cast<float>(
+            full_nn_rank_all[instance_base + city * n + current]
+        ) - 1.0f;
+        terminals[14] = fminf(
+            1.0f,
+            fmaxf(
+                0.0f,
+                1.0f - (forward + reverse) / (2.0f * denominator)
+            )
+        );
+    }
+    if ((required_mask & (UINT64_C(1) << 15)) != 0) {
+        if (previous < 0) {
+            terminals[15] = 0.0f;
+        } else {
+            const float incoming_x = coords_all[
+                coordinate_base + static_cast<size_t>(current) * 2
+            ] - coords_all[
+                coordinate_base + static_cast<size_t>(previous) * 2
+            ];
+            const float incoming_y = coords_all[
+                coordinate_base + static_cast<size_t>(current) * 2 + 1
+            ] - coords_all[
+                coordinate_base + static_cast<size_t>(previous) * 2 + 1
+            ];
+            const float outgoing_x = coords_all[
+                coordinate_base + static_cast<size_t>(city) * 2
+            ] - coords_all[
+                coordinate_base + static_cast<size_t>(current) * 2
+            ];
+            const float outgoing_y = coords_all[
+                coordinate_base + static_cast<size_t>(city) * 2 + 1
+            ] - coords_all[
+                coordinate_base + static_cast<size_t>(current) * 2 + 1
+            ];
+            const float numerator = incoming_x * outgoing_x
+                + incoming_y * outgoing_y;
+            const float denominator = sqrtf(
+                incoming_x * incoming_x + incoming_y * incoming_y
+            ) * sqrtf(
+                outgoing_x * outgoing_x + outgoing_y * outgoing_y
+            ) + epsilon_numeric;
+            terminals[15] = fminf(
+                1.0f,
+                fmaxf(-1.0f, numerator / denominator)
+            );
+        }
+    }
 
 #if RMTGP_GENERATED_GP
     const float raw = evaluate_transition_generated(
@@ -352,8 +431,11 @@ extern "C" __global__ void v2_init(
     const int instance = task_instance[task];
     float* pheromone = pheromone_workspace
         + static_cast<size_t>(task) * n * n;
+    const size_t frequency_stride = (
+        static_cast<size_t>(n) * n + 3U
+    ) & ~static_cast<size_t>(3U);
     uint8_t* edge_frequency = edge_frequency_workspace
-        + static_cast<size_t>(task) * n * n;
+        + static_cast<size_t>(task) * frequency_stride;
     const float tau0 = initial_tau0[instance];
     for (int edge = tid; edge < n * n; edge += blockDim.x) {
         pheromone[edge] = edge / n == edge % n ? 0.0f : tau0;
@@ -377,10 +459,12 @@ extern "C" __global__ void v2_init(
 }
 
 extern "C" __global__ void v2_construct(
+    const float* coords_all,
     const void* distances_all,
     const void* heuristic_all,
     const void* log_heuristic_all,
     const uint16_t* nearest_all,
+    const uint16_t* full_nn_rank_all,
     const int8_t* tr_opcodes,
     const float* tr_float_arguments,
     const int16_t* tr_integer_arguments,
@@ -429,6 +513,7 @@ extern "C" __global__ void v2_construct(
     const int instance = task_instance[task];
     const int words = (n + 63) / 64;
     const size_t instance_base = static_cast<size_t>(instance) * n * n;
+    const size_t coordinate_base = static_cast<size_t>(instance) * n * 2;
     const uint16_t* nearest = nearest_all
         + static_cast<size_t>(instance) * n * candidate_size;
     const uint64_t instance_key = instance_keys[instance];
@@ -661,15 +746,21 @@ extern "C" __global__ void v2_construct(
             float score = -CUDART_INF_F;
             if (!is_visited(ant_visited, city)) {
                 score = transition_score_tiled(
+                    coords_all,
                     distances_all,
                     heuristic_all,
                     log_heuristic_all,
+                    full_nn_rank_all,
                     instance_base,
+                    coordinate_base,
                     pheromone,
                     current_nearest,
                     ant_visited,
                     n,
                     current,
+                    step < 2
+                        ? -1
+                        : static_cast<int>(ant_tour[step - 2]),
                     city,
                     position,
                     fallback,
@@ -952,13 +1043,17 @@ extern "C" __global__ void v2_update(
     float mmas_branch_threshold,
     int mmas_restart_stagnation,
     int local_search_active,
+    int ls_gain_semantics,
     float* pheromone_workspace,
     uint16_t* tour_workspace,
+    const uint16_t* pre_tour_workspace,
     float* length_workspace,
     const float* length_before_workspace,
     const float* ls_gain_workspace,
+    const float* edge_gain_workspace,
     float* deposit_workspace,
     uint8_t* edge_frequency_workspace,
+    uint8_t* pre_edge_frequency_workspace,
     uint16_t* restart_tour_workspace,
     uint16_t* best_tours,
     float* global_best_lengths,
@@ -971,6 +1066,8 @@ extern "C" __global__ void v2_update(
     int32_t* restart_iteration,
     float* global_best_ls_gain,
     float* restart_best_ls_gain,
+    float* global_best_edge_gain_workspace,
+    float* restart_best_edge_gain_workspace,
     const int8_t* origin_workspace,
     int8_t* global_best_origin_workspace,
     int8_t* restart_best_origin_workspace,
@@ -1004,12 +1101,19 @@ extern "C" __global__ void v2_update(
         + static_cast<size_t>(task) * n * n;
     uint16_t* tours = tour_workspace
         + static_cast<size_t>(task) * ants * (n + 1);
+    const uint16_t* pre_tours = pre_tour_workspace
+        + static_cast<size_t>(task) * ants * (n + 1);
     float* colony_lengths = length_workspace
         + static_cast<size_t>(task) * ants;
     float* deposits = deposit_workspace
         + static_cast<size_t>(task) * ants * n;
+    const size_t frequency_stride = (
+        static_cast<size_t>(n) * n + 3U
+    ) & ~static_cast<size_t>(3U);
     uint8_t* edge_frequency = edge_frequency_workspace
-        + static_cast<size_t>(task) * n * n;
+        + static_cast<size_t>(task) * frequency_stride;
+    uint8_t* pre_edge_frequency = pre_edge_frequency_workspace
+        + static_cast<size_t>(task) * frequency_stride;
     uint16_t* restart_tour = restart_tour_workspace
         + static_cast<size_t>(task) * (n + 1);
     uint16_t* global_best_tour = best_tours
@@ -1019,6 +1123,12 @@ extern "C" __global__ void v2_update(
     int8_t* global_best_origin = global_best_origin_workspace
         + static_cast<size_t>(task) * n;
     int8_t* restart_best_origin = restart_best_origin_workspace
+        + static_cast<size_t>(task) * n;
+    const float* edge_gains = edge_gain_workspace
+        + static_cast<size_t>(task) * ants * n;
+    float* global_best_edge_gain = global_best_edge_gain_workspace
+        + static_cast<size_t>(task) * n;
+    float* restart_best_edge_gain = restart_best_edge_gain_workspace
         + static_cast<size_t>(task) * n;
     const int8_t* ph_ops = ph_opcodes
         + static_cast<size_t>(program) * ph_width;
@@ -1188,6 +1298,11 @@ extern "C" __global__ void v2_update(
             global_best_origin[edge] = origins[
                 static_cast<size_t>(iteration_best_index) * n + edge
             ];
+            if (ls_gain_semantics == 1) {
+                global_best_edge_gain[edge] = edge_gains[
+                    static_cast<size_t>(iteration_best_index) * n + edge
+                ];
+            }
         }
     }
     if (copy_restart_best) {
@@ -1198,34 +1313,80 @@ extern "C" __global__ void v2_update(
             restart_best_origin[edge] = origins[
                 static_cast<size_t>(iteration_best_index) * n + edge
             ];
+            if (ls_gain_semantics == 1) {
+                restart_best_edge_gain[edge] = edge_gains[
+                    static_cast<size_t>(iteration_best_index) * n + edge
+                ];
+            }
         }
     }
     __syncthreads();
 
     if (
         ph_active[program] != 0
-        && (ph_required_masks[program] & (UINT64_C(1) << 3)) != 0
+        && (
+            ph_required_masks[program]
+            & (
+                (UINT64_C(1) << 3)
+                | (UINT64_C(1) << 11)
+            )
+        ) != 0
     ) {
         for (int edge = tid; edge < n * n; edge += blockDim.x) {
             edge_frequency[edge] = 0;
         }
         __syncthreads();
-        if (tid == 0) {
-            for (int ant = 0; ant < ants; ++ant) {
-                const uint16_t* ant_tour = tours
-                    + static_cast<size_t>(ant) * (n + 1);
-                for (int edge = 0; edge < n; ++edge) {
-                    const int first = min(
-                        static_cast<int>(ant_tour[edge]),
-                        static_cast<int>(ant_tour[edge + 1])
-                    );
-                    const int second = max(
-                        static_cast<int>(ant_tour[edge]),
-                        static_cast<int>(ant_tour[edge + 1])
-                    );
-                    ++edge_frequency[first * n + second];
-                }
-            }
+        for (
+            int flat_edge = tid;
+            flat_edge < ants * n;
+            flat_edge += blockDim.x
+        ) {
+            const int ant = flat_edge / n;
+            const int edge = flat_edge - ant * n;
+            const uint16_t* ant_tour = tours
+                + static_cast<size_t>(ant) * (n + 1);
+            const int first = min(
+                static_cast<int>(ant_tour[edge]),
+                static_cast<int>(ant_tour[edge + 1])
+            );
+            const int second = max(
+                static_cast<int>(ant_tour[edge]),
+                static_cast<int>(ant_tour[edge + 1])
+            );
+            atomic_increment_u8(
+                edge_frequency + first * n + second
+            );
+        }
+        __syncthreads();
+    }
+    if (
+        ph_active[program] != 0
+        && (ph_required_masks[program] & (UINT64_C(1) << 10)) != 0
+    ) {
+        for (int edge = tid; edge < n * n; edge += blockDim.x) {
+            pre_edge_frequency[edge] = 0;
+        }
+        __syncthreads();
+        for (
+            int flat_edge = tid;
+            flat_edge < ants * n;
+            flat_edge += blockDim.x
+        ) {
+            const int ant = flat_edge / n;
+            const int edge = flat_edge - ant * n;
+            const uint16_t* ant_tour = pre_tours
+                + static_cast<size_t>(ant) * (n + 1);
+            const int first = min(
+                static_cast<int>(ant_tour[edge]),
+                static_cast<int>(ant_tour[edge + 1])
+            );
+            const int second = max(
+                static_cast<int>(ant_tour[edge]),
+                static_cast<int>(ant_tour[edge + 1])
+            );
+            atomic_increment_u8(
+                pre_edge_frequency + first * n + second
+            );
         }
         __syncthreads();
     }
@@ -1235,6 +1396,7 @@ extern "C" __global__ void v2_update(
         const uint16_t* source_tour;
         float source_length;
         float source_ls_gain;
+        const float* source_edge_gain;
         const int8_t* source_origin;
 #if RMTGP_VARIANT == 0
         source_tour = tours + static_cast<size_t>(tid) * (n + 1);
@@ -1242,11 +1404,13 @@ extern "C" __global__ void v2_update(
         source_ls_gain = ls_gain_workspace[
             static_cast<size_t>(task) * ants + tid
         ];
+        source_edge_gain = edge_gains + static_cast<size_t>(tid) * n;
         source_origin = origins + static_cast<size_t>(tid) * n;
 #elif RMTGP_VARIANT == 1
         source_tour = global_best_tour;
         source_length = global_best_lengths[task];
         source_ls_gain = global_best_ls_gain[task];
+        source_edge_gain = global_best_edge_gain;
         source_origin = global_best_origin;
 #else
         if (mmas_source_kind == 0) {
@@ -1255,17 +1419,21 @@ extern "C" __global__ void v2_update(
             source_ls_gain = ls_gain_workspace[
                 static_cast<size_t>(task) * ants + iteration_best_index
             ];
+            source_edge_gain = edge_gains
+                + static_cast<size_t>(iteration_best_index) * n;
             source_origin = origins
                 + static_cast<size_t>(iteration_best_index) * n;
         } else if (mmas_source_kind == 1) {
             source_tour = restart_tour;
             source_length = restart_best_lengths[task];
             source_ls_gain = restart_best_ls_gain[task];
+            source_edge_gain = restart_best_edge_gain;
             source_origin = restart_best_origin;
         } else {
             source_tour = global_best_tour;
             source_length = global_best_lengths[task];
             source_ls_gain = global_best_ls_gain[task];
+            source_edge_gain = global_best_edge_gain;
             source_origin = global_best_origin;
         }
 #endif
@@ -1282,6 +1450,7 @@ extern "C" __global__ void v2_update(
             pheromone,
             full_nn_rank,
             node_log_eta_mean,
+            pre_edge_frequency,
             edge_frequency,
             colony_lengths,
             epsilon_numeric,
@@ -1295,7 +1464,12 @@ extern "C" __global__ void v2_update(
             ph_lengths[program],
             ph_required_masks[program],
             source_ls_gain,
+            source_edge_gain,
             source_origin,
+            ls_gain_semantics,
+            task_tau_min[task],
+            task_tau_max[task],
+            rho,
             deposits
         );
     }

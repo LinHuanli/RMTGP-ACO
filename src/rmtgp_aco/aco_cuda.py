@@ -37,6 +37,7 @@ from .config import (
     ExecutionBackend,
     GPUMode,
     LocalSearch,
+    LSGainSemantics,
     PheromoneIntegration,
     RuntimeConfig,
     TransitionIntegration,
@@ -67,6 +68,7 @@ _RESIDENT: OrderedDict[tuple[int, tuple[object, ...]], _ResidentProblem] = (
 class _ResidentProblem:
     """一个设备上的只读问题数据。"""
 
+    coords: Any
     distances: Any
     heuristic: Any
     log_heuristic: Any
@@ -93,6 +95,7 @@ class _DeviceResult:
     chunks: int
     block_threads: int
     device_name: str
+    local_search_warps_per_block: int = 0
     anytime_mean_lengths: np.ndarray | None = None
     basin_mean_lengths: np.ndarray | None = None
     pre_basin_mean_lengths: np.ndarray | None = None
@@ -202,23 +205,17 @@ def _resident_problem(
 
     if problem.distances.dtype != torch.float64 or problem.device.type != "cpu":
         raise ValueError(
-            "CUDA fused 后端要求 CPU float64 ProblemBatch，"
-            "以便返回 tour 后执行精确计分"
+            "CUDA fused 后端要求 CPU float64 ProblemBatch，以便返回 tour 后执行精确计分"
         )
+    coords = np.ascontiguousarray(problem.coords.detach().numpy().astype(np.float32))
     distances64 = np.ascontiguousarray(problem.distances.detach().numpy())
     distances = distances64.astype(np.float32)
-    heuristic = np.ascontiguousarray(
-        problem.heuristic.detach().numpy().astype(np.float32)
+    heuristic = np.ascontiguousarray(problem.heuristic.detach().numpy().astype(np.float32))
+    log_heuristic = np.log(np.maximum(heuristic, np.float32(config.epsilon_numeric))).astype(
+        np.float32
     )
-    log_heuristic = np.log(
-        np.maximum(heuristic, np.float32(config.epsilon_numeric))
-    ).astype(np.float32)
-    nearest = np.ascontiguousarray(
-        problem.nn_indices.detach().numpy().astype(np.uint16)
-    )
-    ranks = np.ascontiguousarray(
-        problem.full_nn_rank.detach().numpy().astype(np.uint16)
-    )
+    nearest = np.ascontiguousarray(problem.nn_indices.detach().numpy().astype(np.uint16))
+    ranks = np.ascontiguousarray(problem.full_nn_rank.detach().numpy().astype(np.uint16))
     selected_log_eta = np.take_along_axis(log_heuristic, nearest, axis=2)
     node_mean = np.ascontiguousarray(selected_log_eta.mean(axis=2))
     instance_keys = np.asarray(
@@ -226,6 +223,7 @@ def _resident_problem(
         dtype=np.uint64,
     )
     host_values = (
+        coords,
         distances,
         heuristic,
         log_heuristic,
@@ -249,13 +247,14 @@ def _resident_problem(
         transfer_seconds = perf_counter() - started
         del pinned_buffers
         resident = _ResidentProblem(
-            distances=device_values[0],
-            heuristic=device_values[1],
-            log_heuristic=device_values[2],
-            nearest=device_values[3],
-            full_nn_rank=device_values[4],
-            node_log_eta_mean=device_values[5],
-            instance_keys=device_values[6],
+            coords=device_values[0],
+            distances=device_values[1],
+            heuristic=device_values[2],
+            log_heuristic=device_values[3],
+            nearest=device_values[4],
+            full_nn_rank=device_values[5],
+            node_log_eta_mean=device_values[6],
+            instance_keys=device_values[7],
             nbytes=sum(value.nbytes for value in device_values),
             transfer_seconds=transfer_seconds,
         )
@@ -524,16 +523,20 @@ def _runtime_from_tuning_manifest(
                 f"device{device}={name}/sm{capability}"
             )
     selected = payload["selected"]
-    resolved = replace(
-        runtime,
-        cuda_provider=CudaProvider(selected["provider"]),
-        cuda_precision=CudaPrecision(selected["precision"]),
-        cuda_candidate_lanes=int(selected["candidate_lanes"]),
-        cuda_register_cap=int(selected["register_cap"]),
-        cuda_task_order=CudaTaskOrder(selected["task_order"]),
-        cuda_generated_gp=bool(selected["generated_gp"]),
-        cuda_graph_replay=bool(selected["graph_replay"]),
-    )
+    updates: dict[str, Any] = {
+        "cuda_provider": CudaProvider(selected["provider"]),
+        "cuda_precision": CudaPrecision(selected["precision"]),
+        "cuda_candidate_lanes": int(selected["candidate_lanes"]),
+        "cuda_register_cap": int(selected["register_cap"]),
+        "cuda_task_order": CudaTaskOrder(selected["task_order"]),
+        "cuda_generated_gp": bool(selected["generated_gp"]),
+        "cuda_graph_replay": bool(selected["graph_replay"]),
+    }
+    if "cuda_ls_warps_per_block" in selected:
+        updates["cuda_ls_warps_per_block"] = int(selected["cuda_ls_warps_per_block"])
+    if "cuda_three_opt_block_threads" in selected:
+        updates["cuda_three_opt_block_threads"] = int(selected["cuda_three_opt_block_threads"])
+    resolved = replace(runtime, **updates)
     if resolved.cuda_graph_replay:
         raise NotImplementedError(
             "当前每代 GP 源码和指针均变化，CUDA graph capture 不能安全复用"
@@ -550,6 +553,7 @@ def _load_v2_kernels(
     stack_depth: int,
     precision: CudaPrecision,
     register_cap: int,
+    track_edge_gain: bool,
     generated_gp_source: str = "",
 ) -> tuple[tuple[Any, ...], float]:
     """编译按 variant/shape/precision 专门化的 CUDA v2 kernel。"""
@@ -578,6 +582,7 @@ def _load_v2_kernels(
             f"#define RMTGP_STATIC_PRECISION {static_precision}",
             f"#define RMTGP_SCORE_QUANTIZE_FP16 {score_quantize}",
             f"#define RMTGP_GENERATED_GP {int(bool(generated_gp_source))}",
+            f"#define RMTGP_TRACK_EDGE_GAIN {int(track_edge_gain)}",
             "",
         )
     )
@@ -926,6 +931,7 @@ def _task_bytes_v2(
 
     base = (
         _task_bytes(n, ants, iterations, record_anytime)
+        + n * n  # construction 前 edge frequency（PreFreq）
         + 4 * ants  # incremental colony lengths
         + 4 * ants * n  # fallback/cached transition scores
         + 4 * 4  # best/restart length and tau bounds
@@ -945,6 +951,8 @@ def _task_bytes_v2(
         + ants * n  # DLB
         + 4 * ants  # construction 前长度
         + 4 * ants  # LSGain
+        + 4 * ants * n  # 对齐 source tour 的逐边 LSGain
+        + 4 * 2 * n  # global/restart 逐边 LSGain
         + 4 * 2  # global/restart best LSGain
         + 4  # restart iteration
     )
@@ -1013,6 +1021,40 @@ def _cost_balanced_shards(
         for shard in shards
         if shard
     )
+
+
+def _partition_v2_semantic_shard(
+    flat_indices: np.ndarray,
+    *,
+    batch_size: int,
+    pheromone_required_masks: np.ndarray,
+    config: ACOConfig,
+    audit_local_search: bool,
+) -> tuple[np.ndarray, ...]:
+    """按局部搜索工作区需求拆分一个设备上的 task。
+
+    逐边 ``LSGain`` 会为每条 tour 维护额外状态。若一个 population 只有
+    少数程序读取该 terminal，不能让所有程序都进入重内核。这里以
+    ``(edge-gain, pre-tour, origin)`` 为语义键稳定分组；各组仍在同一
+    物理 GPU 上顺序执行，结果依靠原始 flat index 精确还原。
+    """
+
+    if flat_indices.size == 0 or config.local_search is not LocalSearch.TWO_OPT:
+        return (flat_indices,)
+    grouped: dict[tuple[bool, bool, bool], list[int]] = {}
+    for flat_index in flat_indices.tolist():
+        program = int(flat_index) // batch_size
+        mask = int(pheromone_required_masks[program])
+        edge_gain = (
+            config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE and (mask & (1 << 7)) != 0
+        )
+        origin = audit_local_search or (mask & (1 << 8)) != 0
+        pre_tour = origin or (mask & (1 << 10)) != 0
+        grouped.setdefault(
+            (edge_gain, pre_tour, origin),
+            [],
+        ).append(int(flat_index))
+    return tuple(np.asarray(grouped[key], dtype=np.int64) for key in sorted(grouped))
 
 
 def _run_device(
@@ -1337,21 +1379,34 @@ def _run_device_v2(
     local_candidate_size = config.resolve_local_search_candidate_size(problem.n)
     if config.uses_local_search and local_candidate_size > nearest_stride:
         raise ValueError(
-            "local_search_candidate_size 超过 ProblemBatch 中预计算的 "
-            "nearest-neighbour 表宽度"
+            "local_search_candidate_size 超过 ProblemBatch 中预计算的 nearest-neighbour 表宽度"
         )
     if local_candidate_size > 32:
         raise ValueError("CUDA 局部搜索当前要求 candidate_size <= 32")
+    selected_programs = np.unique(np.asarray(flat_indices, dtype=np.int64) // problem.batch_size)
+    selected_representatives = representatives[selected_programs]
     origin_requested = bool(
         np.any(
-            (
-                pheromone_programs.required_masks[representatives]
-                & np.uint64(1 << 8)
-            )
-            != 0
+            (pheromone_programs.required_masks[selected_representatives] & np.uint64(1 << 8)) != 0
         )
     )
+    ls_gain_requested = bool(
+        np.any(
+            (pheromone_programs.required_masks[selected_representatives] & np.uint64(1 << 7)) != 0
+        )
+    )
+    pre_freq_requested = bool(
+        np.any(
+            (pheromone_programs.required_masks[selected_representatives] & np.uint64(1 << 10)) != 0
+        )
+    )
+    track_edge_gain = (
+        ls_gain_requested and config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE
+    )
     track_origin = origin_requested or audit_local_search
+    track_pre_tour = track_origin or pre_freq_requested
+    if (track_edge_gain or pre_freq_requested) and config.local_search is not LocalSearch.TWO_OPT:
+        raise ValueError("逐边 LSGain/PreFreq terminal 当前要求 local_search=two_opt")
     if track_origin and config.local_search is LocalSearch.THREE_OPT:
         raise ValueError("Origin/local-search audit 当前只支持 two_opt")
     stack_depth = max(
@@ -1375,6 +1430,7 @@ def _run_device_v2(
             stack_depth=stack_depth,
             precision=precision,
             register_cap=runtime.cuda_register_cap,
+            track_edge_gain=track_edge_gain,
             generated_gp_source=(
                 _generated_gp_source(
                     transition,
@@ -1456,7 +1512,28 @@ def _run_device_v2(
             raise ValueError(
                 f"ants×candidate_lanes={construct_threads} 超过 CUDA block 上限"
             )
-        ls_threads = 32 * runtime.cuda_ls_warps_per_block
+        ls_warps_per_block = runtime.cuda_ls_warps_per_block
+        if track_edge_gain:
+            max_shared_bytes = int(cp.cuda.Device(device).attributes["MaxSharedMemoryPerBlock"])
+            while ls_warps_per_block > 1 and ls_warps_per_block * n * 2 * 4 > max_shared_bytes:
+                ls_warps_per_block //= 2
+            required_shared_bytes = ls_warps_per_block * n * 2 * 4
+            if required_shared_bytes > max_shared_bytes:
+                raise ValueError(
+                    "逐边 LSGain 的共享内存邻接矩阵超过设备上限："
+                    f"n={n}, required={required_shared_bytes}, "
+                    f"limit={max_shared_bytes}"
+                )
+        ls_threads = 32 * ls_warps_per_block
+        two_opt_shared_bytes = ls_warps_per_block * n * 2 * 4 if track_edge_gain else 0
+        three_opt_shared_bytes = (
+            2 * (n + 1)  # tour
+            + 2 * n  # city -> position
+            + 2 * n  # random city order
+            + n  # DLB
+        )
+        three_opt_shared_bytes = (three_opt_shared_bytes + 1) & ~1
+        three_opt_shared_bytes += 2 * (n + 1)  # move scratch
         free_memory, total_memory = cp.cuda.runtime.memGetInfo()
         reserve = int(total_memory * (1.0 - runtime.gpu_memory_fraction))
         usable = max(0, int(free_memory) - reserve)
@@ -1547,7 +1624,15 @@ def _run_device_v2(
                 (count, ants, n),
                 dtype=cp.float32,
             )
-            edge_frequency = cp.empty((count, n, n), dtype=cp.uint8)
+            frequency_stride = (n * n + 3) & ~3
+            edge_frequency = cp.empty(
+                (count, frequency_stride),
+                dtype=cp.uint8,
+            )
+            pre_edge_frequency = cp.empty(
+                (count, frequency_stride),
+                dtype=cp.uint8,
+            )
             restart_tour = cp.empty((count, n + 1), dtype=cp.uint16)
             best_tours = cp.empty((count, n + 1), dtype=cp.uint16)
             global_best_lengths = cp.empty(count, dtype=cp.float32)
@@ -1564,6 +1649,21 @@ def _run_device_v2(
                 (count, ants),
                 -1.0,
                 dtype=cp.float32,
+            )
+            edge_gain_workspace = (
+                cp.zeros((count, ants, n), dtype=cp.float32)
+                if track_edge_gain
+                else cp.empty(1, dtype=cp.float32)
+            )
+            global_best_edge_gain = (
+                cp.empty((count, n), dtype=cp.float32)
+                if track_edge_gain
+                else cp.empty(1, dtype=cp.float32)
+            )
+            restart_best_edge_gain = (
+                cp.empty((count, n), dtype=cp.float32)
+                if track_edge_gain
+                else cp.empty(1, dtype=cp.float32)
             )
             length_before_workspace = cp.empty(
                 (count, ants),
@@ -1648,10 +1748,12 @@ def _run_device_v2(
                     (count,),
                     (construct_threads,),
                     (
+                        resident.coords,
                         static_distances,
                         static_heuristic,
                         static_log_heuristic,
                         resident.nearest,
+                        resident.full_nn_rank,
                         tr_ops,
                         tr_fargs,
                         tr_iargs,
@@ -1688,11 +1790,7 @@ def _run_device_v2(
                 )
                 if config.uses_local_search:
                     total_tours = count * ants
-                    ls_blocks = (
-                        total_tours
-                        + runtime.cuda_ls_warps_per_block
-                        - 1
-                    ) // runtime.cuda_ls_warps_per_block
+                    ls_blocks = (total_tours + ls_warps_per_block - 1) // ls_warps_per_block
                     two_opt_kernel(
                         (ls_blocks,),
                         (ls_threads,),
@@ -1721,9 +1819,13 @@ def _run_device_v2(
                             dlb_workspace,
                             pre_tour_workspace,
                             origin_workspace,
+                            edge_gain_workspace,
+                            np.int32(track_pre_tour),
                             np.int32(track_origin),
+                            np.int32(track_edge_gain),
                             diagnostics,
                         ),
+                        shared_mem=two_opt_shared_bytes,
                     )
                     if config.local_search is LocalSearch.THREE_OPT:
                         three_opt_kernel(
@@ -1749,6 +1851,7 @@ def _run_device_v2(
                                 scratch_tour_workspace,
                                 diagnostics,
                             ),
+                            shared_mem=three_opt_shared_bytes,
                         )
                 update_kernel(
                     (count,),
@@ -1784,13 +1887,17 @@ def _run_device_v2(
                         np.float32(config.mmas_branch_threshold),
                         np.int32(config.mmas_restart_stagnation),
                         np.int32(config.uses_local_search),
+                        np.int32(track_edge_gain),
                         pheromone_workspace,
                         tour_workspace,
+                        pre_tour_workspace,
                         length_workspace,
                         length_before_workspace,
                         ls_gain_workspace,
+                        edge_gain_workspace,
                         deposit_workspace,
                         edge_frequency,
+                        pre_edge_frequency,
                         restart_tour,
                         best_tours,
                         global_best_lengths,
@@ -1803,6 +1910,8 @@ def _run_device_v2(
                         restart_iteration,
                         global_best_ls_gain,
                         restart_best_ls_gain,
+                        global_best_edge_gain,
+                        restart_best_edge_gain,
                         origin_workspace,
                         global_best_origin,
                         restart_best_origin,
@@ -1876,6 +1985,7 @@ def _run_device_v2(
             chunks=chunk_count,
             block_threads=construct_threads,
             device_name=device_name,
+            local_search_warps_per_block=ls_warps_per_block,
             anytime_mean_lengths=np.concatenate(anytime_mean_parts),
             basin_mean_lengths=(
                 np.concatenate(basin_parts)
@@ -1999,12 +2109,25 @@ def _solve_population_impl(
     used_devices = devices[: len(shards)]
     initial_tau = _initial_pheromone_parameters(problem, config, seed)
     run_device = _run_device_v2 if use_v2 else _run_device
-    started = perf_counter()
-    if len(shards) == 1:
-        device_results = [
+
+    def run_shard(device: int, shard: np.ndarray) -> list[_DeviceResult]:
+        """在一个物理设备上顺序执行语义同质的子分片。"""
+
+        semantic_shards = (
+            _partition_v2_semantic_shard(
+                shard,
+                batch_size=problem.batch_size,
+                pheromone_required_masks=(pheromone_programs.required_masks[representatives]),
+                config=config,
+                audit_local_search=audit_local_search,
+            )
+            if use_v2
+            else (shard,)
+        )
+        return [
             run_device(
-                device=devices[0],
-                flat_indices=shards[0],
+                device=device,
+                flat_indices=semantic_shard,
                 problem=problem,
                 config=config,
                 runtime=runtime,
@@ -2019,31 +2142,24 @@ def _solve_population_impl(
                 basin_top_q=basin_top_q,
                 audit_local_search=audit_local_search,
             )
+            for semantic_shard in semantic_shards
         ]
+
+    started = perf_counter()
+    if len(shards) == 1:
+        device_result_groups = [run_shard(devices[0], shards[0])]
     else:
         with ThreadPoolExecutor(max_workers=len(shards)) as executor:
             futures = [
                 executor.submit(
-                    run_device,
-                    device=device,
-                    flat_indices=shard,
-                    problem=problem,
-                    config=config,
-                    runtime=runtime,
-                    seed=seed,
-                    transition=transition,
-                    pheromone_programs=pheromone_programs,
-                    transition_active=transition_active,
-                    pheromone_active=pheromone_active,
-                    representatives=representatives,
-                    initial_tau=initial_tau,
-                    record_anytime=record_anytime,
-                    basin_top_q=basin_top_q,
-                    audit_local_search=audit_local_search,
+                    run_shard,
+                    device,
+                    shard,
                 )
                 for device, shard in zip(used_devices, shards, strict=True)
             ]
-            device_results = [future.result() for future in futures]
+            device_result_groups = [future.result() for future in futures]
+    device_results = [result for group in device_result_groups for result in group]
 
     best_tour_flat = np.empty(
         (task_count, problem.n + 1),
@@ -2249,22 +2365,19 @@ def _solve_population_impl(
             pre_colony_tensor = pre_colony_tensor[inverse]
 
     elapsed = perf_counter() - started
-    kernel_values = [item.kernel_seconds for item in device_results]
+    kernel_values = [sum(item.kernel_seconds for item in group) for group in device_result_groups]
     metrics: dict[str, float | int | str] = {
         "devices": ",".join(str(device) for device in used_devices),
-        "device_names": " | ".join(
-            item.device_name for item in device_results
-        ),
+        "device_names": " | ".join(dict.fromkeys(item.device_name for item in device_results)),
         "device_count": len(used_devices),
         "kernel_seconds_critical": max(kernel_values),
         "kernel_seconds_sum": sum(kernel_values),
-        "compile_seconds_sum": sum(
-            item.compile_seconds for item in device_results
-        ),
+        "compile_seconds_sum": sum(item.compile_seconds for item in device_results),
         "h2d_seconds_sum": sum(item.h2d_seconds for item in device_results),
         "d2h_seconds_sum": sum(item.d2h_seconds for item in device_results),
         "exact_fp64_scoring_seconds": exact_seconds,
         "chunks": sum(item.chunks for item in device_results),
+        "semantic_shards": len(device_results),
         "block_threads": device_results[0].block_threads,
         "provider": device_results[0].provider,
         "precision": device_results[0].precision,
@@ -2275,7 +2388,9 @@ def _solve_population_impl(
         "local_search_candidate_size": (
             config.resolve_local_search_candidate_size(problem.n)
         ),
-        "local_search_warps_per_block": runtime.cuda_ls_warps_per_block,
+        "local_search_warps_per_block": (
+            device_results[0].local_search_warps_per_block or runtime.cuda_ls_warps_per_block
+        ),
         "three_opt_block_threads": runtime.cuda_three_opt_block_threads,
         "basin_top_q": basin_top_q,
         "audit_local_search": int(audit_local_search),

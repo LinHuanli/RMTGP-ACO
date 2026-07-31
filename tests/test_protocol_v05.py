@@ -97,6 +97,7 @@ def test_compact_schedule_roundtrip_and_disjoint_validation(tmp_path) -> None:
         validation_selection_instances_per_scale=3,
         validation_gate_instances_per_scale=3,
         validation_seeds=2,
+        training_seeds=3,
     )
     train_indices = [
         index
@@ -118,7 +119,10 @@ def test_compact_schedule_roundtrip_and_disjoint_validation(tmp_path) -> None:
         replicate_id=2,
         candidate_size=2,
     )
-    sampler.cases_for_generation(1)
+    cases = sampler.cases_for_generation(1)
+    assert len(cases) == 3
+    assert len({case.seed for case in cases}) == 3
+    assert all(case.batch.instance_ids == cases[0].batch.instance_ids for case in cases)
     assert len(json.dumps(sampler.state_dict())) < 500
 
 

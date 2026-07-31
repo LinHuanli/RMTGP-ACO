@@ -6,6 +6,10 @@
 
 #include <cuda_runtime.h>
 
+#ifndef RMTGP_TRACK_EDGE_GAIN
+#define RMTGP_TRACK_EDGE_GAIN 0
+#endif
+
 namespace rmtgp_ls {
 
 constexpr unsigned int FULL_WARP = 0xffffffffu;
@@ -40,6 +44,70 @@ __device__ __forceinline__ void sort_three(
         first = second;
         second = value;
     }
+}
+
+__device__ __forceinline__ unsigned int pack_gain_neighbour(
+    int neighbour,
+    float gain
+) {
+    const unsigned int quantised = min(
+        __float2uint_rn(fminf(1.0f, fmaxf(0.0f, gain)) * 65535.0f),
+        65535U
+    );
+    return (static_cast<unsigned int>(neighbour) << 16) | quantised;
+}
+
+__device__ __forceinline__ void replace_gain_neighbour(
+    unsigned int* adjacency,
+    int city,
+    int old_neighbour,
+    int new_neighbour,
+    float gain
+) {
+    unsigned int* slots = adjacency + static_cast<size_t>(city) * 2;
+    const int first = static_cast<int>(slots[0] >> 16);
+    const int slot = first == old_neighbour ? 0 : 1;
+    slots[slot] = pack_gain_neighbour(new_neighbour, gain);
+}
+
+__device__ __forceinline__ float edge_gain_from_neighbours(
+    const unsigned int* adjacency,
+    int city,
+    int neighbour
+) {
+    const unsigned int* slots = adjacency
+        + static_cast<size_t>(city) * 2;
+    const unsigned int packed = (
+        static_cast<int>(slots[0] >> 16) == neighbour
+        ? slots[0]
+        : slots[1]
+    );
+    return static_cast<float>(packed & 65535U) * (1.0f / 65535.0f);
+}
+
+__device__ __forceinline__ float normalized_move_gain(
+    const int* endpoints,
+    const float* distances,
+    int n,
+    float length_before
+) {
+    const int a = endpoints[0];
+    const int b = endpoints[1];
+    const int c = endpoints[2];
+    const int d = endpoints[3];
+    const float delta = edge_distance(distances, n, a, c)
+        + edge_distance(distances, n, b, d)
+        - edge_distance(distances, n, a, b)
+        - edge_distance(distances, n, c, d);
+    return fminf(
+        1.0f,
+        fmaxf(
+            0.0f,
+            -delta / (
+                length_before / static_cast<float>(n) + 1.0e-20f
+            )
+        )
+    );
 }
 
 __device__ __forceinline__ void reverse_between_edges(
@@ -197,7 +265,10 @@ extern "C" __global__ void v2_two_opt(
     uint8_t* dlb_workspace,
     uint16_t* pre_tour_workspace,
     int8_t* origin_workspace,
+    float* edge_gain_workspace,
+    int track_pre_tour,
     int track_origin,
+    int track_edge_gain,
     uint64_t* diagnostics
 ) {
     using namespace rmtgp_ls;
@@ -222,21 +293,30 @@ extern "C" __global__ void v2_two_opt(
         + static_cast<size_t>(flat_tour) * n;
     uint16_t* order = order_workspace
         + static_cast<size_t>(flat_tour) * n;
-    uint8_t* dlb = dlb_workspace + static_cast<size_t>(flat_tour) * n;
+    uint8_t* dlb = dlb_workspace
+        + static_cast<size_t>(flat_tour) * n;
     uint16_t* pre_tour = pre_tour_workspace
         + static_cast<size_t>(flat_tour) * (n + 1);
     int8_t* origin = origin_workspace
         + static_cast<size_t>(flat_tour) * n;
+    float* edge_gain = edge_gain_workspace
+        + static_cast<size_t>(flat_tour) * n;
+#if RMTGP_TRACK_EDGE_GAIN
+    extern __shared__ unsigned int dynamic_gain_adjacency[];
+    unsigned int* edge_gain_adjacency = dynamic_gain_adjacency
+        + static_cast<size_t>(warp_in_block) * n * 2;
+#endif
 
     __shared__ int move_first[32];
     __shared__ int move_second[32];
     __shared__ int move_endpoints[32][4];
+    __shared__ float move_gains[32];
     __shared__ int pass_improved[32];
     __shared__ unsigned long long move_counts[32];
     __shared__ unsigned long long check_counts[32];
     __shared__ unsigned long long pass_counts[32];
 
-    if (track_origin != 0) {
+    if (track_pre_tour != 0) {
         for (int index = lane; index <= n; index += 32) {
             pre_tour[index] = tour[index];
         }
@@ -246,6 +326,22 @@ extern "C" __global__ void v2_two_opt(
         position[city] = static_cast<uint16_t>(index);
         order[index] = static_cast<uint16_t>(index);
         dlb[index] = 0;
+#if RMTGP_TRACK_EDGE_GAIN
+        if (track_edge_gain != 0) {
+            edge_gain[index] = 0.0f;
+            const int previous = static_cast<int>(
+                tour[(index + n - 1) % n]
+            );
+            const int following = static_cast<int>(
+                tour[(index + 1) % n]
+            );
+            edge_gain_adjacency[static_cast<size_t>(city) * 2]
+                = pack_gain_neighbour(previous, 0.0f);
+            edge_gain_adjacency[
+                static_cast<size_t>(city) * 2 + 1
+            ] = pack_gain_neighbour(following, 0.0f);
+        }
+#endif
     }
     __syncwarp();
     if (lane == 0) {
@@ -362,6 +458,16 @@ extern "C" __global__ void v2_two_opt(
                     move_endpoints[warp_in_block][3] = static_cast<int>(
                         tour[(chosen_position + 1) % n]
                     );
+#if RMTGP_TRACK_EDGE_GAIN
+                    if (track_edge_gain != 0) {
+                        move_gains[warp_in_block] = normalized_move_gain(
+                            move_endpoints[warp_in_block],
+                            distances,
+                            n,
+                            length_before_workspace[flat_tour]
+                        );
+                    }
+#endif
                 }
                 __syncwarp();
                 reverse_between_edges(
@@ -373,6 +479,27 @@ extern "C" __global__ void v2_two_opt(
                     lane
                 );
                 if (lane == 0) {
+#if RMTGP_TRACK_EDGE_GAIN
+                    if (track_edge_gain != 0) {
+                        const int a = move_endpoints[warp_in_block][0];
+                        const int b = move_endpoints[warp_in_block][1];
+                        const int c = move_endpoints[warp_in_block][2];
+                        const int d = move_endpoints[warp_in_block][3];
+                        const float gain = move_gains[warp_in_block];
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, a, b, c, gain
+                        );
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, b, a, d, gain
+                        );
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, c, d, a, gain
+                        );
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, d, c, b, gain
+                        );
+                    }
+#endif
                     for (int endpoint = 0; endpoint < 4; ++endpoint) {
                         dlb[move_endpoints[warp_in_block][endpoint]] = 0;
                     }
@@ -454,6 +581,16 @@ extern "C" __global__ void v2_two_opt(
                     move_endpoints[warp_in_block][1] = city;
                     move_endpoints[warp_in_block][2] = chosen_predecessor;
                     move_endpoints[warp_in_block][3] = chosen;
+#if RMTGP_TRACK_EDGE_GAIN
+                    if (track_edge_gain != 0) {
+                        move_gains[warp_in_block] = normalized_move_gain(
+                            move_endpoints[warp_in_block],
+                            distances,
+                            n,
+                            length_before_workspace[flat_tour]
+                        );
+                    }
+#endif
                 }
                 __syncwarp();
                 reverse_between_edges(
@@ -465,6 +602,27 @@ extern "C" __global__ void v2_two_opt(
                     lane
                 );
                 if (lane == 0) {
+#if RMTGP_TRACK_EDGE_GAIN
+                    if (track_edge_gain != 0) {
+                        const int a = move_endpoints[warp_in_block][0];
+                        const int b = move_endpoints[warp_in_block][1];
+                        const int c = move_endpoints[warp_in_block][2];
+                        const int d = move_endpoints[warp_in_block][3];
+                        const float gain = move_gains[warp_in_block];
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, a, b, c, gain
+                        );
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, b, a, d, gain
+                        );
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, c, d, a, gain
+                        );
+                        replace_gain_neighbour(
+                            edge_gain_adjacency, d, c, b, gain
+                        );
+                    }
+#endif
                     for (int endpoint = 0; endpoint < 4; ++endpoint) {
                         dlb[move_endpoints[warp_in_block][endpoint]] = 0;
                     }
@@ -487,6 +645,24 @@ extern "C" __global__ void v2_two_opt(
         continue_search = __shfl_sync(FULL_WARP, continue_search, 0);
     }
 
+#if RMTGP_TRACK_EDGE_GAIN
+    if (track_edge_gain != 0) {
+        // 邻接表使每次 2-opt move 只更新四个端点。搜索结束后再一次性
+        // 物化为与 source tour 边位置对齐的连续数组，供 PH 程序读取。
+        for (int edge = lane; edge < n; edge += 32) {
+            const int first = static_cast<int>(tour[edge]);
+            const int second = static_cast<int>(tour[(edge + 1) % n]);
+            edge_gain[edge] = edge_gain_from_neighbours(
+                edge_gain_adjacency,
+                first,
+                second
+            );
+        }
+        __syncwarp();
+    }
+#else
+    (void)edge_gain;
+#endif
     const float after = exact_length(tour, distances, n, lane);
     if (lane == 0) {
         const float before = length_before_workspace[flat_tour];
@@ -574,7 +750,7 @@ extern "C" __global__ void v2_three_opt(
 ) {
     using namespace rmtgp_ls;
     // 真 3-opt 的内层有 ls_candidate_size^2 个候选对。与 2-opt 的
-    // 一条 tour 一个 warp 不同，这里让一个 256-thread block 处理一条
+    // 一条 tour 一个 warp 不同，这里让一个完整 thread block 处理一条
     // tour。线程并行检查同一连续候选区间，再用 pair index 的 atomicMin
     // 恢复确定性的 first-improvement 顺序。
     const int thread = threadIdx.x;
@@ -589,15 +765,44 @@ extern "C" __global__ void v2_three_opt(
         + static_cast<size_t>(instance) * n * n;
     const uint16_t* nearest = nearest_all
         + static_cast<size_t>(instance) * n * nearest_stride;
-    uint16_t* tour = tour_workspace
+    uint16_t* global_tour = tour_workspace
         + static_cast<size_t>(flat_tour) * (n + 1);
-    uint16_t* position = position_workspace
+    uint16_t* global_position = position_workspace
         + static_cast<size_t>(flat_tour) * n;
-    uint16_t* order = order_workspace
+    uint16_t* global_order = order_workspace
         + static_cast<size_t>(flat_tour) * n;
-    uint8_t* dlb = dlb_workspace + static_cast<size_t>(flat_tour) * n;
-    uint16_t* scratch = scratch_tour_workspace
+    uint8_t* global_dlb = dlb_workspace
+        + static_cast<size_t>(flat_tour) * n;
+    uint16_t* global_scratch = scratch_tour_workspace
         + static_cast<size_t>(flat_tour) * (n + 1);
+    (void)global_position;
+    (void)global_dlb;
+    (void)global_scratch;
+
+    // 一个 block 独占一条 tour。把反复访问的 tour、position、order、
+    // DLB 和 move scratch 全部放入 shared memory。
+    extern __shared__ unsigned char dynamic_shared[];
+    size_t shared_offset = 0;
+    uint16_t* tour = reinterpret_cast<uint16_t*>(
+        dynamic_shared + shared_offset
+    );
+    shared_offset += static_cast<size_t>((n + 1) * sizeof(uint16_t));
+    uint16_t* position = reinterpret_cast<uint16_t*>(
+        dynamic_shared + shared_offset
+    );
+    shared_offset += static_cast<size_t>(n * sizeof(uint16_t));
+    uint16_t* order = reinterpret_cast<uint16_t*>(
+        dynamic_shared + shared_offset
+    );
+    shared_offset += static_cast<size_t>(n * sizeof(uint16_t));
+    uint8_t* dlb = reinterpret_cast<uint8_t*>(
+        dynamic_shared + shared_offset
+    );
+    shared_offset += static_cast<size_t>(n);
+    shared_offset = (shared_offset + 1U) & ~static_cast<size_t>(1U);
+    uint16_t* scratch = reinterpret_cast<uint16_t*>(
+        dynamic_shared + shared_offset
+    );
 
     __shared__ int selected_pair;
     __shared__ int selected_first;
@@ -612,10 +817,14 @@ extern "C" __global__ void v2_three_opt(
     __shared__ float length_reduction[512];
 
     for (int city = thread; city < n; city += blockDim.x) {
+        const uint16_t value = global_tour[city];
+        tour[city] = value;
+        order[city] = global_order[city];
         dlb[city] = 0;
-        position[static_cast<int>(tour[city])] = static_cast<uint16_t>(city);
+        position[static_cast<int>(value)] = static_cast<uint16_t>(city);
     }
     if (thread == 0) {
+        tour[n] = tour[0];
         move_count = 0;
         check_count = 0;
         pass_count = 0;
@@ -841,5 +1050,9 @@ extern "C" __global__ void v2_three_opt(
             ),
             pass_count
         );
+    }
+    __syncthreads();
+    for (int city = thread; city <= n; city += blockDim.x) {
+        global_tour[city] = tour[city];
     }
 }

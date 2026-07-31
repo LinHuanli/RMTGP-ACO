@@ -516,6 +516,9 @@ def _protocol_schedule(
                 spec.data.validation_gate_instances_per_scale
             ),
             validation_seeds=spec.experiment.validation_seeds,
+            training_seeds=(
+                spec.experiment.racing.max_training_seeds if spec.experiment.racing.enabled else 1
+            ),
         )
     validate_schedule_contract(
         schedule,
@@ -534,6 +537,9 @@ def _protocol_schedule(
             spec.data.validation_gate_instances_per_scale
         ),
         validation_seeds=spec.experiment.validation_seeds,
+        training_seeds=(
+            spec.experiment.racing.max_training_seeds if spec.experiment.racing.enabled else 1
+        ),
     )
     return schedule
 
@@ -575,6 +581,9 @@ def _command_prepare_schedules(args: argparse.Namespace) -> int:
             spec.data.validation_gate_instances_per_scale
         ),
         validation_seeds=spec.experiment.validation_seeds,
+        training_seeds=(
+            spec.experiment.racing.max_training_seeds if spec.experiment.racing.enabled else 1
+        ),
     )
     target = write_schedule(schedule, args.output)
     print(
@@ -615,6 +624,9 @@ def _command_precompute_baselines(args: argparse.Namespace) -> int:
             spec.data.validation_gate_instances_per_scale
         ),
         validation_seeds=spec.experiment.validation_seeds,
+        training_seeds=(
+            spec.experiment.racing.max_training_seeds if spec.experiment.racing.enabled else 1
+        ),
     )
 
     selected_splits = set(args.splits)

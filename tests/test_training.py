@@ -31,6 +31,7 @@ from rmtgp_aco.training import (
     EvaluationPool,
     FitnessBreakdown,
     _experiment_hash,
+    _gp_config_for_generation,
     _hydrate_fitness_breakdown,
     _pre_anytime_experiment_hash,
     baseline_relative_fitness,
@@ -124,6 +125,64 @@ def test_baseline_anchor_is_unique_and_never_enters_breeding_pool() -> None:
     )
 
 
+def test_structural_copy_limit_repairs_population_collapse() -> None:
+    gp_config = GPConfig(
+        population_size=8,
+        generations=2,
+        crossover_probability=0.0,
+        mutation_probability=0.0,
+        reproduction_probability=1.0,
+        elite_size=1,
+        tournament_size=2,
+        initial_min_depth=1,
+        initial_max_depth=2,
+        max_depth=3,
+        max_structural_copies=1,
+    )
+    population, transition_pset, pheromone_pset = initialise_population(gp_config)
+    population = [population[0].clone() for _ in range(gp_config.population_size)]
+    for individual in population:
+        individual.fitness.values = (0.0,)
+    evolved = evolve_generation(
+        population,
+        transition_pset,
+        pheromone_pset,
+        gp_config,
+    )
+    assert len(evolved) == gp_config.population_size
+    assert len({item.structural_hash for item in evolved}) == len(evolved)
+
+
+def test_staged_gp_configuration_reserves_fixed_transition_budget() -> None:
+    gp_config = GPConfig(
+        generations=3,
+        phase_a_end_generation=1,
+        phase_b_end_generation=2,
+        fixed_transition_checkpoint="local-test.pkl",
+        max_total_nodes=31,
+    )
+    phase_a = _gp_config_for_generation(
+        gp_config,
+        1,
+        fixed_transition_nodes=7,
+    )
+    phase_b = _gp_config_for_generation(
+        gp_config,
+        2,
+        fixed_transition_nodes=7,
+    )
+    phase_c = _gp_config_for_generation(
+        gp_config,
+        3,
+        fixed_transition_nodes=7,
+    )
+    assert not phase_a.train_transition and phase_a.train_pheromone
+    assert phase_a.max_total_nodes == 24
+    assert not phase_b.train_transition and phase_b.train_pheromone
+    assert phase_b.max_total_nodes == 31
+    assert phase_c.train_transition and phase_c.train_pheromone
+
+
 @pytest.mark.parametrize(
     "fitness_mode",
     [
@@ -132,6 +191,8 @@ def test_baseline_anchor_is_unique_and_never_enters_breeding_pool() -> None:
         FitnessMode.PAIRED_COMBINED_UCB,
         FitnessMode.PAIRED_ANYTIME_UCB,
         FitnessMode.PAIRED_FINAL_ANYTIME_UCB,
+        FitnessMode.PAIRED_BASIN_MEAN,
+        FitnessMode.PAIRED_FINAL_ANYTIME_MEAN,
     ],
 )
 def test_population_fitness_modes_keep_exact_zero_baseline_anchor(
