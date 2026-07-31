@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pytest
 import torch
@@ -48,6 +51,41 @@ def test_indexed_shard_and_slots_scale_pool(tmp_path) -> None:
     pool = ScalePool(scale=4, shards=(IndexedShard.open(path),))
     assert len(pool) == 2
     assert pool.get(1).n == 4
+
+
+def test_indexed_shard_cache_creation_is_concurrency_safe(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "shared.txt"
+    path.write_text(f"{SQUARE}\n{SQUARE}\n", encoding="utf-8")
+    barrier = threading.Barrier(4)
+    original = build_line_offsets
+
+    def synchronized_build(source):
+        offsets = original(source)
+        barrier.wait(timeout=5.0)
+        return offsets
+
+    monkeypatch.setattr(
+        "rmtgp_aco.sampling.build_line_offsets",
+        synchronized_build,
+    )
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        shards = list(
+            executor.map(
+                lambda _: IndexedShard.open(path),
+                range(4),
+            )
+        )
+    assert all(
+        shard.offsets.tolist() == [0, len(SQUARE) + 1]
+        for shard in shards
+    )
+    assert IndexedShard.open(path).offsets.tolist() == [
+        0,
+        len(SQUARE) + 1,
+    ]
 
 
 def test_problem_batch_is_symmetric_and_has_valid_candidates(small_instances) -> None:

@@ -29,7 +29,9 @@ from rmtgp_aco.sampling import in_memory_cases
 from rmtgp_aco.training import (
     BaselineCache,
     EvaluationPool,
+    FitnessBreakdown,
     _experiment_hash,
+    _hydrate_fitness_breakdown,
     _pre_anytime_experiment_hash,
     baseline_relative_fitness,
     paired_ucb_fitness,
@@ -400,6 +402,34 @@ def test_pre_anytime_checkpoint_hash_migration_is_strict() -> None:
         ),
     )
     assert _pre_anytime_experiment_hash(anytime) is None
+
+
+def test_pre_anytime_breakdown_migration_restores_shifted_delta() -> None:
+    legacy_delta = {100: -0.125}
+    breakdown = FitnessBreakdown(
+        fitness=-0.1,
+        mean_gap_by_scale={100: 0.2},
+        median_gap_by_scale={100: 0.1},
+        baseline_gap_by_scale={100: 0.3},
+        mean_delta_by_scale={100: -0.1},
+        fitness_delta_by_scale=legacy_delta,
+    )
+    # 模拟 frozen slots dataclass 对旧 positional pickle 的反序列化结果。
+    object.__setattr__(
+        breakdown,
+        "mean_anytime_gap_by_scale",
+        breakdown.fitness_delta_by_scale,
+    )
+    object.__delattr__(breakdown, "baseline_anytime_gap_by_scale")
+    object.__delattr__(breakdown, "mean_anytime_delta_by_scale")
+    object.__delattr__(breakdown, "fitness_delta_by_scale")
+
+    _hydrate_fitness_breakdown(breakdown, pre_anytime=True)
+
+    assert breakdown.mean_anytime_gap_by_scale == {}
+    assert breakdown.baseline_anytime_gap_by_scale == {}
+    assert breakdown.mean_anytime_delta_by_scale == {}
+    assert breakdown.fitness_delta_by_scale == legacy_delta
 
 
 def test_tiny_training_run_is_reproducible(tmp_path) -> None:

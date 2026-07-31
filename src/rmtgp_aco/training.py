@@ -2298,6 +2298,57 @@ def _pre_anytime_experiment_hash(experiment: ExperimentConfig) -> str | None:
     return sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _hydrate_fitness_breakdown(
+    breakdown: FitnessBreakdown,
+    *,
+    pre_anytime: bool,
+) -> None:
+    """恢复旧 pickle 的缺失字段，并纠正 slots 位置反序列化造成的位移。"""
+
+    if (
+        pre_anytime
+        and hasattr(breakdown, "mean_anytime_gap_by_scale")
+        and not hasattr(breakdown, "baseline_anytime_gap_by_scale")
+        and not hasattr(breakdown, "mean_anytime_delta_by_scale")
+        and not hasattr(breakdown, "fitness_delta_by_scale")
+    ):
+        # 旧版最后一个字段是 fitness_delta_by_scale。新增三个 Anytime
+        # 字段插在它前面后，positional __setstate__ 会把旧 fitness
+        # delta 错放进 mean_anytime_gap_by_scale。
+        legacy_fitness_delta = deepcopy(
+            breakdown.mean_anytime_gap_by_scale
+        )
+        object.__setattr__(breakdown, "mean_anytime_gap_by_scale", {})
+        object.__setattr__(
+            breakdown,
+            "baseline_anytime_gap_by_scale",
+            {},
+        )
+        object.__setattr__(
+            breakdown,
+            "mean_anytime_delta_by_scale",
+            {},
+        )
+        object.__setattr__(
+            breakdown,
+            "fitness_delta_by_scale",
+            legacy_fitness_delta,
+        )
+    for descriptor in fields(FitnessBreakdown):
+        if hasattr(breakdown, descriptor.name):
+            continue
+        if descriptor.default is not MISSING:
+            value = deepcopy(descriptor.default)
+        elif descriptor.default_factory is not MISSING:
+            value = descriptor.default_factory()
+        else:
+            raise ValueError(
+                "旧 checkpoint 缺少无默认值字段 "
+                f"FitnessBreakdown.{descriptor.name}"
+            )
+        object.__setattr__(breakdown, descriptor.name, value)
+
+
 def _hydrate_generation_record(record: GenerationRecord) -> None:
     """为旧 pickle 中后来新增、且有默认值的审计字段补默认值。"""
 
@@ -2377,16 +2428,42 @@ def _load_resume_checkpoint(
         raise TypeError("training checkpoint 根对象必须为 dict")
     if payload.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION:
         raise ValueError("training checkpoint schema 不兼容")
-    expected_hashes = {_experiment_hash(experiment)}
+    current_hash = _experiment_hash(experiment)
+    expected_hashes = {current_hash}
     legacy_hash = _pre_anytime_experiment_hash(experiment)
     if legacy_hash is not None:
         expected_hashes.add(legacy_hash)
-    if payload.get("experiment_hash") not in expected_hashes:
+    stored_hash = payload.get("experiment_hash")
+    if stored_hash not in expected_hashes:
         raise ValueError("resume 配置与 checkpoint 不一致")
+    pre_anytime = (
+        legacy_hash is not None
+        and stored_hash == legacy_hash
+        and stored_hash != current_hash
+    )
     for record in payload.get("history", ()):
         if not isinstance(record, GenerationRecord):
             raise TypeError("training checkpoint history 类型错误")
         _hydrate_generation_record(record)
+    hydrated_breakdowns: set[int] = set()
+    for collection_name in ("population", "checkpoints"):
+        for individual in payload.get(collection_name, ()):
+            if not isinstance(individual, RMTGPIndividual):
+                raise TypeError(
+                    "training checkpoint "
+                    f"{collection_name} 个体类型错误"
+                )
+            for stored in individual.metadata.values():
+                if (
+                    not isinstance(stored, FitnessBreakdown)
+                    or id(stored) in hydrated_breakdowns
+                ):
+                    continue
+                _hydrate_fitness_breakdown(
+                    stored,
+                    pre_anytime=pre_anytime,
+                )
+                hydrated_breakdowns.add(id(stored))
     sampler_state = payload.get("sampler_state")
     if sampler_state is not None:
         if sampler_owner is None:

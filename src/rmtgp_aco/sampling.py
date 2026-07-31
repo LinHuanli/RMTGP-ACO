@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,14 +55,26 @@ class IndexedShard:
         if offsets is None:
             offsets = build_line_offsets(source)
             if use_cache:
-                temporary = cache.with_suffix(f"{cache.suffix}.tmp.npz")
-                np.savez(
-                    temporary,
-                    offsets=offsets,
-                    size=np.asarray(stat.st_size, dtype=np.int64),
-                    mtime_ns=np.asarray(stat.st_mtime_ns, dtype=np.int64),
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{cache.name}.",
+                    suffix=".tmp.npz",
+                    dir=cache.parent,
                 )
-                os.replace(temporary, cache)
+                os.close(descriptor)
+                temporary = Path(temporary_name)
+                try:
+                    np.savez(
+                        temporary,
+                        offsets=offsets,
+                        size=np.asarray(stat.st_size, dtype=np.int64),
+                        mtime_ns=np.asarray(
+                            stat.st_mtime_ns,
+                            dtype=np.int64,
+                        ),
+                    )
+                    os.replace(temporary, cache)
+                finally:
+                    temporary.unlink(missing_ok=True)
         return cls(path=source, offsets=offsets)
 
     def __len__(self) -> int:
