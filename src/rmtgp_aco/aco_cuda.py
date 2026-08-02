@@ -7,6 +7,7 @@ CUDA 只负责组合搜索。最优 tour 回到主机后，fitness 一律用
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import threading
@@ -56,12 +57,19 @@ _CUDA_SOURCE = Path(__file__).with_name("cuda") / "aco_fused.cu"
 _CUDA_V2_SOURCE = Path(__file__).with_name("cuda") / "aco_tiled_v2.cu"
 _CUDA_LS_SOURCE = Path(__file__).with_name("cuda") / "aco_local_search.cu"
 _MODULES: dict[tuple[int, str], Any] = {}
-_V2_MODULES: dict[tuple[int, str], tuple[Any, ...]] = {}
+_V2_MODULES: OrderedDict[tuple[int, str], tuple[Any, ...]] = OrderedDict()
 _MODULE_LOCK = threading.Lock()
 _RESIDENT_LOCK = threading.Lock()
 _RESIDENT: OrderedDict[tuple[int, tuple[object, ...]], _ResidentProblem] = (
     OrderedDict()
 )
+
+# generated GP source 随 population 变化。无限缓存会让 driver module 和
+# resident problem 在长训练中共同吃满显存。正式训练只需要复用最近几次
+# screen/high/validation 调用，因此按设备保留一个很小的 LRU 即可。
+_V2_MODULE_CACHE_ENTRIES_PER_DEVICE = 8
+_RESIDENT_CACHE_TOTAL_FRACTION = 0.10
+_RESIDENT_CACHE_BUDGET_FRACTION = 0.25
 
 
 @dataclass(slots=True)
@@ -106,6 +114,11 @@ class _DeviceResult:
     precision: str = "fp32"
     candidate_lanes: int = 1
     register_cap: int = 0
+    driver_free_bytes_before: int = 0
+    pool_free_bytes_before: int = 0
+    resident_cache_bytes: int = 0
+    kernel_cache_entries: int = 0
+    workspace_probe_retries: int = 0
 
 
 def cuda_available() -> bool:
@@ -135,11 +148,13 @@ def clear_cuda_problem_cache() -> None:
 
     with _RESIDENT_LOCK:
         _RESIDENT.clear()
+    gc.collect()
     try:
         import cupy as cp
 
         for device in range(int(cp.cuda.runtime.getDeviceCount())):
             with cp.cuda.Device(device):
+                cp.cuda.get_current_stream().synchronize()
                 cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
     except Exception:
@@ -152,6 +167,125 @@ def clear_cuda_kernel_cache() -> None:
     with _MODULE_LOCK:
         _MODULES.clear()
         _V2_MODULES.clear()
+    gc.collect()
+
+
+def _resident_cache_bytes(device: int) -> int:
+    """返回一个设备上仍被逻辑 resident cache 持有的字节数。"""
+
+    with _RESIDENT_LOCK:
+        return sum(
+            item.nbytes
+            for (cached_device, _), item in _RESIDENT.items()
+            if cached_device == device
+        )
+
+
+def _module_cache_entries(device: int) -> int:
+    """返回一个设备上的 v2 RawModule LRU 项数。"""
+
+    with _MODULE_LOCK:
+        return sum(cached_device == device for cached_device, _ in _V2_MODULES)
+
+
+def cuda_cache_snapshot(device: int = 0) -> dict[str, int]:
+    """返回显存与两个 CUDA cache 的轻量诊断快照。"""
+
+    import cupy as cp
+
+    with cp.cuda.Device(device):
+        driver_free, total = cp.cuda.runtime.memGetInfo()
+        pool = cp.get_default_memory_pool()
+        with _RESIDENT_LOCK:
+            resident_entries = sum(
+                cached_device == device
+                for cached_device, _ in _RESIDENT
+            )
+        return {
+            "device": int(device),
+            "driver_free_bytes": int(driver_free),
+            "total_bytes": int(total),
+            "pool_used_bytes": int(pool.used_bytes()),
+            "pool_free_bytes": int(pool.free_bytes()),
+            "resident_cache_bytes": _resident_cache_bytes(device),
+            "resident_cache_entries": resident_entries,
+            "kernel_cache_entries": _module_cache_entries(device),
+        }
+
+
+def _resident_cache_limit(total_memory: int, memory_fraction: float) -> int:
+    """给只读问题数据独立预算，避免与 workspace 重叠使用 80%。"""
+
+    fraction = min(
+        _RESIDENT_CACHE_TOTAL_FRACTION,
+        memory_fraction * _RESIDENT_CACHE_BUDGET_FRACTION,
+    )
+    return int(total_memory * fraction)
+
+
+def _release_stale_cuda_cache(
+    cp: Any,
+    *,
+    device: int,
+    current_resident: _ResidentProblem,
+) -> None:
+    """在显存压力下只保留本次调用仍在使用的 resident/module。"""
+
+    with _RESIDENT_LOCK:
+        stale_residents = [
+            key
+            for key, item in _RESIDENT.items()
+            if key[0] == device and item is not current_resident
+        ]
+        for key in stale_residents:
+            _RESIDENT.pop(key, None)
+    with _MODULE_LOCK:
+        device_keys = [key for key in _V2_MODULES if key[0] == device]
+        # 当前 module 刚被访问或插入，因此位于该设备 LRU 的末尾。
+        for key in device_keys[:-1]:
+            _V2_MODULES.pop(key, None)
+    gc.collect()
+    cp.cuda.get_current_stream().synchronize()
+    cp.get_default_memory_pool().free_all_blocks()
+
+
+def _workspace_memory_snapshot(
+    cp: Any,
+    *,
+    memory_fraction: float,
+) -> tuple[int, int, int, int]:
+    """返回 raw/pool/effective workspace 字节与总显存。"""
+
+    driver_free, total_memory = cp.cuda.runtime.memGetInfo()
+    pool_free = int(cp.get_default_memory_pool().free_bytes())
+    effective_free = min(int(total_memory), int(driver_free) + pool_free)
+    reserve = int(total_memory * (1.0 - memory_fraction))
+    usable = max(0, effective_free - reserve)
+    return int(driver_free), pool_free, usable, int(total_memory)
+
+
+def _probe_workspace_chunk(
+    cp: Any,
+    *,
+    requested_tasks: int,
+    bytes_per_task: int,
+) -> tuple[int, int]:
+    """用可拆分的 pool block 验证 chunk 容量，并在 OOM 时折半。"""
+
+    count = max(1, int(requested_tasks))
+    retries = 0
+    while True:
+        try:
+            probe = cp.empty(count * max(bytes_per_task, 1), dtype=cp.uint8)
+            del probe
+            return count, retries
+        except cp.cuda.memory.OutOfMemoryError:
+            gc.collect()
+            cp.get_default_memory_pool().free_all_blocks()
+            if count == 1:
+                raise
+            count = max(1, count // 2)
+            retries += 1
 
 
 def _problem_key(
@@ -260,7 +394,7 @@ def _resident_problem(
         )
 
         total_memory = int(cp.cuda.runtime.memGetInfo()[1])
-        cache_limit = int(total_memory * memory_fraction)
+        cache_limit = _resident_cache_limit(total_memory, memory_fraction)
         with _RESIDENT_LOCK:
             resident_bytes = sum(
                 item.nbytes
@@ -613,6 +747,7 @@ def _load_v2_kernels(
     with _MODULE_LOCK:
         cached = _V2_MODULES.get(key)
         if cached is not None:
+            _V2_MODULES.move_to_end(key)
             return cached, 0.0
         with cp.cuda.Device(device):
             started = perf_counter()
@@ -630,6 +765,15 @@ def _load_v2_kernels(
             )
             compile_seconds = perf_counter() - started
             _V2_MODULES[key] = kernels
+            device_keys = [
+                cached_key
+                for cached_key in _V2_MODULES
+                if cached_key[0] == device
+            ]
+            while len(device_keys) > _V2_MODULE_CACHE_ENTRIES_PER_DEVICE:
+                victim = device_keys.pop(0)
+                if victim != key:
+                    _V2_MODULES.pop(victim, None)
             return kernels, compile_seconds
 
 
@@ -1534,9 +1678,6 @@ def _run_device_v2(
         )
         three_opt_shared_bytes = (three_opt_shared_bytes + 1) & ~1
         three_opt_shared_bytes += 2 * (n + 1)  # move scratch
-        free_memory, total_memory = cp.cuda.runtime.memGetInfo()
-        reserve = int(total_memory * (1.0 - runtime.gpu_memory_fraction))
-        usable = max(0, int(free_memory) - reserve)
         bytes_per_task = _task_bytes_v2(
             n,
             ants,
@@ -1544,13 +1685,42 @@ def _run_device_v2(
             record_anytime,
             config.local_search,
         )
+        (
+            driver_free_before,
+            pool_free_before,
+            usable,
+            total_memory,
+        ) = _workspace_memory_snapshot(
+            cp,
+            memory_fraction=runtime.gpu_memory_fraction,
+        )
+        if usable < bytes_per_task:
+            _release_stale_cuda_cache(
+                cp,
+                device=device,
+                current_resident=resident,
+            )
+            (
+                driver_free_before,
+                pool_free_before,
+                usable,
+                total_memory,
+            ) = _workspace_memory_snapshot(
+                cp,
+                memory_fraction=runtime.gpu_memory_fraction,
+            )
         max_tasks = usable // max(bytes_per_task, 1)
         if runtime.gpu_task_chunk_size:
             max_tasks = min(max_tasks, runtime.gpu_task_chunk_size)
         if max_tasks < 1:
             raise MemoryError(
                 f"GPU {device} 无法容纳单个 CUDA v2 n={n} task；"
-                f"估算需 {bytes_per_task / 2**20:.1f} MiB"
+                f"估算需 {bytes_per_task / 2**20:.1f} MiB；"
+                f"driver_free={driver_free_before / 2**20:.1f} MiB，"
+                f"pool_free={pool_free_before / 2**20:.1f} MiB，"
+                f"resident={_resident_cache_bytes(device) / 2**20:.1f} MiB，"
+                f"modules={_module_cache_entries(device)}，"
+                f"budget={runtime.gpu_memory_fraction:.2f}"
             )
 
         transition_mode = (
@@ -1580,6 +1750,21 @@ def _run_device_v2(
                     )
                 )
             ]
+
+        requested_chunk = min(int(max_tasks), int(ordered_indices.size))
+        try:
+            max_tasks, workspace_probe_retries = _probe_workspace_chunk(
+                cp,
+                requested_tasks=requested_chunk,
+                bytes_per_task=bytes_per_task,
+            )
+        except cp.cuda.memory.OutOfMemoryError as error:
+            raise MemoryError(
+                f"GPU {device} 清理缓存后仍无法分配单个 CUDA v2 task；"
+                f"n={n}，需 {bytes_per_task / 2**20:.1f} MiB，"
+                f"resident={_resident_cache_bytes(device) / 2**20:.1f} MiB，"
+                f"modules={_module_cache_entries(device)}"
+            ) from error
 
         index_parts: list[np.ndarray] = []
         tour_parts: list[np.ndarray] = []
@@ -2016,6 +2201,11 @@ def _run_device_v2(
             precision=precision.value,
             candidate_lanes=candidate_lanes,
             register_cap=runtime.cuda_register_cap,
+            driver_free_bytes_before=driver_free_before,
+            pool_free_bytes_before=pool_free_before,
+            resident_cache_bytes=_resident_cache_bytes(device),
+            kernel_cache_entries=_module_cache_entries(device),
+            workspace_probe_retries=workspace_probe_retries,
         )
 
 
@@ -2378,6 +2568,21 @@ def _solve_population_impl(
         "exact_fp64_scoring_seconds": exact_seconds,
         "chunks": sum(item.chunks for item in device_results),
         "semantic_shards": len(device_results),
+        "driver_free_bytes_before_min": min(
+            item.driver_free_bytes_before for item in device_results
+        ),
+        "pool_free_bytes_before_sum": sum(
+            item.pool_free_bytes_before for item in device_results
+        ),
+        "resident_cache_bytes_sum": sum(
+            item.resident_cache_bytes for item in device_results
+        ),
+        "kernel_cache_entries_max": max(
+            item.kernel_cache_entries for item in device_results
+        ),
+        "workspace_probe_retries": sum(
+            item.workspace_probe_retries for item in device_results
+        ),
         "block_threads": device_results[0].block_threads,
         "provider": device_results[0].provider,
         "precision": device_results[0].precision,

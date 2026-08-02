@@ -983,6 +983,11 @@ class ExperimentConfig:
         runtime_values["cuda_precision"] = self.runtime.cuda_precision.value
         runtime_values["cuda_task_order"] = self.runtime.cuda_task_order.value
         racing_values = asdict(self.racing)
+        racing_values["screen_fitness_mode"] = (
+            None
+            if self.racing.screen_fitness_mode is None
+            else self.racing.screen_fitness_mode.value
+        )
         if self.racing.screen_horizon_schedule is not None:
             racing_values["screen_horizon_schedule"] = [
                 [end_generation, iterations]

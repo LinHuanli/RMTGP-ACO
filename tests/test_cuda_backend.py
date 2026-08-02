@@ -9,7 +9,10 @@ import torch
 from deap import gp
 
 from rmtgp_aco.aco_cuda import (
+    clear_cuda_kernel_cache,
+    clear_cuda_problem_cache,
     cuda_available,
+    cuda_cache_snapshot,
     cuda_device_count,
     solve_population_cuda,
     solve_population_cuda_anytime,
@@ -403,6 +406,55 @@ def test_cuda_v2_generated_gp_is_bitwise_interpreter_equivalent(
     assert torch.equal(interpreted.best_length, generated.best_length)
     assert torch.equal(interpreted.best_iteration, generated.best_iteration)
     assert torch.equal(interpreted.diagnostics, generated.diagnostics)
+
+
+def test_cuda_v2_generated_module_cache_is_bounded(small_instances) -> None:
+    """不同 population 的生成式 module 不得跨代无限驻留显存。"""
+
+    batch = make_problem_batch(small_instances, candidate_size=2)
+    config = replace(
+        ACOConfig.acotsp_default("as", iterations=1),
+        ants=32,
+        candidate_size=2,
+    )
+    transition_pset, pheromone_pset = create_primitive_sets()
+    clear_cuda_problem_cache()
+    clear_cuda_kernel_cache()
+    try:
+        for index in range(12):
+            transition_expression = "RTau"
+            pheromone_expression = "EdgeEta"
+            for _ in range(index + 1):
+                transition_expression = f"ADD({transition_expression}, ZERO_TR)"
+                pheromone_expression = f"ADD({pheromone_expression}, ZERO_PH)"
+            transition = compile_tree(
+                gp.PrimitiveTree.from_string(
+                    transition_expression,
+                    transition_pset,
+                ),
+                role="transition",
+            )
+            pheromone = compile_tree(
+                gp.PrimitiveTree.from_string(
+                    pheromone_expression,
+                    pheromone_pset,
+                ),
+                role="pheromone",
+            )
+            result = solve_population_cuda(
+                batch,
+                config,
+                [(transition, pheromone)],
+                seed=9000 + index,
+                runtime=_runtime_v2(generated_gp=True),
+            )
+            _assert_valid_population_tours(result.best_tour)
+        snapshot = cuda_cache_snapshot(0)
+        assert snapshot["kernel_cache_entries"] == 8
+        assert snapshot["resident_cache_entries"] == 1
+    finally:
+        clear_cuda_problem_cache()
+        clear_cuda_kernel_cache()
 
 
 def test_cuda_v2_interpreter_sizes_stack_for_both_trees(

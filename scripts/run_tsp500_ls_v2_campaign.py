@@ -69,6 +69,37 @@ def _completed(path: Path) -> bool:
         return False
 
 
+def _last_completed_generation(path: Path) -> int:
+    """读取增量指标，避免为调度状态反序列化完整 GP checkpoint。"""
+
+    source = path / "training_metrics.json"
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(payload, list) or not payload:
+        return 0
+    try:
+        return int(payload[-1]["generation"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def _manifest_error(path: Path) -> str:
+    try:
+        payload = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(payload.get("error") or "")
+
+
+def _resume_command(task: Task) -> tuple[str, ...]:
+    command = list(task.command)
+    if (task.result / "training_state.pkl").is_file() and "--resume" not in command:
+        command.extend(["--resume", str(task.result)])
+    return tuple(command)
+
+
 def _run_command(
     command: tuple[str, ...] | list[str],
     *,
@@ -213,7 +244,12 @@ def _tasks(configs: dict[tuple[str, int], Path]) -> list[Task]:
     return result
 
 
-def _dispatch(tasks: list[Task], gpus: tuple[int, ...]) -> None:
+def _dispatch(
+    tasks: list[Task],
+    gpus: tuple[int, ...],
+    *,
+    max_retries: int,
+) -> None:
     pending: queue.Queue[Task] = queue.Queue()
     for task in tasks:
         if not _completed(task.result):
@@ -222,6 +258,8 @@ def _dispatch(tasks: list[Task], gpus: tuple[int, ...]) -> None:
     active: dict[int, str] = {}
     completed: list[str] = []
     failures: list[dict[str, str]] = []
+    attempts: dict[str, int] = {}
+    failure_history: list[dict[str, object]] = []
     state_path = RUN_ROOT / "campaign_state.json"
 
     def write_state(status: str) -> None:
@@ -233,6 +271,8 @@ def _dispatch(tasks: list[Task], gpus: tuple[int, ...]) -> None:
                 "active": dict(active),
                 "completed": list(completed),
                 "failures": list(failures),
+                "attempts": dict(attempts),
+                "failure_history": list(failure_history),
                 "pending_count": pending.qsize(),
                 "updated_at": datetime.now(UTC).isoformat(),
             },
@@ -248,16 +288,66 @@ def _dispatch(tasks: list[Task], gpus: tuple[int, ...]) -> None:
                 active[gpu] = task.name
                 write_state("running")
             try:
-                _run_command(
-                    task.command,
-                    physical_gpu=gpu,
-                    log=task.log,
-                )
+                succeeded = False
+                final_error = ""
+                for attempt in range(max_retries + 1):
+                    before_generation = _last_completed_generation(task.result)
+                    with lock:
+                        attempts[task.name] = attempt + 1
+                        write_state("running")
+                    try:
+                        _run_command(
+                            _resume_command(task),
+                            physical_gpu=gpu,
+                            log=task.log,
+                        )
+                        succeeded = True
+                        break
+                    except Exception as exc:
+                        after_generation = _last_completed_generation(task.result)
+                        manifest_error = _manifest_error(task.result)
+                        final_error = repr(exc)
+                        transient_memory = any(
+                            marker in manifest_error
+                            for marker in (
+                                "MemoryError",
+                                "OutOfMemoryError",
+                                "CUDA_ERROR_OUT_OF_MEMORY",
+                            )
+                        )
+                        with lock:
+                            failure_history.append(
+                                {
+                                    "task": task.name,
+                                    "attempt": attempt + 1,
+                                    "before_generation": before_generation,
+                                    "after_generation": after_generation,
+                                    "manifest_error": manifest_error,
+                                    "exception": final_error,
+                                }
+                            )
+                            write_state("running")
+                        can_retry = (
+                            attempt < max_retries
+                            and (task.result / "training_state.pkl").is_file()
+                            and (
+                                after_generation > before_generation
+                                or transient_memory
+                            )
+                        )
+                        if not can_retry:
+                            break
                 with lock:
-                    completed.append(task.name)
-            except Exception as exc:
-                with lock:
-                    failures.append({"task": task.name, "error": repr(exc)})
+                    if succeeded:
+                        completed.append(task.name)
+                    else:
+                        failures.append(
+                            {
+                                "task": task.name,
+                                "error": final_error,
+                                "manifest_error": _manifest_error(task.result),
+                            }
+                        )
             finally:
                 with lock:
                     active.pop(gpu, None)
@@ -280,10 +370,18 @@ def main() -> int:
     parser.add_argument("--gpus", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=1,
+        help="每个有 checkpoint 的任务最多额外重试次数",
+    )
     args = parser.parse_args()
     gpus = tuple(dict.fromkeys(int(gpu) for gpu in args.gpus))
     if not gpus or min(gpus) < 0:
         parser.error("--gpus 必须是非空非负整数列表")
+    if args.max_retries < 0:
+        parser.error("--max-retries 不得为负")
 
     configs = _write_configs()
     _prepare_schedules(configs)
@@ -302,7 +400,7 @@ def main() -> int:
             )
         )
         return 0
-    _dispatch(tasks, gpus)
+    _dispatch(tasks, gpus, max_retries=args.max_retries)
     return 0
 
 

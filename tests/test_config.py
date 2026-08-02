@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from enum import Enum
 
 import pytest
+import yaml
 
 from rmtgp_aco.config import (
     ACOConfig,
     ACOVariant,
     ExecutionBackend,
+    ExperimentConfig,
+    FitnessMode,
     GPUMode,
     LocalSearch,
+    RacingConfig,
     RuntimeConfig,
 )
 
@@ -85,3 +90,41 @@ def test_cuda_runtime_rejects_unsafe_block_and_cpu_mode() -> None:
             aco_backend=ExecutionBackend.CUDA_FUSED_FP32,
             gpu_mode=GPUMode.CPU,
         )
+
+
+def test_experiment_stable_dict_is_yaml_safe_with_racing_fitness_mode() -> None:
+    """正式 racing 配置不得把 StrEnum 泄漏给 PyYAML。"""
+
+    experiment = ExperimentConfig(
+        experiment_id="yaml-racing",
+        root_seed=17,
+        aco=ACOConfig.acotsp_local_search_default("as", iterations=2),
+        racing=RacingConfig(
+            enabled=True,
+            screen_fitness_mode=FitnessMode.PAIRED_BASIN_MEAN,
+        ),
+    )
+    payload = experiment.stable_dict()
+
+    def enum_paths(value: object, path: str = "root") -> list[str]:
+        if isinstance(value, Enum):
+            return [path]
+        if isinstance(value, dict):
+            return [
+                item
+                for key, child in value.items()
+                for item in enum_paths(child, f"{path}.{key}")
+            ]
+        if isinstance(value, (list, tuple)):
+            return [
+                item
+                for index, child in enumerate(value)
+                for item in enum_paths(child, f"{path}[{index}]")
+            ]
+        return []
+
+    assert enum_paths(payload) == []
+    assert payload["racing"]["screen_fitness_mode"] == "paired_basin_mean"
+    assert yaml.safe_load(yaml.safe_dump(payload))["racing"][
+        "screen_fitness_mode"
+    ] == "paired_basin_mean"

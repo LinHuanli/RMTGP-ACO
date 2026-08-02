@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +36,134 @@ FORMAL_ROOT = ROOT / "runs" / "tsp500-2opt-ls-v2" / "formal"
 OUTPUT = ROOT / "runs" / "tsp500-2opt-ls-v2" / "final-test"
 GP_SEEDS = (81001, 81002, 81003)
 PARTITIONS = ("tsp500_uniform", "tsp500_cluster", "tsp500_gaussian")
+
+
+def _run_test_tasks(
+    *,
+    output: Path,
+    variants: tuple[ACOVariant, ...],
+    iterations: int,
+    test_seeds: int,
+    gpu_devices: tuple[int, ...],
+    latency_audit: bool,
+    manifest: dict[str, Any],
+) -> None:
+    """用每张物理 GPU 一个线程动态调度独立、可恢复的 shard。"""
+
+    tasks: queue.Queue[tuple[ACOVariant, str, int]] = queue.Queue()
+    for variant in variants:
+        for partition in PARTITIONS:
+            for replicate in range(test_seeds):
+                tasks.put((variant, partition, replicate))
+    lock = threading.Lock()
+    active: dict[int, str] = {}
+    completed: list[str] = []
+    reused: list[str] = []
+    failures: list[dict[str, str]] = []
+
+    def write_progress() -> None:
+        manifest["progress"] = {
+            "active": {str(key): value for key, value in active.items()},
+            "completed": list(completed),
+            "reused": list(reused),
+            "failures": list(failures),
+            "pending_count": tasks.qsize(),
+        }
+        common._atomic_json(output / "manifest.json", manifest)
+
+    def worker(device: int) -> None:
+        loaded: dict[ACOVariant, tuple[Any, ...]] = {}
+        batches: dict[tuple[ACOVariant, str], Any] = {}
+        while True:
+            try:
+                variant, partition, replicate = tasks.get_nowait()
+            except queue.Empty:
+                return
+            label = f"{partition}-{variant.value}-seed-{replicate:02d}"
+            with lock:
+                active[device] = label
+                write_progress()
+            try:
+                if variant not in loaded:
+                    loaded[variant] = _load_variant(
+                        variant,
+                        iterations=iterations,
+                        gpu_device=device,
+                    )
+                spec, experiment, programs, labels, hashes = loaded[variant]
+                batch_key = (variant, partition)
+                if batch_key not in batches:
+                    path = spec.data.test_paths(partition)[0]
+                    problem_batches = list(
+                        iter_problem_batches(
+                            (path,),
+                            batch_size=32,
+                            candidate_size=experiment.aco.candidate_size,
+                            dtype=experiment.aco.dtype,
+                            device=experiment.aco.device,
+                            max_instances=32,
+                        )
+                    )
+                    if len(problem_batches) != 1:
+                        raise RuntimeError(
+                            "最终测试必须形成一个 32-instance batch"
+                        )
+                    batches[batch_key] = problem_batches[0]
+                batch = batches[batch_key]
+                shard = _shard_path(output, partition, variant, replicate)
+                if common._valid_shard(
+                    shard,
+                    scale=500,
+                    variant=variant,
+                    replicate=replicate,
+                    hashes=hashes,
+                    instance_hashes=list(batch.coordinate_hashes),
+                ):
+                    with lock:
+                        reused.append(label)
+                    print(f"reuse {shard.name}", flush=True)
+                else:
+                    print(f"GPU{device} {label}", flush=True)
+                    common._run_shard(
+                        shard,
+                        batch=batch,
+                        experiment=experiment,
+                        programs=programs,
+                        labels=labels,
+                        hashes=hashes,
+                        variant=variant,
+                        replicate=replicate,
+                        latency_audit=latency_audit,
+                    )
+                    with lock:
+                        completed.append(label)
+            except Exception as error:
+                with lock:
+                    failures.append(
+                        {
+                            "task": label,
+                            "gpu": str(device),
+                            "error": repr(error),
+                        }
+                    )
+            finally:
+                with lock:
+                    active.pop(device, None)
+                    write_progress()
+                tasks.task_done()
+
+    with lock:
+        write_progress()
+    workers = [
+        threading.Thread(target=worker, args=(device,), daemon=False)
+        for device in gpu_devices
+    ]
+    for thread in workers:
+        thread.start()
+    for thread in workers:
+        thread.join()
+    if failures:
+        raise RuntimeError(f"最终测试有 {len(failures)} 个 shard 失败: {failures}")
 
 
 def _completed_run(path: Path) -> None:
@@ -290,7 +420,19 @@ def main() -> int:
     parser.add_argument("--iterations", type=int, default=5000)
     parser.add_argument("--test-seeds", type=int, default=3)
     parser.add_argument("--bootstrap-replicates", type=int, default=10000)
-    parser.add_argument("--gpu-device", type=int, default=0)
+    parser.add_argument(
+        "--gpu-device",
+        type=int,
+        default=None,
+        help="兼容旧调用：指定单张 GPU",
+    )
+    parser.add_argument(
+        "--gpu-devices",
+        type=int,
+        nargs="+",
+        default=None,
+        help="并行最终测试所用的物理 GPU 列表",
+    )
     parser.add_argument(
         "--variants",
         nargs="+",
@@ -308,8 +450,17 @@ def main() -> int:
         parser.error("iterations 必须为正；test seeds 至少为 2")
     if args.bootstrap_replicates < 100:
         parser.error("bootstrap replicates 至少为 100")
-    if args.gpu_device < 0:
-        parser.error("gpu device 必须为非负整数")
+    if args.gpu_device is not None and args.gpu_devices is not None:
+        parser.error("--gpu-device 与 --gpu-devices 不能同时使用")
+    gpu_devices = tuple(
+        dict.fromkeys(
+            args.gpu_devices
+            if args.gpu_devices is not None
+            else [0 if args.gpu_device is None else args.gpu_device]
+        )
+    )
+    if not gpu_devices or min(gpu_devices) < 0:
+        parser.error("gpu devices 必须是非空非负整数列表")
     variants = tuple(ACOVariant(item) for item in dict.fromkeys(args.variants))
     args.output.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -320,65 +471,27 @@ def main() -> int:
             **vars(args),
             "output": str(args.output),
             "variants": [item.value for item in variants],
+            "gpu_devices": list(gpu_devices),
         },
     }
     common._atomic_json(args.output / "manifest.json", manifest)
     try:
-        for variant in variants:
-            spec, experiment, programs, labels, hashes = _load_variant(
-                variant,
-                iterations=args.iterations,
-                gpu_device=args.gpu_device,
-            )
-            configure_runtime(experiment.runtime)
-            for partition in PARTITIONS:
-                path = spec.data.test_paths(partition)[0]
-                batches = list(
-                    iter_problem_batches(
-                        (path,),
-                        batch_size=32,
-                        candidate_size=experiment.aco.candidate_size,
-                        dtype=experiment.aco.dtype,
-                        device=experiment.aco.device,
-                        max_instances=32,
-                    )
-                )
-                if len(batches) != 1:
-                    raise RuntimeError("最终测试必须形成一个 32-instance batch")
-                batch = batches[0]
-                for replicate in range(args.test_seeds):
-                    shard = _shard_path(
-                        args.output,
-                        partition,
-                        variant,
-                        replicate,
-                    )
-                    if common._valid_shard(
-                        shard,
-                        scale=500,
-                        variant=variant,
-                        replicate=replicate,
-                        hashes=hashes,
-                        instance_hashes=list(batch.coordinate_hashes),
-                    ):
-                        print(f"reuse {shard.name}", flush=True)
-                        continue
-                    print(
-                        f"{partition} {variant.value} "
-                        f"seed={replicate + 1}/{args.test_seeds}",
-                        flush=True,
-                    )
-                    common._run_shard(
-                        shard,
-                        batch=batch,
-                        experiment=experiment,
-                        programs=programs,
-                        labels=labels,
-                        hashes=hashes,
-                        variant=variant,
-                        replicate=replicate,
-                        latency_audit=args.latency_audit,
-                    )
+        bootstrap_spec, bootstrap_experiment, *_ = _load_variant(
+            variants[0],
+            iterations=args.iterations,
+            gpu_device=gpu_devices[0],
+        )
+        del bootstrap_spec
+        configure_runtime(bootstrap_experiment.runtime)
+        _run_test_tasks(
+            output=args.output,
+            variants=variants,
+            iterations=args.iterations,
+            test_seeds=args.test_seeds,
+            gpu_devices=gpu_devices,
+            latency_audit=args.latency_audit,
+            manifest=manifest,
+        )
         payload = _summarize(
             args.output,
             variants=variants,
