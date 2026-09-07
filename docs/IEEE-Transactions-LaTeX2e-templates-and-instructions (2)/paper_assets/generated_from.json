@@ -1,0 +1,455 @@
+{
+  "schema_version": 2,
+  "main": {
+    "study_id": "tsp100-gpu0-3seed-v1",
+    "generated_at": "2026-07-25T15:10:37.850122+00:00",
+    "git": {
+      "commit_sha": "2e511d1932ae901cff159dcb1e2e541b67dc2f41",
+      "branch": "main",
+      "dirty": false,
+      "status_entries": 0
+    },
+    "report": "runs/tsp100-gpu0-3seed/report"
+  },
+  "ablation": {
+    "study_id": "tsp100-ablation-gpu1-3seed-v2-selected-champions",
+    "generated_at": "2026-07-28T02:34:36.587997+00:00",
+    "git": {
+      "commit_sha": "50e96b9f91f735197ad920d894f8c144b3e3628b",
+      "branch": "main",
+      "dirty": false,
+      "status_entries": 0
+    }
+  },
+  "capacity": {
+    "study_id": "tsp100-capacity-sensitivity-3seed-v2-core-partitions",
+    "generated_at": "2026-07-28T13:34:08.471606+00:00",
+    "git": {
+      "commit_sha": "50e96b9f91f735197ad920d894f8c144b3e3628b",
+      "branch": "main",
+      "dirty": false,
+      "status_entries": 0
+    }
+  },
+  "extended": {
+    "generated_at": "2026-08-03T03:28:46.421346+00:00",
+    "git_commit": "3963400473d5a9643f0e0e098aaa6889dc0fb7ae",
+    "sources": [
+      {
+        "path": "runs/tsp100-instance-budget-single-gpu/campaign_state.json",
+        "sha256": "2ffdfe29de7662097ded3933a6a4b16405f3ff727c6b4ba2bb3f955129c19284"
+      },
+      {
+        "path": "runs/tsp100-instance-budget-single-gpu/parallel-test/summary.json",
+        "sha256": "66e3f5e0a44e4a6632a44a186b07dc063b829c44e8e6abfacbedccb2c82c8edf"
+      },
+      {
+        "path": "runs/tsp100-local-search-3seed/final-test/summary.json",
+        "sha256": "6d6cd5f1be3e2f72928e50db2ea6f0d33b44eaf8833cbafc7186034b8cc4ce8b"
+      },
+      {
+        "path": "runs/tsp100-local-search-3seed/final-test/quality_summary.csv",
+        "sha256": "dcc4c1090fed23f56b5369125eb01bafb965cf17e72e27b2b96a8c7d32c27b6d"
+      },
+      {
+        "path": "runs/tsp100-local-search-3seed/final-test/runtime_summary.csv",
+        "sha256": "3485fba44a2fe3d9e2a7bf360953541d6b0b26342abf9df3fe02f6f73df32a76"
+      },
+      {
+        "path": "runs/tsp100-local-search-3seed/final-test/paired_vs_aco3.csv",
+        "sha256": "c76b98cde44f3bd54a2cefa362d523eb15c599293411f51a0a8cf7e8a86c4d66"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/audit_state.json",
+        "sha256": "1c89bbd96433f449ce9f0ea21c2c6b0893934f90b53d5350505846731eb52698"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/pilot_state.json",
+        "sha256": "8c37a86024121936c5996eba164efa81247c017d74c898b8c0ae7e027738865d"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/audit/as/summary.json",
+        "sha256": "65192d906bfa996efc74ed7b933b384bb9634cc627af9c5ac0271b7a0100cc4a"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/audit/acs/summary.json",
+        "sha256": "cb2c9067b14efe5b816356e573179704066e7e8203f37cb8c910d056bc7e5fc9"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/audit/mmas/summary.json",
+        "sha256": "d71311a61b08c4417ff44c12217523747c3f151565bcf6ede59f7d68ec917f76"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/formal_state.json",
+        "sha256": "ea782dd4e25d0a5effde588a0ccf7c19463b9d6e340aa2d6d039b1f637ec5629"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/as/seed-71001/config.yaml",
+        "sha256": "34e2aa4e876d1f9304e61c5ebc4f246a1db55a9dfa352f7525ecbab71eac3322"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/as/seed-71001/validation_summary.csv",
+        "sha256": "d1225c3346f2f7208de2cfb840224c117bfd160b73abccf3c1dac514d2f7431f"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/as/seed-71002/config.yaml",
+        "sha256": "b1c216c3c7e66108ad97bd36d159e2ea2f18d355596c455a440ae13c522df150"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/as/seed-71002/validation_summary.csv",
+        "sha256": "cde83ec14ac6e8a81d13e32e8da117cb168208cbdaf660f16b642c2d9119625a"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/as/seed-71003/config.yaml",
+        "sha256": "06ef88f63b9c1e76f9acdd8e51123b9460cb77fab5852c5024fec395decf30fa"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/as/seed-71003/validation_summary.csv",
+        "sha256": "391afe69ebe361ea72ef48c0cf950e04e05170f918b6beb6ffce9cb9661c5d54"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/acs/seed-71001/config.yaml",
+        "sha256": "c768131974e82d6840387568781f94300bdc8d918cce9c847691ecbe05b4af84"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/acs/seed-71001/validation_summary.csv",
+        "sha256": "f30a5db69d3c1f182adae6efdc0b6839cb3809052d673cea8c32812e7901f291"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/acs/seed-71002/config.yaml",
+        "sha256": "30423d36a7b185ba493ba378921bd7f1e044c98cb0af0573b00e75665e38ad0d"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/acs/seed-71002/validation_summary.csv",
+        "sha256": "b115f41a5fc998cc1d214cf609c9e13008ed45a77aeb2315ef3fe1cbb8589341"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/acs/seed-71003/config.yaml",
+        "sha256": "ca22fa6318dafb1d1ca17794c4ebf2b01b39d0c69a74f951c0b602086eb714d5"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/acs/seed-71003/validation_summary.csv",
+        "sha256": "6a440eda4d9fb17e1bee80c579e98895f969dfd6b9b1bd67e19751b562ade3f2"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/mmas/seed-71001/config.yaml",
+        "sha256": "467895e885d6f3ce1c546cae3e4ab03429e130e07c26a2622835d214a5683760"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/mmas/seed-71001/validation_summary.csv",
+        "sha256": "454a8ba2f0c6216d394b9a8414c0d9e827ed4657e3fc0c7160179df4e6e76278"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/mmas/seed-71002/config.yaml",
+        "sha256": "4273a7568cfe3d7072965a8d0fc98fde231de42cabdf091a86590bfd7237760c"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/mmas/seed-71002/validation_summary.csv",
+        "sha256": "bff5c69d13d7ca366e10209fe8414653b9c00365ee175c98f141901b02eb7229"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/mmas/seed-71003/config.yaml",
+        "sha256": "15c92303efa528e942d6d3d697674d9e315a63f630acff7b3ed19de6faaccb8d"
+      },
+      {
+        "path": "runs/tsp100-2opt-anytime/formal/train/mmas/seed-71003/validation_summary.csv",
+        "sha256": "675a6de03c8d634e8dec0939f1c84839ffefd5bc8cd9496df273327eaa15ba53"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/formal_state.json",
+        "sha256": "f2708a294e26d37293399cea83bffc5a9df5c0cc5468a032302eef494afa5ecb"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/as/seed-71001/config.yaml",
+        "sha256": "e276dc87b5efcb74591bbe5064ecb6e9813da199e33e69b47ffb368bc8560d53"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/as/seed-71001/validation_summary.csv",
+        "sha256": "ca224249c9d1610051ea7f95bb5a50c76db0a0215b156061e5fc4f4c0966265f"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/as/seed-71002/config.yaml",
+        "sha256": "829c014115897c5059d96010048a50a48c269358f55e67efac97c8f31086c466"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/as/seed-71002/validation_summary.csv",
+        "sha256": "8f72759b07be44895ae01b2ee9385060cd2afa8a467a9ad779e6b85e9b2d6461"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/as/seed-71003/config.yaml",
+        "sha256": "5b0c8e95958709b226eecdb41bb07129f026aeddedf67cf45123cf0c52e42d43"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/as/seed-71003/validation_summary.csv",
+        "sha256": "3cf2ca6f4f2fd8f65651c244f078af11e4599e7f0dfd457505ca14aad5e60d21"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/acs/seed-71001/config.yaml",
+        "sha256": "60d0612d0adcc3a2e1d46059e4d594e933c18cf9fb34c85f939f27108d064633"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/acs/seed-71001/validation_summary.csv",
+        "sha256": "f30a5db69d3c1f182adae6efdc0b6839cb3809052d673cea8c32812e7901f291"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/acs/seed-71002/config.yaml",
+        "sha256": "556df78a199e03e3c371655e90adb45621464f91645391c6efed6c9e53c0acf0"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/acs/seed-71002/validation_summary.csv",
+        "sha256": "b115f41a5fc998cc1d214cf609c9e13008ed45a77aeb2315ef3fe1cbb8589341"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/acs/seed-71003/config.yaml",
+        "sha256": "cd4f804a6625b758aac611b293ebfcaf9368089a8172592eb2fddea3c005bf81"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/acs/seed-71003/validation_summary.csv",
+        "sha256": "8f6c55f58e24ba57905b063bb96a332ec876889715978d03e6e4cf48d3ec3daf"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/mmas/seed-71001/config.yaml",
+        "sha256": "d478e3121a76c0caa18e5ebf84543c524b5a1b23124f00f7e53355cbd205be78"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/mmas/seed-71001/validation_summary.csv",
+        "sha256": "82daa93a4616abb1f44ed47b00aa90ab93023839a5da9eca3a7a608a9bd65163"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/mmas/seed-71002/config.yaml",
+        "sha256": "f64b96fd312788e38f76a23532a92c318df2a3431d06e8867d015f196f87aacb"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/mmas/seed-71002/validation_summary.csv",
+        "sha256": "800794769d69e4fe0408abda0a6e04785a3a26f8bdae7f6913483b5e8f0adad4"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/mmas/seed-71003/config.yaml",
+        "sha256": "31d23a99a4e84ed59a2f4839f9a3616811e94512d403c9c57b65b346c65de5d4"
+      },
+      {
+        "path": "runs/tsp100-2opt-signal-v2/formal/train/mmas/seed-71003/validation_summary.csv",
+        "sha256": "52e7ab0c08671afd51329a0dd9c193fc0e1ac467f1aef5a54c94c468fe9863ba"
+      },
+      {
+        "path": "runs/tsp500-2opt-racing/audit_state.json",
+        "sha256": "f97e228550bd7f801c003940765b452026c87e37a9f52908da5c43f19c628346"
+      },
+      {
+        "path": "runs/tsp500-2opt-racing/audit/as/summary.json",
+        "sha256": "cc3f831c85352df1572576ccc1a63e8706a12c1f94588d345d3d942320418d86"
+      },
+      {
+        "path": "runs/tsp500-2opt-racing/audit/acs/summary.json",
+        "sha256": "77f551e9c31049e82092cf2b644738973b93b7df4cf448197ff087f76ec86238"
+      },
+      {
+        "path": "runs/tsp500-2opt-racing/audit/mmas/summary.json",
+        "sha256": "7ce9a993a92e09af5cfbf8df01e38fa78552c56558598af0b982c75d1caae338"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/final-test/manifest.json",
+        "sha256": "73562c58e4915c82df60386f0f2b6e9d5f3220f495e65f06daf5af1e76fe080b"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/final-test/summary.json",
+        "sha256": "91758c470102fab2658ff2ca343f5bd1b8047904fdc0e1302d58168abba98757"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/final-test/main_results.csv",
+        "sha256": "f78472002b70e276ec5b252c71771fa8029422fc078a61787e0fe10a42e560ff"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/final-test/runtime_results.csv",
+        "sha256": "fae72d50ac9bf65e792a17377c9ea70f0f5916b43cd32e3abf9f9b01524f9efa"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81001/training_validation_curve.csv",
+        "sha256": "56c2822bcb6199c1cff5dbdd4eb69bcb63facb2bb5bf7ee7c0c72d3b32541c6b"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81002/training_validation_curve.csv",
+        "sha256": "8b2650b1390a73b2e1224dc77765abf0107891801db793fd15f67e3e85c2758d"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81003/training_validation_curve.csv",
+        "sha256": "af0774304779bed5ab2508468aa0316e42e88bbf9a26023f166c2735060656ca"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81001/training_validation_curve.csv",
+        "sha256": "2b47de0b0bc00601589cd88037a13094aa2b3717e0e8f9fd9f770c2bba670987"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81002/training_validation_curve.csv",
+        "sha256": "339200e5ef75bfb9a7cc7d526209f4e8db941e6e5f1cca3b66ad3feb7f5e7ee5"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81003/training_validation_curve.csv",
+        "sha256": "06879980c39bfffa258bde0adb2e5f3959414d507a9ad4c9cb4706e9c4835277"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81001/training_validation_curve.csv",
+        "sha256": "8debdfd6fcf76fbd2bc70563a102cf40f2c74a9500e37d733f663a32ee3ba6c1"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81002/training_validation_curve.csv",
+        "sha256": "7d09db4b2747713c0fa2ddd2a6503e95c0aa0be53deb766cf3baf768bec8b235"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81003/training_validation_curve.csv",
+        "sha256": "7b1d9a33ac3e6b96e8cee1365da98b6218d17da42161ed31c2793a6416152d96"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81001/training_metrics.json",
+        "sha256": "515d6ead74e6946b5fe1f361fd306be669357d9fee53eeadfad525526a3523a0"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81002/training_metrics.json",
+        "sha256": "cc6aea29a4b73e401c482bc331c7b03fa01274db7e71a0e84dce6dcbe5d4e63c"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81003/training_metrics.json",
+        "sha256": "ebb655516de616ee12b6dcab724d1909b5d8ebccfef0303821b03818ec54d4b9"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81001/training_metrics.json",
+        "sha256": "0f5ca6d1991cd50ca7076a1ecbb5808d0d895d20deeeed1cdba18f2cbc26dc12"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81002/training_metrics.json",
+        "sha256": "ca6c4b3c63c97d60fdcc8ff1f3c3de1ce9fdfada94df23977df938fa3960d892"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81003/training_metrics.json",
+        "sha256": "7c00925baf42853f63e69359ab9af4c7532199bdd4f7da95d190e2f685d938c3"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81001/training_metrics.json",
+        "sha256": "4c9a07fa6a2be1a5f9c4cac2b4a0b4f222dcd65076c48ee29352823141c2fe85"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81002/training_metrics.json",
+        "sha256": "996374a8ab871c847a0b5360c50268625ee6f4fa3b96c4201752312069a23949"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81003/training_metrics.json",
+        "sha256": "89be155dcbd7ce1220d7e74646281330602d8547c8109912e072e56202d68a12"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81001/selected_candidate_expression.txt",
+        "sha256": "2c834d144a7c9e39bbcb6d2cdf0d1fe72b2630fc7d436f83e23b3f0058d88fd0"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81002/selected_candidate_expression.txt",
+        "sha256": "5023c4f7cbf9ebed5c7303f45775429d8a94daf651d112980068aba0289c9755"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/as/seed-81003/selected_candidate_expression.txt",
+        "sha256": "87d97276b49ba5220301599b2b6dca21ea164046634f83ecf7b45fa2e287efbb"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81001/selected_candidate_expression.txt",
+        "sha256": "80abd42b3544f7609b8e5013e930395dd2fa78b6e215f057c628c48cd4b0b76d"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81002/selected_candidate_expression.txt",
+        "sha256": "8f010b3e0c33b4dbec3c4fe9e953bbdf30b35de8a5f92307dcb14d6f2fd9f461"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/acs/seed-81003/selected_candidate_expression.txt",
+        "sha256": "693c4c8e78b383403cb4a0859dfa20b268808fc2586bbf5af5b97494c0804107"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81001/selected_candidate_expression.txt",
+        "sha256": "9f5facbb3db75b15dd1816c93847d9d7fa83e928b9093c15a188ccec80761144"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81002/selected_candidate_expression.txt",
+        "sha256": "efebfc44cdfc839e60acb18f47c2f35820e273096f0fe8e3664696cb851cbe8a"
+      },
+      {
+        "path": "runs/tsp500-2opt-ls-v2/formal/train/mmas/seed-81003/selected_candidate_expression.txt",
+        "sha256": "f9cad6ddac4a8512f54856aae2a64bdf0af7b599bdd784f3abe4daaf19d6d09e"
+      },
+      {
+        "path": "experiments/tsp100_local_search_3seed/benchmark_summary.json",
+        "sha256": "04dd38228f82c17f85b782a9a6751173300f52eae96615b1d2b21162e08e22fb"
+      },
+      {
+        "path": "docs/experiments/tsp100_instance_budget_single_gpu_3seed.md",
+        "sha256": "8a0248e20633839926de4de4c8f6cc3bcc77d0601b65d70fbbb3f371d13a2b0c"
+      },
+      {
+        "path": "experiments/tsp500_2opt_ls_v2/README.md",
+        "sha256": "75c514cfdf95ec851e0f062ab57b885645daf8733d55d4a8b20e869f74ff1f1e"
+      }
+    ],
+    "tsp500_ls_protocol": {
+      "partitions": [
+        "tsp500_uniform",
+        "tsp500_cluster",
+        "tsp500_gaussian"
+      ],
+      "instances_per_partition": 32,
+      "aco_iterations": 5000,
+      "aco_seeds": 3,
+      "gp_runs": 3,
+      "bootstrap_replicates": 10000,
+      "candidate_policy": "selected_candidate_only"
+    },
+    "curve_exclusions": [
+      {
+        "variant": "as",
+        "excluded_validation_points": [
+          [
+            5,
+            [
+              100,
+              5000
+            ]
+          ],
+          [
+            10,
+            [
+              100,
+              5000
+            ]
+          ],
+          [
+            15,
+            [
+              100,
+              5000
+            ]
+          ],
+          [
+            20,
+            [
+              200,
+              5000
+            ]
+          ],
+          [
+            25,
+            [
+              200,
+              5000
+            ]
+          ]
+        ]
+      },
+      {
+        "variant": "acs",
+        "excluded_validation_points": []
+      },
+      {
+        "variant": "mmas",
+        "excluded_validation_points": []
+      }
+    ],
+    "frozen_engineering_sources": [
+      "docs/experiments/tsp100_instance_budget_single_gpu_3seed.md",
+      "experiments/tsp500_2opt_ls_v2/README.md"
+    ]
+  }
+}

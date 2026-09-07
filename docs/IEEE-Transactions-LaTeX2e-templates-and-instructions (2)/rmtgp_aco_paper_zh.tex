@@ -22,6 +22,7 @@
 \usepackage{booktabs}
 \usepackage{cite}
 \usepackage{graphicx}
+\usepackage{placeins}
 \usepackage{url}
 \usepackage{xcolor}
 \usepackage{tikz}
@@ -29,7 +30,6 @@
 
 \graphicspath{{paper_assets/}}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
-\newcommand{\pendingresult}{\textcolor{gray}{待完成}}
 \renewcommand{\abstractname}{摘要}
 \renewcommand{\IEEEkeywordsname}{关键词}
 \renewcommand{\figurename}{图}
@@ -46,7 +46,7 @@
 \author{第一作者，第二作者，第三作者%
 \thanks{作者姓名、单位和基金信息将在内部评审后补充。}}
 
-\markboth{IEEE Transactions 中文草稿，2026年7月}%
+\markboth{IEEE Transactions 中文草稿，2026年8月}%
 {作者等：面向蚁群优化的残差多树遗传编程}
 
 \maketitle
@@ -62,14 +62,22 @@
 第二棵树在固定预算内重新分配信息素增量。
 当两棵树都输出零时，算法严格退化为原始 ACO。
 本文在 AS、ACS 和 MMAS 上实现该方法。
-训练只使用均匀分布的 TSP100 实例。
-每个 ACO 变体进行三个独立 GP 运行。
-选出的程序在 TSP50、TSP100、TSP500 和 TSP1000 上测试。
-在当前 12 个“算法变体--规模”组合中，Full-F1 的平均参考差距均低于原始 ACO。
-下降幅度为 0.0736 至 7.8461 个百分点。
-融合 CUDA 评估器在登记的基准上取得了相对 16 线程 CPU 的 14.626 倍单 GPU 加速。
-这些结果属于初步结果。
-残差接口、双树结构、终端集合和函数集合的消融实验仍需完成。
+第一组实验不使用局部搜索，并只在均匀 TSP100 上训练。
+Full-F1 在 12 个“算法变体--规模”组合中均降低了平均参考差距。
+它还在六个匹配的 TSP100/TSP500 对比中优于重新训练的上一篇研究表示。
+控制消融表明，残差方式并不总是优于完整替换。
+双树、Full 终端集和 F1 函数集也没有稳定的普遍优势。
+随后，本文分析 2-opt 对 GP 学习信号的影响。
+在 TSP100 信号审计中，2-opt 后的程序间最终差距方差仅为搜索前的
+1.08--3.47\%。
+为此，本文引入局部搜索感知终端、多保真适应度和三阶段 TSP500 训练。
+在均匀、聚类和高斯 TSP500 上，AS 模型相对 ACO+2-opt 分别降低
+55.8\%、32.1\% 和 50.0\% 的差距。
+它在均匀集和高斯集上优于 ACO+3-opt，但在聚类集上没有达到该结果。
+ACS 和 MMAS 没有得到同样的收益。
+融合 CUDA 评估器在登记的基准上取得了相对 16 线程 CPU 的
+14.626 倍单 GPU 加速。
+所有进化条件均使用三个独立 GP 运行，因此结果按先导证据解释。
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -106,12 +114,14 @@
     \item 提出预算守恒的信息素残差接口。它只重新分配原算法的增量。
     \item 提出强类型双树表示。两棵树共享 31 个有效节点。
     \item 提出面向 GP--ACO 嵌套评估的融合 GPU 架构。
+    \item 定量分析 2-opt 对最终差距信号的压缩，并提出局部搜索感知的边级与搜索上下文终端。
+    \item 提出三阶段 TSP500 训练流程，并在三类分布上比较 RMTGP-ACO+2-opt、ACO+2-opt 和 ACO+3-opt。
 \end{itemize}
 
-当前实验是三个独立 GP 运行的先导实验。
-它可以回答完整方法是否优于原始 ACO。
-它还不能确定改进来自哪一个设计。
-本文对未完成的问题明确标记为“待完成”。
+每个进化条件使用三个独立 GP 运行。
+本文报告主实验、控制消融、容量、训练实例预算、学习信号和局部搜索实验。
+较少的 GP 运行数适合分析方向和失败模式。
+它不足以支持广泛的确认性因果结论。
 
 \section{问题定义与基线算法}
 
@@ -264,6 +274,13 @@ AS、ACS 和 MMAS 的原有控制逻辑保持不变。
 \end{tabular}
 \end{table*}
 
+DEAP 在建树、交叉和变异时只检查
+\texttt{TrField}/\texttt{PhField} 标记。
+\([B,M,K]\) 和 \([B,R,n]\) 是评估器维护的运行时形状合同。
+它们不是额外的 DEAP 静态类型。
+这一分工允许 \(B,K,R,n\) 随批量、ACO 变体和 TSP 规模变化，
+同时禁止两种语义场混入同一棵树。
+
 \(B\) 中的每个 ACO 任务绑定一个程序和一个 TSP 实例。
 评估单个个体时，\(B\) 就是实例批量。
 融合种群评估时，\(B\) 是“程序--实例”任务批量。
@@ -273,13 +290,55 @@ AS 中 \(R=M=32\)。
 ACS 中 \(R=1\)，来源为全局最优路线。
 MMAS 中 \(R=1\)；通常使用迭代最优路线，每 25 轮使用重启最优路线。
 
+\begin{table*}[t]
+\caption{两棵树在一次调用中可读取的公共运行时上下文及张量形状}
+\label{tab:runtime-context-zh}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{L{25mm}L{67mm}L{77mm}}
+\toprule
+上下文 & 原始输入及形状 & 一个输出元素的语义\\
+\midrule
+状态转移 &
+距离 \(d\)、启发式 \(\eta\) 和信息素 \(\tau\)：\([B,n,n]\)；
+当前城市 \(c\)：\([B,M]\)；
+候选城市 \(C\) 与可行掩码 \(F\)：\([B,M,K]\)；
+原始概率 \(p^0\)：\([B,M,K]\)；
+构造步 \(q\)、ACO 轮数 \(t\)、总轮数 \(T\)；
+未改进轮数 \(s\)：\([B]\) &
+\(X^{\mathrm{tr}}_{bak}\) 是任务 \(b\) 中蚂蚁 \(a\) 对候选槽 \(k\)
+得到的一个 terminal 值。候选槽通过 \(C_{bak}\) 指向实际城市。\\
+信息素增强 &
+\(d,\eta,\tau\) 与全最近邻名次：\([B,n,n]\)；
+来源路线 \(\pi^{\mathrm{src}}\)：\([B,R,n+1]\)，
+展开后的端点 \(u,v\)：\([B,R,n]\)；
+来源路线长度：\([B,R]\)；
+本轮蚁群路线：\([B,M,n+1]\)；
+蚁群路线长度：\([B,M]\)；
+\(t,T\) 与 \(s[B]\) &
+\(X^{\mathrm{ph}}_{bre}\) 是任务 \(b\) 的增强事件 \(r\) 中，
+来源路线第 \(e\) 条边得到的一个 terminal 值。\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
 根签名中的空参数列表不表示树没有输入信息。
 每个具名 terminal 都是一个零元强类型叶节点。
 运行时，该叶节点绑定到当前 ACO 上下文中的动态值。
 程序只构造表达式实际引用的 terminal。
 PyTorch 后端显式形成上述张量。
 融合 CUDA 后端按任务、蚂蚁、候选或事件边逐元素计算同样的逻辑值。
-因此，表中的 shape 是逻辑 shape，不要求所有 terminal 同时物化到显存。
+因此，表中的形状是逻辑张量形状，不要求所有 terminal 同时物化到显存。
+若一次融合调用把 \(P\) 个去重程序放到 \(I\) 个实例上，则
+\(B=P I\)。
+例如，在 TSP100 上取 \(M=32\) 和 \(K=20\) 时，
+状态转移场为 \([PI,32,20]\)。
+AS 的信息素场为 \([PI,32,100]\)。
+ACS 和 MMAS 的信息素场为 \([PI,1,100]\)。
+CPU 内核可以只保存当前候选向量或未广播标量。
+这不会改变其强类型和逻辑 shape。
 
 两棵树共享一个适应度。
 它们也共享总节点预算：
@@ -291,6 +350,11 @@ PyTorch 后端显式形成上述张量。
 任一非零树的深度不超过 5。
 该设计保证双树方法与单树方法具有相同的总表达能力上限。
 它不是“每棵树 31 个节点”。
+无局部搜索的主实验和控制消融均使用这一 B31 配置。
+后续 TSP500 局部搜索感知实验扩大到两棵树合计 62 个节点，
+并把非零树的深度上限提高到 7。
+容量实验会单独比较 B31 与 B62。
+因此，较大的局部搜索配置不会被用于证明 B31 双树结构本身的优势。
 
 \subsection{状态转移残差}
 
@@ -438,7 +502,7 @@ Full 使用全部八个终端。
 \(k\) 是当前可行城市数。
 
 \begin{table*}[t]
-\caption{状态转移 terminal 的运行时输入、计算和逻辑 shape}
+\caption{状态转移 terminal 的运行时输入、计算和逻辑张量形状}
 \label{tab:transition-terminals-zh}
 \centering
 \scriptsize
@@ -446,51 +510,52 @@ Full 使用全部八个终端。
 \setlength{\tabcolsep}{2.5pt}
 \begin{tabular}{L{19mm}L{28mm}L{49mm}L{62mm}L{14mm}}
 \toprule
-终端 & 输出 Type / shape & 从当前 ACO 状态读取的输入 & 计算与候选轴上的含义 & 配置\\
+终端 & Type；原生形状 \(\to\) 树输入形状 &
+从当前 ACO 状态读取的输入 & 计算与候选轴上的含义 & 配置\\
 \midrule
 \texttt{RTau} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 \(\tau[B,n,n]\)、当前城市 \([B,M]\)、候选城市与可行掩码 \([B,M,K]\) &
 提取当前城市到候选的 \(\tau\)。对每个“任务--蚂蚁”在可行 \(K\) 轴上标准化
 \(\log(\max(\tau,\epsilon))\)，再取 \(\tanh\)。 &
 Core、Full\\
 \texttt{REta} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 \(\eta[B,n,n]\)、当前城市 \([B,M]\)、候选城市与可行掩码 \([B,M,K]\) &
 提取当前城市到候选的 \(\eta\)。在可行 \(K\) 轴上做对数标准化并取
 \(\tanh\)，表示相对距离启发式强弱。 &
 Core、Full\\
 \texttt{BaseConf} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 \(\tau,\eta,\alpha,\beta\)、可行掩码，以及由
 \(s^0=\tau^\alpha\eta^\beta\) 得到的 \(p^0[B,M,K]\) &
 令 \(k\) 为可行候选数，逐候选计算
 \(\tanh[\log(p^0+\epsilon)+\log k]\)。均匀分布时为零。 &
 Core、Full\\
 \texttt{DistRank} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,K]\to[B,M,K]\) &
 距离矩阵 \(d[B,n,n]\)、当前城市、候选城市和可行掩码 &
 在每个可行 \(K\) 集合内按距离排序。
 名次 \(r\) 映射为 \(1-2(r-1)/(k-1)\)；\(k=1\) 时为零。 &
 Core、Full\\
 \texttt{Entropy} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,M,1]\to[B,M,K]\) &
 原始概率 \(p^0[B,M,K]\)、可行掩码和候选数 \(k[B,M,1]\) &
 沿 \(K\) 轴计算 \(2H(p^0)/\log k-1\)，再广播回全部候选；
 \(k=1\) 时为 \(-1\)。 &
 Full\\
 \texttt{ConstructProg} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([1]\to[B,M,K]\) &
 当前构造步 \(q\) 和城市数 \(n\) &
 计算 \(2q/\max(n-1,1)-1\)，并在 \(B,M,K\) 三个轴上广播。 &
 Full\\
 \texttt{ACOProg} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([1]\to[B,M,K]\) &
 当前 ACO 轮数 \(t\) 和总轮数 \(T\) &
 计算 \(2(t-1)/\max(T-1,1)-1\)，并广播到全部蚂蚁和候选。 &
 Full\\
 \texttt{Stagnation} &
-\texttt{TrField} \([B,M,K]\) &
+\texttt{TrField}；\([B,1,1]\to[B,M,K]\) &
 每个任务的未改进轮数 \(s_t[B]\) 和 \(T\) &
 先计算 \(2\min(s_t/T,1)-1\)，再沿蚂蚁轴 \(M\) 和候选轴 \(K\) 广播。 &
 Full\\
@@ -507,7 +572,7 @@ Full\\
 \texttt{ACOProg} 区分整个搜索的早期和后期。
 \texttt{Stagnation} 表示最近是否缺少改进。
 后四个量提供上下文，但也增加搜索空间。
-因此，它们只属于 Full，并由 RQ4 检验其必要性。
+因此，它们只属于 Full，并由 RQ2 检验其必要性。
 
 \subsection{信息素终端集合}
 
@@ -528,7 +593,7 @@ Core 使用 \texttt{EdgeEta}、\texttt{EdgeTau}、\texttt{NNRank} 和
 Full 使用全部七个终端。
 
 \begin{table*}[t]
-\caption{信息素 terminal 的运行时输入、计算和逻辑 shape}
+\caption{信息素 terminal 的运行时输入、计算和逻辑张量形状}
 \label{tab:pheromone-terminals-zh}
 \centering
 \scriptsize
@@ -536,36 +601,37 @@ Full 使用全部七个终端。
 \setlength{\tabcolsep}{2.5pt}
 \begin{tabular}{L{19mm}L{28mm}L{49mm}L{62mm}L{14mm}}
 \toprule
-终端 & 输出 Type / shape & 从当前 ACO 状态读取的输入 & 计算与事件--边轴上的含义 & 配置\\
+终端 & Type；原生形状 \(\to\) 树输入形状 &
+从当前 ACO 状态读取的输入 & 计算与事件--边轴上的含义 & 配置\\
 \midrule
 \texttt{EdgeEta} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 \(\eta[B,n,n]\)、端点 \(u,v[B,R,n]\)，以及每个城市候选列表上的平均
 \(\log\eta[B,n]\) &
 用边的 \(\log\eta_{uv}\) 减去两个端点均值的平均。
 再对每个“任务--事件”沿其 \(n\) 条边标准化并取 \(\tanh\)。 &
 Core、Full\\
 \texttt{EdgeTau} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 \(\tau[B,n,n]\) 和端点 \(u,v[B,R,n]\) &
 提取每条来源边的 \(\tau_{uv}\)。
 对每个“任务--事件”沿 \(n\) 条边标准化
 \(\log(\max(\tau_{uv},\epsilon))\)，再取 \(\tanh\)。 &
 Core、Full\\
 \texttt{NNRank} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 预计算的全最近邻名次 \([B,n,n]\) 和端点 \(u,v[B,R,n]\) &
 分别将 \(u\!\to\!v\) 和 \(v\!\to\!u\) 的名次 \(r\) 映射为
 \(1-2(r-1)/\max(n-2,1)\)，再取两方向平均。 &
 Core、Full\\
 \texttt{ColonyFreq} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,n]\to[B,R,n]\) &
 本轮蚁群路线 \(\pi^{\mathrm{col}}[B,M,n+1]\) 和来源边 \(u,v\) &
 忽略方向，统计每条来源边在 \(M\) 条蚁群路线中的出现次数 \(c_e\)。
 逐边计算 \(2c_e/M-1\)。 &
 Full\\
 \texttt{SourceQuality} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,R,1]\to[B,R,n]\) &
 来源长度 \(L^{\mathrm{src}}[B,R]\) 和蚁群长度
 \(L^{\mathrm{col}}[B,M]\) &
 沿蚂蚁轴 \(M\) 计算 \(\overline L\) 和总体标准差 \(\sigma_L\)。
@@ -573,12 +639,12 @@ Full\\
 \(\tanh[(\overline L-L^{\mathrm{src}}_r)/(\sigma_L+\epsilon)]\)，再广播到 \(n\) 条边。 &
 Core、Full\\
 \texttt{ACOProg} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([1]\to[B,R,n]\) &
 当前 ACO 轮数 \(t\) 和总轮数 \(T\) &
 计算 \(2(t-1)/\max(T-1,1)-1\)，并广播到所有任务、事件和边。 &
 Full\\
 \texttt{Stagnation} &
-\texttt{PhField} \([B,R,n]\) &
+\texttt{PhField}；\([B,1,1]\to[B,R,n]\) &
 每个任务的未改进轮数 \(s_t[B]\) 和 \(T\) &
 计算 \(2\min(s_t/T,1)-1\)，再沿事件轴 \(R\) 和边轴 \(n\) 广播。 &
 Full\\
@@ -595,22 +661,71 @@ Full\\
 该划分使 Core 同时包含几何、信息素和来源质量。
 Full 再加入群体与时间信息。
 
-局部搜索扩展使用第八个信息素终端 \texttt{LSGain}。
-它的强类型为 \texttt{PhField}，逻辑 shape 为 \([B,R,n]\)。
-设来源路线在局部搜索前后的长度为
-\(L^{\mathrm{pre}}_r\) 和 \(L^{\mathrm{post}}_r\)。
-先计算
-\[
-2\operatorname{clip}\!\left(
-\frac{L^{\mathrm{pre}}_r-L^{\mathrm{post}}_r}
-{\max(L^{\mathrm{pre}}_r,\epsilon)},0,1\right)-1.
-\]
-该值的输入是当前路线及其局部搜索前后长度。
-它不读取参考路线或最优标签。
-所得 \([B,R]\) scalar 沿来源路线的 \(n\) 条边广播。
-关闭局部搜索时，该终端固定为 \(-1\)。
-主实验仍使用表~\ref{tab:pheromone-terminals-zh} 的七个终端。
-局部搜索扩展的两个训练条件使用同一个八终端 grammar。
+\subsection{局部搜索感知终端扩展}
+
+基础终端描述路线构造和信息素增强。
+它们不能直接区分哪些边被 2-opt 保留，也不能表示已接受移动的收益。
+因此，TSP500 联合训练加入表~\ref{tab:ls-terminals-zh} 所列终端。
+所有输入在搜索过程中均可获得。
+参考路线和参考最优标签不会进入 GP。
+
+\begin{table*}[t]
+\caption{TSP500 局部搜索感知扩展使用的强类型终端}
+\label{tab:ls-terminals-zh}
+\centering
+\scriptsize
+\renewcommand{\arraystretch}{1.16}
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{L{19mm}L{30mm}L{49mm}L{72mm}}
+\toprule
+终端 & 输出 Type 与逻辑 shape & 运行时输入 & 计算与含义\\
+\midrule
+\texttt{MutualRank} &
+\texttt{TrField}，\([B,M,K]\) &
+完整的有向最近邻名次与当前候选边 &
+计算两个方向归一化名次的平均值，再用 1 减去该值。
+结果接近 1 表示两个端点都把对方视为近邻。\\
+\texttt{TurnCos} &
+\texttt{TrField}，\([B,M,K]\) &
+前一个城市、当前城市、候选坐标和可行掩码 &
+计算入边向量与候选出边向量的余弦，并截断到 \([-1,1]\)。
+路线构造的第一步返回 0。\\
+\texttt{Origin} &
+\texttt{PhField}，\([B,R,n]\) &
+2-opt 前后的来源路线 &
+构造后被 2-opt 保留的边取 \(+1\)，由 2-opt 新加入的边取 \(-1\)。\\
+\texttt{LSGain} &
+\texttt{PhField}，\([B,R,n]\) &
+已接受 2-opt 移动、四个端点、搜索前路线长度与 \(n\) &
+对每条新边保存最后一次插入它的已接受移动收益：
+\(\operatorname{clip}(g/(L^{\mathrm{pre}}/n+\epsilon),0,1)\)。
+被保留的构造边取 0。\\
+\texttt{PreFreq} &
+\texttt{PhField}，\([B,R,n]\) &
+2-opt 前的 \(M\) 条蚁群路线与来源边 &
+计算 \(2c_e^{\mathrm{pre}}/M-1\)。其中
+\(c_e^{\mathrm{pre}}\) 是无向边在搜索前蚁群中的频数。\\
+\texttt{PostFreq} &
+\texttt{PhField}，\([B,R,n]\) &
+2-opt 后的 \(M\) 条蚁群路线与来源边 &
+计算 \(2c_e^{\mathrm{post}}/M-1\)。该值表示局部搜索后的蚁群共识。\\
+\texttt{TauHeadroom} &
+\texttt{PhField}，\([B,R,n]\) &
+选定来源边后的 \(\tau_e,\rho,\tau_{\min},\tau_{\max}\) &
+计算
+\(\operatorname{clip}([\tau_{\max}-(1-\rho)\tau_e]/
+[\tau_{\max}-\tau_{\min}+\epsilon],0,1)\)。
+它表示挥发后距离 MMAS 信息素上界仍有多少增强空间。\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\texttt{Origin}、\texttt{PreFreq} 和 \texttt{PostFreq}
+区分构造证据与局部搜索修复。
+\texttt{LSGain} 把一次移动的收益分配给该移动新插入的边。
+\texttt{TauHeadroom} 只在有限信息素上界生效时具有直接含义。
+这些终端共同组成局部搜索感知语法。
+当前实验同时改变了多个训练因素，因此不能把最终改进归因到某一个终端。
 
 两个终端集合都包含常数 \(-1,-0.5,0,0.5,1\)。
 它们还包含一个从 \(U[-1,1]\) 采样的随机常数。
@@ -761,7 +876,9 @@ GPU 编译器还会合并行为相同的程序。
         \STATE 使用原 ACO 变体的选择规则
         \STATE ACS 在需要时执行局部更新
     \ENDFOR
-    \STATE 计算路线长度并更新最优状态
+    \STATE 计算全部路线长度
+    \STATE 可选地执行 ACOTSP 风格 2-opt，并记录搜索前后的边状态
+    \STATE 使用局部搜索后的路线更新最优状态
     \STATE 建立 AS、ACS 或 MMAS 增强事件
     \STATE 只计算 \(T_{\mathrm{ph}}\) 实际使用的终端
     \STATE 按式~\eqref{eq:pheromone-residual-zh} 重新分配增量
@@ -795,13 +912,61 @@ GPU 编译器还会合并行为相同的程序。
 \end{algorithmic}
 \end{algorithm}
 
+\subsection{局部搜索感知的多保真与三阶段训练}
+
+直接加入 2-opt 会改变学习问题。
+不同的构造策略可能进入同一个局部最优盆地。
+因此，即使搜索前路线不同，最终差距也可能只有很小方差。
+TSP500 扩展使用两个配对训练分数。
+筛选分数是局部搜索后盆地分数的均值。
+高保真分数定义为
+\begin{equation}
+ F_{\mathrm{high}}
+ =\tfrac12\Delta g_{\mathrm{final}}
+ +\tfrac12\Delta g_{\mathrm{anytime}} .
+ \label{eq:ls-fitness-zh}
+\end{equation}
+两项都相对于同一实例、同一随机种子上的缓存 ACO+2-opt 结果。
+这种相对 baseline 的形式只用于局部搜索感知训练。
+最终结果仍报告绝对参考差距。
+
+\begin{algorithm}[t]
+\caption{三阶段 TSP500 局部搜索感知进化}
+\label{alg:ls-training-zh}
+\begin{algorithmic}[1]
+\REQUIRE 128 个固定训练实例与无局部搜索状态转移冠军
+\FOR{\(h=1,\ldots,50\)}
+    \IF{\(h\leq10\)}
+        \STATE 将状态转移残差设为零，只进化信息素树
+    \ELSIF{\(h\leq30\)}
+        \STATE 注入并冻结匹配的无局部搜索状态转移冠军
+    \ELSE
+        \STATE 联合进化两棵树；以 \(0.7/0.3\) 概率选择 PH/TR 角色
+    \ENDIF
+    \STATE 使用登记的筛选保真度评估整个种群
+    \STATE 使用登记的高保真度重新评估候选者
+    \STATE 根据高保真排序产生下一代
+\ENDFOR
+\STATE 在互不重叠的 TSP500 selection 和 gate 实例上选择检查点
+\RETURN 每个 GP 随机种子的一个入选程序
+\end{algorithmic}
+\end{algorithm}
+
+第 1--15 代的筛选/高保真配置为 \(16/32\) 个实例和
+\(50/100\) 次 ACO 迭代。
+第 16--35 代为 \(32/64\) 个实例和 \(100/200\) 次迭代。
+第 36--50 代为 \(64/128\) 个实例和 \(200/500\) 次迭代。
+高保真 ACO 随机种子数依次从 1 增加到 2 和 3。
+同一结构最多保留两个个体。
+完整 selection、gate 和最终测试均使用 5000 次 ACO 迭代。
+
 \section{实验设计}
 
 \subsection{研究问题}
 
 表~\ref{tab:rq-zh} 给出本文需要回答的研究问题。
-RQ1、RQ6 的规模迁移部分和 RQ7 已有先导结果。
-其余问题需要完成登记的对照实验。
+六个问题均已有完整实验。
+所有进化证据只使用三个 GP 运行，因此仍按先导证据解释。
 
 \begin{table*}[t]
 \caption{研究问题、对照方法和当前状态}
@@ -809,17 +974,23 @@ RQ1、RQ6 的规模迁移部分和 RQ7 已有先导结果。
 \centering
 \footnotesize
 \renewcommand{\arraystretch}{1.15}
-\begin{tabular}{L{11mm}L{63mm}L{70mm}L{20mm}}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{L{11mm}L{66mm}L{75mm}L{14mm}}
 \toprule
 问题 & 问题内容 & 主要比较 & 状态\\
 \midrule
-RQ1 & Full-F1 是否降低原始 ACO 的参考差距？ & Full-F1 与 AS、ACS、MMAS baseline 配对比较 & 已完成\\
-RQ2 & 残差状态转移是否优于直接替换完整状态转移？ & TR-RGP 与 Matched-Replace & 待完成\\
-RQ3 & 相同总节点预算下，双树是否优于单树？ & Full-F1 与独立训练的 TR-RGP、PH-RGP & 待完成\\
-RQ4 & 改进是否依赖 Full 终端或 F1 函数？ & Core/Full 与 F0/F1 的 \(2\times2\) 因子实验 & 待完成\\
-RQ5 & 两棵树之间是否存在联合适应？ & 删除一棵树，以及跨 GP 运行打乱树配对 & 待完成\\
-RQ6 & TSP100 训练的程序能否迁移到其他规模和分布？ & TSP50/500/1000，以及 cluster、Gaussian、TSPLIB & 规模已完成\\
-RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 GPU 与并行 campaign & 已完成\\
+RQ1 & 无局部搜索时，RMTGP-ACO 是否改进原始 ACO，并能否跨规模和分布迁移？ &
+Full-F1 与 AS/ACS/MMAS 在均匀 TSP50--1000 及锁定 OOD 集上的比较 & 完成\\
+RQ2 & 残差方式、双树、函数终端配置、树间联合适应和表达式容量分别支持什么结论？ &
+替换、单树、Core/Full、F0/F1、drop/shuffle 和 B31/B62 对照 & 完成\\
+RQ3 & 每代使用 32、64 或 128 个训练实例时，质量和成本如何变化？ &
+使用相同嵌套计划的 ACS 配对训练预算实验 & 完成\\
+RQ4 & 2-opt 为什么削弱学习信号，哪些训练修改具有数据依据？ &
+初始局部搜索、信号审计、正式 TSP100 适应度对照和 TSP500 racing 审计 & 完成\\
+RQ5 & 局部搜索感知 RMTGP-ACO+2-opt 能否优于 ACO+2-opt，并接近 ACO+3-opt？ &
+三类分布、三个 GP 种子、三个 ACO 种子和 5000 次迭代 & 完成\\
+RQ6 & 实现取得了多大训练加速和部署成本？ &
+RTX 4000 Ada 融合基准、RTX A5000 部署计时和 RTX PRO 5000 Blackwell 局部搜索 kernel & 完成\\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -855,8 +1026,34 @@ RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 
 测试 & TSP100 uniform & 1,280\\
 测试 & TSP500 uniform & 128\\
 测试 & TSP1000 uniform & 128\\
-待测 & TSP500 cluster / Gaussian & \(128/128\)\\
-待测 & TSPLIB，\(n\leq500\) & 42\\
+测试 & TSP500 cluster / Gaussian & \(128/128\)\\
+测试 & TSPLIB，\(n\leq500\) & 42\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+局部搜索感知实验与 TSP100 实验相互独立。
+它只在 TSP500 上训练。
+每代从固定的 128 个均匀实例中取样。
+Selection 和 gate 分别使用 16 个与 48 个互不重叠的均匀 TSP500 实例。
+最终测试在均匀、聚类和高斯三个分区上各使用 32 个实例。
+每个入选程序使用三个 ACO 种子。
+RMTGP-ACO+2-opt、ACO+2-opt 和 ACO+3-opt 使用同一参考路线。
+
+\begin{table}[t]
+\caption{局部搜索感知 TSP500 实验的数据配置}
+\label{tab:ls-data-zh}
+\centering
+\footnotesize
+\begin{tabular}{llr}
+\toprule
+用途 & 数据分区 & 实例数\\
+\midrule
+训练 & TSP500 uniform & 128\\
+验证 & Selection / gate & \(16/48\)\\
+最终测试 & TSP500 uniform & 32\\
+最终测试 & TSP500 cluster & 32\\
+最终测试 & TSP500 Gaussian & 32\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -874,15 +1071,15 @@ RQ7 & 批量融合实现能提供多大加速？ & CPU8、CPU16、单 GPU、双 
 方法 & 状态转移 & 信息素更新 & 终端/函数 & 用途 & 状态\\
 \midrule
 Baseline ACO & 不修改 & 不修改 & 无 & 原始 AS、ACS 或 MMAS & 已完成\\
-Legacy-GP & 完整替换 & 不修改 & 上一研究配置 & 在当前预算下复现上一篇 GP-ACO & \pendingresult\\
-Matched-Replace & 完整替换 & 不修改 & Full/F1 & RQ2 的匹配替换对照 & \pendingresult\\
-TR-RGP & 残差 & 不修改 & Full/F1 & 独立训练的状态转移单树 & \pendingresult\\
-PH-RGP & 不修改 & 预算残差 & Full/F1 & 独立训练的信息素单树 & \pendingresult\\
-Core-F0 & 残差 & 预算残差 & Core/F0 & RQ4 因子实验 & \pendingresult\\
-Core-F1 & 残差 & 预算残差 & Core/F1 & RQ4 因子实验 & \pendingresult\\
-Full-F0 & 残差 & 预算残差 & Full/F0 & RQ4 因子实验 & \pendingresult\\
-Full-F1 & 残差 & 预算残差 & Full/F1 & 本文主方法 & uniform 已完成\\
-Drop / Shuffle & 训练后干预 & 训练后干预 & 固定 Full/F1 树 & RQ5 联合适应分析 & \pendingresult\\
+Legacy-GP & 完整替换 & 不修改 & 上一研究配置 & 在当前预算下复现上一篇 GP-ACO & 已完成\\
+Matched-Replace & 完整替换 & 不修改 & Full/F1 & RQ2 的匹配替换对照 & 已完成\\
+TR-RGP & 残差 & 不修改 & Full/F1 & 独立训练的状态转移单树 & 已完成\\
+PH-RGP & 不修改 & 预算残差 & Full/F1 & 独立训练的信息素单树 & 已完成\\
+Core-F0 & 残差 & 预算残差 & Core/F0 & RQ2 因子实验 & 已完成\\
+Core-F1 & 残差 & 预算残差 & Core/F1 & RQ2 因子实验 & 已完成\\
+Full-F0 & 残差 & 预算残差 & Full/F0 & RQ2 因子实验 & 已完成\\
+Full-F1 & 残差 & 预算残差 & Full/F1 & 本文主方法 & 已完成\\
+Drop / Shuffle & 训练后干预 & 训练后干预 & 固定 Full/F1 树 & RQ2 联合适应分析 & 已完成\\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -892,11 +1089,21 @@ RQ2 的主要差值是 TR-RGP 的参考差距减去 Matched-Replace 的参考差
 它们只改变规则接入方式。
 因此，该对照可以回答 residual 是否更好。
 
-RQ3 比较 Full-F1、TR-RGP 和 PH-RGP。
+RQ2 还比较 Full-F1、TR-RGP 和 PH-RGP。
 三种方法的总有效节点预算都为 31。
 另一个容量实验比较 31 和 62 两个总预算。
-RQ4 使用 \(2\times2\) 因子设计。
-RQ5 在训练完成后删除一棵树，或打乱不同 GP 运行产生的树配对。
+该实验对三种结构的 62 节点条件各重新训练三个 GP 运行。
+31 节点条件复用锁定的独立训练结果。
+两个容量共享训练计划、GP 根种子、ACO 参数和测试随机流。
+容量分析只使用 TSP100-U 和 TSP500-U。
+RQ2 使用 \(2\times2\) 终端--函数因子设计。
+RQ2 还在训练完成后删除一棵树，或打乱不同 GP 运行产生的树配对。
+
+局部搜索实验比较四种锁定策略。
+\emph{ACO+2-opt} 与 \emph{ACO+3-opt} 使用原始 ACO 规则。
+\emph{RMTGP(no-LS)+2-opt} 使用无局部搜索条件下学到的程序，再执行 2-opt。
+\emph{RMTGP(LS)+2-opt} 或 \emph{LS-aware v2} 在训练时即启用 2-opt。
+最终测试只使用每个 GP 运行选出的一个程序。
 
 \subsection{算法参数}
 
@@ -1036,6 +1243,32 @@ MMAS 的根种子为 3001--3003。
 测试种子从独立根种子 9001 生成。
 同一配对比较中的方法共享实例和 ACO 种子。
 
+\begin{table}[t]
+\caption{TSP500 局部搜索感知实验的专用参数}
+\label{tab:ls-parameters-zh}
+\centering
+\footnotesize
+\begin{tabular}{ll}
+\toprule
+参数 & 数值\\
+\midrule
+ACO 蚂蚁数 / 最终迭代数 & \(32/5000\)\\
+局部搜索 & ACOTSP 风格 2-opt\\
+候选列表 / DLB & \(20/\)启用\\
+GP 种群 / 代数 & \(100/50\)\\
+初始 / 最大深度 & \(2\)--\(5/7\)\\
+共享总节点预算 & 62\\
+训练实例 & 128\\
+筛选实例 & \(16\to32\to64\)\\
+高保真实例 & \(32\to64\to128\)\\
+高保真种子 & \(1\to2\to3\)\\
+Selection / gate 实例 & \(16/48\)\\
+最终 GP / ACO 种子数 & \(3/3\)\\
+CUDA 精度 & FP32-fast\\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{候选选择与统计方法}
 
 每一代只使用一个 ACO 种子。
@@ -1055,6 +1288,13 @@ baseline ACO 结果提前计算，并保存在不可变缓存中。
 gate 部署结果是另一个操作性指标。
 程序未通过 gate 时，部署策略回退到 baseline ACO。
 
+TSP500 局部搜索感知实验也区分科学测试与部署 gate。
+科学测试载入每个运行的 \texttt{selected\_candidate.pkl}。
+即使部署策略因 gate 失败而回退到 baseline，该入选程序仍进入科学测试。
+这样不会删除表现不利的 GP 运行。
+在最终 v2 实验中，AS 的三个运行均通过 gate。
+ACS 和 MMAS 没有通过该 gate。
+
 主要指标是参考差距。
 此外记录最差 10\% 条件风险、anytime gap 曲线下面积、最优解出现迭代、运行时间和胜/平/负比例。
 三个 ACO 种子先在实例内求平均。
@@ -1064,6 +1304,11 @@ gate 部署结果是另一个操作性指标。
 分层 bootstrap 依次重采样 GP 运行、实例和 ACO 种子
 \cite{efron1994bootstrap}。
 每个区间使用 10,000 次重采样。
+
+TSP500 局部搜索比较的分层 bootstrap 依次重采样 GP 运行、实例和 ACO 种子。
+相对 ACO+2-opt 的登记成功条件同时要求：
+相对差距至少降低 10\%，单侧 95\% 上界小于零，并且三个 GP 运行全部改进。
+与 ACO+3-opt 的比较单独报告。
 
 当前只有三个独立 GP 运行。
 因此，显著性检验和区间只作描述性分析。
@@ -1097,6 +1342,14 @@ baseline 虚线是在相同固定验证实例和种子上的原始 ACO 结果。
 本文不会从三个 GP 运行中再选择测试表现最好的一个。
 每个 champion 在每个测试实例上运行三个独立 ACO 种子。
 测试集只用于最终计量，不参与个体选择。
+
+TSP500 进化曲线同样先取每个运行的代最佳个体，再报告三个 GP 种子的中位数和范围。
+只有当同一代的三个运行使用相同 ACO 迭代数时，验证点才会被合并。
+AS 的五个早期监测点被排除。
+原因是两个恢复检查点仍保存旧的 5000 迭代监测值，而第三个运行使用
+100 或 200 次迭代。
+这些监测值不参与育种，也不参与最终候选选择。
+所有最终测试均使用 5000 次迭代。
 
 \section{工程实现与加速}
 
@@ -1141,6 +1394,34 @@ GPU 返回最优路线。
 但是，小 shard 会降低 GPU 利用率。
 当有多个独立运行时，本文优先使用 campaign 模式。
 CPU16 是确定性回退后端，也是 FP64 审计后端。
+
+\subsection{局部搜索的矩阵化加速}
+
+局部搜索感知 CUDA 后端把“程序--实例”组合展平为任务矩阵。
+每个任务包含 32 只蚂蚁。
+路线构造、2-opt 和信息素更新在大任务批量上执行。
+实现不会在 Python 中逐个循环个体或实例。
+常驻问题缓存保存坐标、距离矩阵、候选列表、名次和与 terminal 无关的特征。
+Baseline ACO 只计算一次，并在配对评估中重复使用。
+
+若直接保存 shape 为 \([B,M,n,n]\) 的稠密边收益张量，
+登记的 TSP500 批量约需 62~GiB。
+本文只保存每个城市相邻的两条边，shape 为 \([B,M,n,2]\)。
+每次接受 2-opt 移动时只更新四个端点。
+因此，每条路线的存储量为 \(O(n)\)。
+在 TSP500 上，一个 block 同时处理八条路线时只使用 32~KiB 共享内存。
+一个 warp 并行评估 20 条 2-opt 候选边。
+3-opt kernel 使用一个 512-thread block 评估 \(20^2\) 个候选对。
+
+\texttt{PreFreq} 和 \texttt{PostFreq} 使用
+\([B,n,n]\) 的 byte 矩阵与并行 scatter。
+程序按所需终端语义分片。
+若程序不读取 \texttt{Origin}、\texttt{PreFreq} 或 \texttt{LSGain}，
+就不会分配对应的重状态。
+生成的 CUDA module 使用有界 LRU 缓存。
+任务调度器估计可用显存并自动分块。
+出现显存不足时，分块大小减半。
+最终测试把彼此独立的“分区--变体--种子” shard 分配给可用 GPU。
 
 \subsection{正式加速基准}
 
@@ -1212,211 +1493,823 @@ GPU 与 CPU 的平均参考差距之差为 \(-0.003445\) 个百分点。
 
 \section{研究问题与结果分析}
 
-\subsection{RQ1：Full-F1 与原始 ACO}
+\subsection{RQ1：无局部搜索时的有效性与泛化}
 
-表~\ref{tab:main-results-zh} 给出已完成的结果。
-Baseline 列是原始 ACO 的参考差距。
-Full-F1 列是学习方法的参考差距。
-\(\Delta g\) 为 Full-F1 减去 baseline。
-负值表示 Full-F1 更好。
+表~\ref{tab:main-results-zh} 报告每个 GP 运行的一个入选程序。
+\(\Delta g<0\) 表示 RMTGP-ACO 更好。
 
-\begin{table*}[!t]
-\caption{已完成的 uniform 测试结果。区间是 \(\Delta g\) 的分层 bootstrap 95\% 区间。胜/平/负以百分比报告。}
+\begin{table*}[t]
+\caption{无局部搜索时，入选程序在均匀测试集上的结果。
+CI 是 \(\Delta g\) 的分层 bootstrap 95\% 区间。
+W/T/L 以百分比报告。}
 \label{tab:main-results-zh}
 \centering
 \footnotesize
-\renewcommand{\arraystretch}{1.12}
 \begin{tabular}{lrrrrrl}
 \toprule
-ACO & \(n\) & Baseline gap (\%) & Full-F1 gap (\%) & \(\Delta g\) (百分点) & 95\% 区间 & 胜/平/负\\
+ACO & \(n\) & Baseline 差距 (\%) & Full-F1 差距 (\%) &
+\(\Delta g\) (pp) & 95\% CI (pp) & W/T/L\\
 \midrule
 \input{paper_assets/main_results_rows.tex}%
 \end{tabular}
 \end{table*}
 
-\begin{figure*}[!t]
-\centering
-\includegraphics[width=\textwidth]{main_gap_delta.pdf}
-\caption{主结果：Full-F1 与 baseline ACO 的参考差距之差。误差线为分层 bootstrap 95\% 区间。负值支持 Full-F1。图内坐标保留英文。}
-\label{fig:main-delta-zh}
-\end{figure*}
-
-12 个平均差值全部小于零。
-12 个 bootstrap 区间也全部低于零。
-最小下降出现在 ACS 的 TSP50，为 0.0736 个百分点。
-最大下降出现在 AS 的 TSP500，为 7.8461 个百分点。
-Holm 校正后的 Wilcoxon 值均不大于 \(9.004\times10^{-17}\)。
-这些统计量描述当前数据块。
-它们不能替代更多独立 GP 运行。
-
-AS 在 TSP100 上从 5.8952\% 降至 4.2154\%。
-它在 TSP500 和 TSP1000 上分别下降 7.8461 和 7.3135 个百分点。
-ACS 在小规模上的改进较小。
-它在 TSP500 上下降 3.2242 个百分点。
-三个 ACS 候选中有一个没有通过独立部署 gate。
-论文分析仍然保留该 GP 运行。
-删除该运行会产生选择偏差。
-
-MMAS 在 TSP100 上从 4.1088\% 降至 1.8106\%。
-它在 TSP500 和 TSP1000 上分别下降 6.4522 和 6.6314 个百分点。
-当前 MMAS TSP100 的胜率为 99.2\%。
-当前 MMAS TSP500 和 TSP1000 的胜率为 100\%。
-
-\subsubsection{进化过程诊断}
-
-\begin{figure*}[!t]
+\begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{training_validation_curves.pdf}
-\caption{TSP100 训练与验证曲线。每个运行的训练点是当前代最佳个体在该代新训练批量上的结果。验证点是同一个体在固定 selection 集上的结果。实线为三个独立 GP 运行的中位数。阴影为最小值和最大值。图内坐标保留英文。}
+\caption{无局部搜索的 TSP100 进化曲线。
+每个运行在每代贡献一个代最佳个体。
+实线是三个 GP 运行的中位数，阴影是最小值和最大值。}
 \label{fig:training-curves-zh}
 \end{figure*}
 
-图~\ref{fig:training-curves-zh} 中的训练曲线有明显噪声。
-原因是每一代使用新的训练批量。
-验证曲线也不保证单调下降。
-因此，最后一代不一定是最佳检查点。
-独立的候选选择过程是必要的。
-曲线中的“最佳”只发生在每一代内部。
-最终测试仍使用验证流程选出的 champion。
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{main_gap_delta.pdf}
+\caption{Full-F1 与原始 ACO 的参考差距之差。
+误差线为分层 bootstrap 95\% 区间。}
+\label{fig:main-delta-zh}
+\end{figure*}
 
-\textbf{RQ1 的当前答案：}
-在全部 12 个已完成的先导比较中，Full-F1 的平均参考差距都低于对应的原始 ACO。
-因此，当前结果支持完整方法有效。
-该结果不能说明改进一定来自 residual、双树或 Full-F1 配置。
+12 个均值差及其区间均小于零。
+下降幅度从 ACS 在 TSP50 上的 0.0736 个百分点，
+到 AS 在 TSP500 上的 7.8461 个百分点。
+三个 ACO 变体在训练时未见的 TSP500 和 TSP1000 上也得到改进。
+曲线并非单调。
+每代使用新的实例批量。
+因此，入选检查点不一定来自最后一代。
 
-\subsection{RQ2：残差与完整替换}
+\begin{table*}[t]
+\caption{锁定分布偏移测试上的描述性结果。
+所有测试使用相同的 TSP100 训练 Full-F1 champion。}
+\label{tab:ood-results-zh}
+\centering
+\footnotesize
+\begin{tabular}{llrrrl}
+\toprule
+ACO & 测试集 & Baseline 差距 (\%) & Full-F1 差距 (\%) &
+\(\Delta g\) (pp) & W/T/L\\
+\midrule
+\input{paper_assets/ood_results_rows.tex}%
+\end{tabular}
+\end{table*}
 
-\pendingresult。
-主要比较是 TR-RGP 与 Matched-Replace。
-两者都使用一棵状态转移树、Full 终端、F1 函数和相同节点预算。
-唯一差异是树输出的接入方式。
-TR-RGP 修正原始分数。
-Matched-Replace 直接生成完整分数。
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{ood_delta.pdf}
+\caption{Cluster、Gaussian 和 TSPLIB 测试上的平均差距差值。
+负值表示 Full-F1 更好。}
+\label{fig:ood-delta-zh}
+\end{figure}
 
-Legacy-GP 是辅助基线。
-它同时改变终端和函数。
-因此，Legacy-GP 不能单独识别 residual 的作用。
+九个 OOD 均值差均为负。
+TSPLIB 胜率低于合成 OOD 数据。
+AS、ACS 和 MMAS 的 TSPLIB 胜率分别为 82.5\%、77.8\% 和 93.7\%。
+任何 OOD 分区都没有参与程序重选。
 
-\textbf{RQ2 的当前答案：}
-目前不能说明 residual 比完整替换更好。
-Full-F1 优于 baseline ACO 不能回答这个问题。
+\textbf{对 RQ1 的回答：}
+先导结果支持 Full-F1 相对原始 ACO 的改进，也支持跨规模迁移。
+锁定 OOD 数据的均值也支持 Full-F1。
+这一结果本身不能确定改进来自哪一个设计因素。
 
-\subsection{RQ3：双树与单树}
+\subsection{RQ2：受控设计因素}
 
-\pendingresult。
-主要比较包含 Full-F1、独立训练的 TR-RGP 和独立训练的 PH-RGP。
-三者共享 31 个总有效节点。
-双树的 31 个节点在两棵树之间分配。
-它不是每棵树各 31 个节点。
-这种设置控制了总语法容量。
+\begin{table*}[t]
+\caption{31 节点预算下的主要受控对比。
+每个单元格为估计值 [分层 bootstrap 95\% 区间]，单位为百分点。
+负值支持列标题中前一个方法。}
+\label{tab:ablation-primary-zh}
+\centering
+\scriptsize
+\begin{tabular}{llrrr}
+\toprule
+ACO & 测试集 & TR-RGP \(-\) replacement &
+Full-F1 \(-\) TR-RGP & Full-F1 \(-\) PH-RGP\\
+\midrule
+\input{paper_assets/ablation_primary_rows.tex}%
+\end{tabular}
+\end{table*}
 
-31 与 62 节点的容量实验用于检查结果是否依赖预算。
-训练后删除一棵树只能分析已有个体的机制。
-它不能替代独立训练的单树对照。
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{ablation_primary_forest.pdf}
+\caption{残差接口与结构的主要受控对比。
+负值分别支持残差接入或双树方法。}
+\label{fig:ablation-primary-zh}
+\end{figure*}
 
-\textbf{RQ3 的当前答案：}
-目前不能说明双树优于单树。
+\begin{table*}[t]
+\caption{与上一篇研究表示形式的同预算对比。
+前两个数值列是平均最优差距。
+最后一列是配对估计值 [分层 bootstrap 95\% 区间]，单位为百分点。
+负值支持 Full-F1。}
+\label{tab:legacy-comparison-zh}
+\centering
+\footnotesize
+\begin{tabular}{llrrr}
+\toprule
+ACO & 测试集 & Legacy-GP 差距 (\%) & Full-F1 差距 (\%) &
+Full-F1 $-$ Legacy-GP (pp)\\
+\midrule
+\input{paper_assets/legacy_comparison_rows.tex}%
+\end{tabular}
+\end{table*}
 
-\subsection{RQ4：终端与函数配置}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{legacy_comparison.pdf}
+\caption{Full-F1 与重新训练的 Legacy-GP 之间的配对差值。
+所有区间均低于零。}
+\label{fig:legacy-comparison-zh}
+\end{figure}
 
-\pendingresult。
-因子实验包含 Core-F0、Core-F1、Full-F0 和 Full-F1。
-Full 与 Core 的平均差异表示终端主效应。
-F1 与 F0 的平均差异表示函数主效应。
-两种差异是否相互依赖由交互效应判断。
+Full-F1 在六个上下文中的差距均低于重新训练的 Legacy-GP。
+配对降幅为 0.2918 至 12.9177 个百分点。
+所有区间均低于零。
+这是两个完整表示方案之间的总体对比。
+它不能单独识别残差接口、终端集或双树结构的作用。
 
-Core 保留四个状态转移终端和四个信息素终端。
-Full 增加进度、熵、停滞和蚁群频率信息。
-F1 增加 \texttt{MIN}、\texttt{MAX} 和 \texttt{ABS}。
-该实验可以识别没有必要的输入或函数。
+AS 上的残差接入优于匹配的完整替换。
+ACS 上则是完整替换更好。
+MMAS 的两个区间都跨越零。
+因此，残差方式不能被表述为普遍优于完整替换。
+这也说明，有界残差与 MMAS 信息素上下界在形式上的相似性，
+不足以构成机制结论。
+二者限制的是不同变量。
 
-\textbf{RQ4 的当前答案：}
-现有终端和函数在类型和数值上是有效的。
-它们是否存在过度设计仍需实验回答。
+在 31 节点预算下，Full-F1 没有在任何上下文中同时优于两个单树对照。
+因子实验没有给出 Full 终端集的普遍优势。
+它也没有给出 F1 函数集的普遍优势。
+删除干预说明，两棵树会影响多个入选程序。
+打乱干预没有显示稳定的运行内树对联合适应。
+Full-F1 有效，但完整语法在部分上下文中可能设计过多。
 
-\subsection{RQ5：联合适应}
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{capacity_effects.pdf}
+\caption{总节点预算为 31 和 62 时的容量与结构对比。
+负值支持每个子图标题中的前一项。}
+\label{fig:capacity-effects-zh}
+\end{figure*}
 
-\pendingresult。
-第一项干预将状态转移树替换为零。
-第二项干预将信息素树替换为零。
-第三项干预在独立 GP 运行之间打乱两棵树的配对。
-若打乱后性能下降，则说明存在配对相关的联合适应。
-该结果仍不能代替 RQ3 的独立单树训练。
+容量实验包含 18 个结构内 B62 与 B31 对比。
+只有一个 B62 减 B31 的区间完全小于零。
+十个点估计为正。
+入选表达式也很少接近节点上限。
+对双树方法而言，B62 在 ACS TSP100 上使均值降低 0.1049 个百分点。
+其余五个双树容量区间均跨越零。
+额外表达式容量不是主要瓶颈。
+B31 是更简约的默认设置。
 
-\textbf{RQ5 的当前答案：}
-目前没有结论。
+\textbf{对 RQ2 的回答：}
+结果支持在 AS 上使用残差接口，但不支持普遍结论。
+当前完整表示在六个匹配上下文中均优于重新训练的上一篇研究表示。
+这一比较不是组件层面的因果结果。
+结果也不支持双树、Full 终端集或 F1 函数集具有一般优势。
+两类语义角色都可能有作用。
+收益取决于 ACO 变体和测试上下文。
 
-\subsection{RQ6：泛化能力}
+\subsection{RQ3：训练实例数}
 
-当前结果支持 uniform 欧氏 TSP 上的规模迁移。
-训练和验证只使用 TSP100。
-TSP50、TSP500 和 TSP1000 都是未见规模。
-三个 ACO 变体在三个未见规模上的平均 \(\Delta g\) 都小于零。
-在 TSP500 和 TSP1000 上，绝对下降通常更大。
+\begin{table*}[t]
+\caption{ACS 训练实例预算实验。
+每个单元格为平均差距 / \(\Delta g\)，单位为百分点。}
+\label{tab:instance-budget-zh}
+\centering
+\footnotesize
+\begin{tabular}{lrrrr}
+\toprule
+测试集 & Baseline & 32 个实例 & 64 个实例 & 128 个实例\\
+\midrule
+\input{paper_assets/instance_budget_rows.tex}%
+\end{tabular}
+\end{table*}
 
-该结果不能证明分布迁移。
-Cluster TSP500、Gaussian TSP500 和 TSPLIB 的结果仍待完成。
+\begin{table}[t]
+\caption{三个 GP 种子的单 GPU ACS 训练效率。
+时间为均值 \(\pm\) 样本标准差。}
+\label{tab:instance-budget-time-zh}
+\centering
+\footnotesize
+\begin{tabular}{rrrr}
+\toprule
+实例数 & 每代时间 (s) & 总时间 (min) & 百万路线/s\\
+\midrule
+\input{paper_assets/instance_budget_time_rows.tex}%
+\end{tabular}
+\end{table}
 
-\textbf{RQ6 的当前答案：}
-先导结果支持相同分布下的跨规模迁移。
-分布外迁移仍无结论。
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{instance_budget_tradeoff.pdf}
+\caption{每代使用 32、64 和 128 个训练实例时的质量、总时间与吞吐量。}
+\label{fig:instance-budget-zh}
+\end{figure*}
 
-\subsection{RQ7：计算效率}
+12 个“预算--测试集”均值都优于 baseline ACS。
+64 个实例在 TSP50 和 TSP100 上最好。
+128 个实例在 TSP500 和 TSP1000 上最好。
+但是，每个条件只有三个 GP 种子。
+不同种子的方向并不完全一致。
+因此，这是随规模变化的趋势，不是显著的预算主效应。
+批量从 32 增加到 128 时，吞吐量从每秒 644 万条路线提高到 936 万条。
+端到端时间约增加一倍，而不是四倍。
 
-在登记的工作负载上，单 GPU 相对 CPU16 加速 14.626 倍。
-双 GPU shard 相对 CPU16 加速 23.820 倍。
-它相对单 GPU 的扩展率为 1.629。
-两个独立工作负载并行时，扩展率为 1.972。
+\textbf{对 RQ3 的回答：}
+较大批量提高 GPU 利用效率。
+64 个实例给出较好的 TSP100 成本--质量折中。
+128 个实例给出较好的大规模点估计。
+三个种子的训练实例实验不能证明单纯增加训练数据一定产生更好的 GP 解。
 
-\textbf{RQ7 的当前答案：}
-“个体 \(\times\) 实例”融合使正式 ACO 预算下的 GP 训练可行。
-多 GPU 环境应优先并行独立 GP 运行。
-这些数值只适用于登记的 RTX 4000 Ada 工作负载。
-其他硬件需要重新测量。
+\subsection{RQ4：2-opt 下的学习信号}
 
-\section{局限性}
+\begin{table}[t]
+\caption{初始 TSP500 局部搜索实验。
+数值为平均参考差距 (\%)。}
+\label{tab:initial-ls-zh}
+\centering
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrr}
+\toprule
+ACO & ACO+2opt & RMTGP(no-LS)+2opt & RMTGP(LS)+2opt & ACO+3opt\\
+\midrule
+\input{paper_assets/initial_ls_tsp500_rows.tex}%
+\end{tabular}}
+\end{table}
 
-当前主要局限是 GP 运行数。
-三个运行可以发现较大的失败。
-它们不能充分估计进化随机性。
-正式实验需要 30 个独立 GP 运行。
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{initial_ls_tsp500_gap.pdf}
+\caption{初始 TSP500 局部搜索实验。
+只统计每个运行的最终入选程序。}
+\label{fig:initial-ls-zh}
+\end{figure}
 
-训练只使用 uniform TSP100。
-当前结论只适用于报告的 AS、同步 ACS 和 MMAS 参数。
-本文没有启用局部搜索。
-分布迁移实验尚未完成。
+第一轮局部搜索实验暴露了两个问题。
+TSP100 在 2-opt 后接近饱和。
+启用 2-opt 训练也没有稳定优于无局部搜索训练。
+在 TSP500 上，AS 和 ACS 优于 ACO+2-opt，但仍差于 ACO+3-opt。
+MMAS 没有优于 ACO+2-opt。
 
-参考路线均有效，但不都带有全局最优性证书。
-因此，本文谨慎使用“参考差距”。
-由于所有方法使用同一参考路线，该指标仍适合配对比较。
+\begin{table*}[t]
+\caption{500 次 ACO 迭代下的 TSP100 2-opt 信号审计。
+Compression 是搜索后与搜索前的程序间方差比。
+SNR 是程序间方差与种子内方差之比。
+最后两列单位为百分比。}
+\label{tab:signal-audit-zh}
+\centering
+\footnotesize
+\begin{tabular}{lrrrrrrr}
+\toprule
+ACO & Baseline 差距 & Compression & Spearman &
+最终 SNR & Basin SNR & 新增边 & 差异保留\\
+\midrule
+\input{paper_assets/two_opt_signal_rows.tex}%
+\end{tabular}
+\end{table*}
 
-GPU 搜索使用 FP32。
-CPU 与 GPU 不保证产生相同的随机轨迹。
-最终路线长度使用 FP64 计算。
-登记的数值非劣审计已经通过。
-该结果不表示逐位一致。
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{two_opt_signal_audit.pdf}
+\caption{2-opt 后的方差压缩与信噪比。
+右图使用对数坐标。}
+\label{fig:signal-audit-zh}
+\end{figure*}
 
-RQ1 结果不能提供因果解释。
-Residual 与替换、双树与单树、函数与终端配置、联合适应都需要各自的受控实验。
+AS、ACS 和 MMAS 在局部搜索后的方差分别只有搜索前的
+3.47\%、1.08\% 和 1.46\%。
+最终差距 SNR 最大只有 0.146。
+AS 的搜索后盆地信号明显更强，ACS 也略有提高。
+最终路线中约 9--21\% 的边由 2-opt 新加入。
+构造差异只有约三分之一被保留。
+这些结果支持使用盆地与 anytime 适应度。
+它们也支持引入 \texttt{Origin}、\texttt{LSGain}、
+\texttt{PreFreq} 和 \texttt{PostFreq}。
+但是，它们不能证明某一个终端不可缺少。
+
+\begin{table*}[t]
+\caption{已完成的 TSP100 适应度对照在独立 512 实例 gate 上的结果。
+数值是三个入选 GP 程序的均值。
+Pass 表示部署 gate，不表示最终测试成功次数。}
+\label{tab:tsp100-fitness-controls-zh}
+\centering
+\footnotesize
+\begin{tabular}{llrrrrr}
+\toprule
+ACO & 适应度 & Baseline 差距 & Candidate 差距 & \(\Delta g\) &
+差距下降 (\%) & Pass\\
+\midrule
+\input{paper_assets/tsp100_fitness_control_rows.tex}%
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{tsp100_fitness_controls.pdf}
+\caption{已完成 TSP100 适应度对照的独立 gate 结果。
+这些是验证结果，不能替代独立最终测试。}
+\label{fig:tsp100-fitness-controls-zh}
+\end{figure*}
+
+Anytime+Final 对照通过三个 AS 部署 gate，并使 AS 验证差距降低 15.4\%。
+ACS 和 MMAS 没有得到对应收益。
+Basin+Final 对照没有通过任何 gate。
+这说明，仅替换为更密集的适应度并不足以解决问题。
+该结果也支持把下一阶段训练从接近饱和的 TSP100 移到 TSP500。
+
+\begin{table*}[t]
+\caption{16 个实例、500 次迭代下的严格 TSP500 racing 审计。
+登记阈值为 SNR \(\geq1\)、recall \(\geq0.8\) 和 Spearman
+\(\geq0.7\)，并同时检查非零响应。}
+\label{tab:tsp500-racing-audit-zh}
+\centering
+\footnotesize
+\begin{tabular}{lrrrrrl}
+\toprule
+ACO & Final 非零 & Anytime 非零 & Combined SNR &
+Top-32 recall & Spearman & Pass\\
+\midrule
+\input{paper_assets/tsp500_racing_audit_rows.tex}%
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{tsp500_racing_audit.pdf}
+\caption{严格 TSP500 筛选的信号与排序诊断。
+三个变体都没有达到登记的 SNR 阈值。}
+\label{fig:tsp500-racing-audit-zh}
+\end{figure*}
+
+该筛选产生了较多非零响应，但三个变体的 SNR 均小于一。
+AS 的排序一致性达到阈值。
+ACS 和 MMAS 还没有达到 recall 与相关性阈值。
+因此，该协议没有启动正式 racing 训练。
+最终 v2 流程用逐步增大的高保真批量替代小规模固定筛选，
+最大使用 128 个实例和三个种子。
+
+\textbf{对 RQ4 的回答：}
+2-opt 压缩最终差距信号，并删除大量构造差异。
+只使用最终差距作为训练目标时，区分度较弱。
+信号审计为盆地/anytime 信息提供依据。
+已完成对照表明，只改变适应度仍不充分。
+小筛选 gate 的失败支持更大的分阶段高保真设计。
+单个终端的因果作用仍未被隔离。
+
+\subsection{RQ5：TSP500 局部搜索感知质量与时间}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{ls_v2_training_curves.pdf}
+\caption{TSP500 局部搜索感知训练曲线。
+每个运行贡献代最佳个体。
+实线为三个 GP 种子的中位数，阴影为范围。
+竖线表示第 10 代和第 30 代。
+只有三个运行使用相同 ACO 迭代数的验证点才被合并。}
+\label{fig:ls-training-zh}
+\end{figure*}
+
+\begin{table*}[t]
+\caption{最终 TSP500 局部搜索感知测试。
+U95 是相对 ACO+2-opt 的单侧 95\% 上界。
+最后一列依次表示是否满足对 ACO+2-opt 的登记成功条件，
+以及是否优于 ACO+3-opt。}
+\label{tab:ls-v2-main-zh}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrl}
+\toprule
+ACO & 分布 & ACO+2opt 差距 & RMTGP+2opt 差距 &
+\(\Delta_2\) & U95\(_2\) & ACO+3opt 差距 & \(\Delta_3\) &
+Success\(_2\)/Better\(_3\)\\
+\midrule
+\input{paper_assets/ls_v2_main_rows.tex}%
+\end{tabular}}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{ls_v2_gap_comparison.pdf}
+\caption{均匀、聚类和高斯 TSP500 上的最终平均差距。}
+\label{fig:ls-gap-zh}
+\end{figure*}
+
+AS 在三个分布上都满足相对 ACO+2-opt 的登记成功条件。
+差距分别下降 1.7109、0.9735 和 1.3900 个百分点。
+它在均匀和高斯 TSP500 上也优于 ACO+3-opt。
+在聚类 TSP500 上，它比 ACO+3-opt 高 0.5839 个百分点。
+三个 AS GP 运行均优于 ACO+2-opt。
+
+ACS 在均匀集上只有很小改进。
+其单侧上界跨越零，且相对下降不到 10\%。
+在聚类集和高斯集上，ACS 均值略差于 ACO+2-opt。
+MMAS 在均匀集上更差，在另外两个分布上差异很小。
+ACS 和 MMAS 均未通过登记 gate。
+
+\begin{table}[t]
+\caption{三个 TSP500 分布上的描述性均值}
+\label{tab:ls-v2-pooled-zh}
+\centering
+\scriptsize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+ACO & ACO2 & RMTGP2 & ACO3 & \(\Delta_2\) & \(\Delta_3\) &
+差距下降 (\%)\\
+\midrule
+\input{paper_assets/ls_v2_pooled_rows.tex}%
+\end{tabular}}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{ls_v2_runtime_quality.pdf}
+\caption{三个 TSP500 分布上的最终入选程序平均运行时间与平均差距。
+每个点表示一种策略在三个分布上的均值。}
+\label{fig:ls-runtime-zh}
+\end{figure*}
+
+AS 的 RMTGP+2-opt 平均运行时间接近 ACO+3-opt。
+它在聚类集上更快，在均匀集上相同，在高斯集上略慢。
+MMAS 的 RMTGP+2-opt 比 ACO+3-opt 快 1.97--2.29 倍，
+但其质量更差。
+因此，时间节省与质量变化必须同时报告。
+
+\textbf{对 RQ5 的回答：}
+局部搜索感知方法在 AS 上取得成功。
+它在三个分布上均优于 ACO+2-opt，并在两个分布上优于 ACO+3-opt。
+ACS 和 MMAS 不支持相同结论。
+因此，“RMTGP+2-opt 达到 ACO+3-opt”只对特定 AS 分布成立。
+
+\subsection{RQ6：计算效率}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{accelerator_throughput.pdf}
+\caption{登记的 RTX 4000 Ada 种群训练吞吐量。
+数值相对 16 线程 CPU 实现。}
+\label{fig:accelerator-zh}
+\end{figure}
+
+融合评估器相对 CPU16 取得 14.626 倍单 GPU 加速。
+双 GPU 分片取得 23.820 倍加速。
+两个独立运行并发取得 1.972 倍 campaign 扩展。
+这些值只适用于登记的 RTX 4000 Ada 工作负载。
+
+\begin{table*}[t]
+\caption{已完成 TSP500 局部搜索感知训练的时间。
+数值为三个 GP 运行的均值 \(\pm\) 样本标准差。
+阶段列的单位为每代秒数。}
+\label{tab:ls-training-time-zh}
+\centering
+\footnotesize
+\begin{tabular}{lrrrrr}
+\toprule
+ACO & 总时间 (h) & G1--15 & G16--35 & G36--50 & 后期百万路线/s\\
+\midrule
+\input{paper_assets/ls_v2_training_time_rows.tex}%
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{ls_v2_training_time.pdf}
+\caption{九个已完成 TSP500 局部搜索感知 GP 运行的阶段时间与端到端时间。}
+\label{fig:ls-training-time-zh}
+\end{figure*}
+
+\begin{table}[t]
+\caption{已完成 TSP500 campaign 的时间核算}
+\label{tab:ls-campaign-time-zh}
+\centering
+\scriptsize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+阶段 & 工作量 & 时间 & 口径\\
+\midrule
+\input{paper_assets/ls_v2_campaign_time_rows.tex}%
+\end{tabular}}
+\end{table}
+
+保真度逐步增加后，后期每代时间明显上升。
+AS、ACS 和 MMAS 的平均端到端时间分别为
+14.83、2.92 和 2.63 小时。
+AS 每轮包含 32 个增强事件，而 ACS 与 MMAS 只有一个。
+不同入选表达式使用的重语义路径也不同。
+当前计时没有隔离这些原因。
+九次训练合计记录 61.15 GPU 小时。
+最终测试只评估入选程序，共包含 27 个独立 shard。
+两张 GPU 在 3.34 小时内完成测试和 latency audit。
+
+\begin{table}[t]
+\caption{RTX PRO 5000 Blackwell 局部搜索 kernel 微基准}
+\label{tab:blackwell-kernels-zh}
+\centering
+\scriptsize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrl}
+\toprule
+优化 & 加速比 & 对照\\
+\midrule
+\input{paper_assets/blackwell_kernel_rows.tex}%
+\end{tabular}}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{blackwell_kernel_speedups.pdf}
+\caption{Blackwell kernel 加速比。
+各项使用不同协议，因此不合并进行统计比较。}
+\label{fig:blackwell-zh}
+\end{figure}
+
+每个 block 使用八个 2-opt warp 后，入选 launch 加速 1.045 倍。
+512-thread 3-opt kernel 相对旧 warp kernel，
+在 TSP100 和 TSP500 上分别加速 1.909 倍与 3.511 倍。
+紧凑 edge-\texttt{LSGain} 路径比旧逐边循环快 25.64 倍。
+在独立语义微基准中，矩阵化频数终端增加不到 1\% 的开销。
+较重的 \texttt{LSGain} 路径仍比轻量路径多 38.4\% 开销。
+这一结果支持按终端语义分片。
+
+\textbf{对 RQ6 的回答：}
+“程序--实例”融合使嵌套 GP--ACO 训练可行。
+大实例批量提高设备占用率。
+TSP500 实验还依赖紧凑局部搜索状态、语义分片、常驻缓存和多 GPU shard 调度。
+完整实验实测使用 61.15 GPU 小时训练，并用两张 GPU 在 3.34 小时内完成最终测试。
+不同 GPU 型号上的硬件加速比不能直接相互转移。
+
+\section{局限性与有效性威胁}
+
+每个进化条件只有三个 GP 运行。
+分层 bootstrap 包含多个实例和 ACO 种子，
+但不能代替更多独立进化运行。
+因此，消融、容量和训练实例预算结论均为先导证据。
+
+无局部搜索实验在均匀 TSP100 上训练。
+局部搜索感知实验在均匀 TSP500 上训练。
+分布迁移只使用两类合成分布和一个较小的 TSPLIB 子集。
+当前方法只实现 AS、同步 ACS 和使用所列参数的 MMAS。
+
+局部搜索感知验证曲线包含一次恢复记录差异。
+AS 的五个早期监测代在不同种子间使用了不同 ACO 迭代数。
+这些点没有进入合并验证曲线。
+它们不影响育种或最终测试。
+全部最终比较均使用 5000 次迭代和每个运行的入选程序。
+
+最终局部搜索感知语法同时改变了训练规模、容量、终端、适应度和分阶段策略。
+因此，最终结果不能单独归因到 \texttt{LSGain}、其他某一个终端或阶段计划。
+ACS 和 MMAS 的失败也说明该扩展没有普遍效果。
+
+参考路线有效，但数据没有为每条路线附带全局最优性证书。
+因此，本文使用“参考差距”而非“最优差距”。
+GPU 搜索使用 FP32-fast，最终路线长度使用 FP64 重算。
+不同后端不要求离散 ACO 路径逐位相同。
+
+训练吞吐量与单程序延迟是两类不同负载。
+RTX 4000 Ada、RTX A5000 和 RTX PRO 5000 Blackwell 的结果不能合并为一个硬件比较。
 
 \section{结论}
 
-本文提出 RMTGP-ACO。
-方法使用两棵强类型残差树。
-状态转移树对原始分数进行有界修正。
-信息素树在原始增强预算内重新分配增量。
-两个接口都能通过零输出严格恢复 baseline ACO。
-两棵树共享 31 个总有效节点。
+RMTGP-ACO 进化两个强类型残差程序。
+状态转移树修正原始选择分数。
+信息素树重新分配原始增强预算。
+两棵树输出零时恢复原始 ACO。
 
-当前先导实验对 AS、ACS 和 MMAS 各进行三个独立 GP 运行。
-Full-F1 在全部 12 个 uniform 测试组合中取得更低的平均参考差距。
-该结果覆盖 TSP50 至 TSP1000。
-融合 CUDA 评估器显著降低了 GP--ACO 嵌套计算成本。
+无局部搜索时，Full-F1 在 12 个均匀“变体--规模”比较中均降低平均差距。
+它还在六个匹配的 TSP100/TSP500 上下文中优于重新训练的 Legacy-GP。
+后一结果比较的是完整表示，而不是单个组件。
+控制实验对这一结果给出重要限定。
+残差接入并不总是优于完整替换。
+双树并不总是优于两个单树对照。
+较丰富的终端与函数配置也不总是有用。
+把总节点预算从 31 增加到 62 同样不是一般性的解决方案。
 
-当前证据支持继续开展正式实验。
-它还不能证明 residual 优于完整替换。
-它也不能证明双树优于单树。
-登记的消融实验和容量实验是得到这些结论的必要条件。
+2-opt 信号审计指出另一个问题。
+局部搜索会压缩最终差距信号。
+因此，局部搜索感知扩展使用边来源和移动信息、多保真适应度，
+并在 TSP500 上分阶段进化。
+该扩展对 AS 有效。
+它在三个测试分布上都优于 ACO+2-opt，
+并在其中两个分布上优于 ACO+3-opt。
+同一结论不适用于 ACS 或 MMAS。
+
+CUDA 实现使这些嵌套实验可执行。
+主要工程改进包括“程序--实例”融合、紧凑局部搜索状态、
+生成式 GP kernel、语义分片、baseline 缓存和多 GPU 任务调度。
+后续工作应增加独立 GP 运行数，并逐一隔离局部搜索感知设计因素。
+
+\appendices
+
+\section{完整控制消融表}
+
+\begin{table}[h]
+\caption{残差状态转移减去匹配完整替换 (pp)}
+\label{tab:appendix-residual-zh}
+\centering
+\scriptsize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llr}
+\toprule
+ACO & 测试集 & 估计值 [95\% CI]\\
+\midrule
+\input{paper_assets/residual_effect_rows.tex}%
+\end{tabular}}
+\end{table}
+
+\begin{table}[h]
+\caption{31 节点下双树减去单树对照 (pp)}
+\label{tab:appendix-architecture-zh}
+\centering
+\scriptsize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llrr}
+\toprule
+ACO & 测试集 & Full-F1 \(-\) TR & Full-F1 \(-\) PH\\
+\midrule
+\input{paper_assets/architecture_effect_rows.tex}%
+\end{tabular}}
+\end{table}
+
+\begin{table*}[h]
+\caption{Core/Full 与 F0/F1 因子效应 (pp)}
+\label{tab:appendix-factorial-zh}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrr}
+\toprule
+ACO & 测试集 & Full \(-\) Core & F1 \(-\) F0 & 交互效应\\
+\midrule
+\input{paper_assets/factorial_effect_rows.tex}%
+\end{tabular}}
+\end{table*}
+
+\begin{table*}[h]
+\caption{树删除与跨运行配对干预 (pp)}
+\label{tab:appendix-mechanism-zh}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrr}
+\toprule
+ACO & 测试集 & Full \(-\) drop-TR & Full \(-\) drop-PH &
+Full \(-\) shuffle-1 & Full \(-\) shuffle-2\\
+\midrule
+\input{paper_assets/mechanism_rows.tex}%
+\end{tabular}}
+\end{table*}
+
+\begin{figure*}[h]
+\centering
+\includegraphics[width=\textwidth]{factorial_effects.pdf}
+\caption{完整因子对比。
+没有交互效应区间排除零。}
+\label{fig:appendix-factorial-zh}
+\end{figure*}
+
+\begin{figure*}[h]
+\centering
+\includegraphics[width=\textwidth]{mechanism_effects.pdf}
+\caption{完整的训练后删除与打乱配对对比。}
+\label{fig:appendix-mechanism-zh}
+\end{figure*}
+
+\begin{table*}[h]
+\caption{B31 与 B62 下的容量和结构对比}
+\label{tab:appendix-capacity-zh}
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrr}
+\toprule
+ACO & 测试集 & B62\(-\)B31 & B31 Full\(-\)TR &
+B31 Full\(-\)PH & B62 Full\(-\)TR & B62 Full\(-\)PH\\
+\midrule
+\input{paper_assets/capacity_rows.tex}%
+\end{tabular}}
+\end{table*}
+
+\begin{table}[h]
+\caption{B31/B62 入选程序的节点数中位数}
+\label{tab:appendix-capacity-nodes-zh}
+\centering
+\scriptsize
+\begin{tabular}{lrrr}
+\toprule
+ACO & TR-RGP & PH-RGP & Full-F1\\
+\midrule
+\input{paper_assets/capacity_node_rows.tex}%
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{terminal_usage_heatmap.pdf}
+\caption{九个无局部搜索 Full-F1 champion 的终端语法使用情况。}
+\label{fig:appendix-terminal-use-zh}
+\end{figure}
+
+\section{局部搜索开发实验}
+
+\begin{table*}[h]
+\caption{完整的初始局部搜索结果。
+数值为平均参考差距 (\%)，只使用每个运行的最终入选程序。}
+\label{tab:appendix-initial-ls-zh}
+\centering
+\footnotesize
+\begin{tabular}{llrrrr}
+\toprule
+ACO & 测试集 & ACO+2opt & RMTGP(no-LS)+2opt &
+RMTGP(LS)+2opt & ACO+3opt\\
+\midrule
+\input{paper_assets/initial_ls_all_rows.tex}%
+\end{tabular}
+\end{table*}
+
+信号先导实验比较最终差距、盆地分数与组合适应度。
+它们还检查残差半径和 \texttt{Origin} 终端。
+这些实验只运行三代，用于选择开发方向。
+它们不是确认性的终端消融。
+失败的严格 TSP500 racing gate 也只作为诊断证据。
+它推动了 128 个训练实例、更长 ACO 迭代数和最终 v2 协议。
+任何不完整 shard 都没有进入主表。
+
+\section{TSP500 运行时间与入选程序}
+
+\begin{table*}[h]
+\caption{TSP500 最终入选程序的运行时间，单位为秒。
+最后一列是 ACO+3opt 时间除以 RMTGP+2opt 时间。}
+\label{tab:appendix-ls-runtime-zh}
+\centering
+\footnotesize
+\begin{tabular}{llrrrr}
+\toprule
+ACO & 分布 & ACO+2opt & RMTGP+2opt & ACO+3opt & 比值\\
+\midrule
+\input{paper_assets/ls_v2_runtime_rows.tex}%
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[h]
+\centering
+\includegraphics[width=\textwidth]{ls_v2_terminal_usage.pdf}
+\caption{九个 TSP500 局部搜索感知入选程序的终端语法使用情况。
+出现次数不是因果效应。}
+\label{fig:appendix-ls-terminals-zh}
+\end{figure*}
+
+\begin{table*}[h]
+\caption{入选的 TSP500 局部搜索感知表达式。
+Hash 标识序列化候选程序。}
+\label{tab:appendix-expressions-zh}
+\centering
+\scriptsize
+\begin{tabular}{llp{0.74\textwidth}}
+\toprule
+运行 & Hash & 状态转移与信息素表达式\\
+\midrule
+\input{paper_assets/ls_v2_expression_rows.tex}%
+\end{tabular}
+\end{table*}
+
+\section{其他工程测量}
+
+\begin{table}[h]
+\caption{热启动单程序相对原始 ACO 的运行开销}
+\label{tab:appendix-inference-zh}
+\centering
+\footnotesize
+\begin{tabular}{lrrrr}
+\toprule
+ACO & TSP50 & TSP100 & TSP500 & TSP1000\\
+\midrule
+\input{paper_assets/inference_overhead_rows.tex}%
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\caption{RTX PRO 5000 Blackwell 上的语义终端微基准}
+\label{tab:appendix-semantic-zh}
+\centering
+\footnotesize
+\begin{tabular}{lrr}
+\toprule
+路径 & 时间 (s) & 相对倍数\\
+\midrule
+\input{paper_assets/semantic_terminal_benchmark_rows.tex}%
+\end{tabular}
+\end{table}
+
+语义微基准在 32 个 TSP500 实例上评估 65 个程序，并运行十次 ACO 迭代。
+\texttt{EdgeEta}、\texttt{PreFreq} 和 \texttt{PostFreq} 分别耗时
+1.602、1.606 和 1.613 秒。
+紧凑 edge-\texttt{LSGain} 路径耗时 2.217 秒。
+全部生成资产都在
+\texttt{paper\_assets/generated\_from.json}
+中记录输入路径与 SHA-256 值。
 
 \bibliographystyle{IEEEtran}
 \bibliography{rmtgp_aco_refs}

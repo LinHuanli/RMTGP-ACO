@@ -1,0 +1,6 @@
+% Blackwell implementation microbenchmarks; protocols differ and are not combined statistically.
+2-opt launch: 8 vs. 4 warps & 1.045$\times$ & ACS, TSP100, 64 instances, population 100, 10 ACO iterations \\
+3-opt block: 512 threads, TSP100 & 1.909$\times$ & old one-warp kernel \\
+3-opt block: 512 threads, TSP500 & 3.511$\times$ & old one-warp kernel \\
+Edge LSGain matrix path & 25.640$\times$ & old per-edge loop \\
+\bottomrule

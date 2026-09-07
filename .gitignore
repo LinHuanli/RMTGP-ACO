@@ -41,6 +41,13 @@ references/ACOTSP-1.03/best.*
 references/ACOTSP-1.03/cmp.*
 references/ACOTSP-1.03/stat.*
 
+# 外部参考实现：本地保留，但不纳入当前仓库版本管理
+references/DeepACO/
+references/FocusedACO/
+references/cuopt/
+references/evox/
+references/tensoraco/
+
 # 编辑器和系统文件
 .DS_Store
 .idea/
