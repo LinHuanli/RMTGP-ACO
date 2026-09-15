@@ -98,3 +98,27 @@ JIT 微基准会先检查输入变化是否使输出变化，排除常数树和�
 修订前的首次 E1 试跑保存在 `development-check/pre-audit-fix/`，不进入正式汇总。
 冻结输入、baseline 和 trace 保留各自原始 provenance；修订未改变 ACO 或 GP 的数值语义。
 正式计时重复统一使用新源码快照，并在相同源码、主机和工作量内配对。
+
+## GPU 先行队列（2026-09-15 调整）
+
+用户要求空闲 GPU 优先计算，不等待 CPU 对照。新增独立入口：
+
+```bash
+.venv/bin/python scripts/run_presentation_gpu_first.py launch
+.venv/bin/python scripts/run_presentation_gpu_first.py status
+```
+
+结果保存到 [gpu_first/RESULTS.md](gpu_first/RESULTS.md)，不覆盖或混入原测量组。
+冻结源码、实例、GP trace、baseline 和仿真预算均不变。
+
+- `gpu-main`：先运行 E2 的 GPU-v1/v2 固定 trace 对比，再运行 E1 的 GPU 真实演化。
+- `gpu-scaling`：独立运行全部 E4 GPU 扫描点，不等待对应 CPU 点。
+- `gpu-profile`：独立重新尝试 Nsight 诊断。增加祖先链与任务标记检查，避免把
+  profiler 另建进程组的被测子进程误判成外部任务；同时记录实际干扰 PID。
+
+同一 GPU 组固定主机和卡。不同组可使用同机不同 GPU，并绑定不同物理 CPU 核。
+主机锁阻止它们与原有 CPU 性能基准竞争。每张卡仍只运行一个本项目仿真任务。
+初始可用卡是 `cuda12:0` 和 `cuda12:1`，实际分配由启动时的空闲检查决定。
+
+GPU 先行结果用于展示 GPU 后端对比与规模曲线。它们不是原同机 CPU/GPU
+速度比的替代品。原来的 CPU/同机对照保留，完成后独立汇总；不跨测量组拼接倍率。

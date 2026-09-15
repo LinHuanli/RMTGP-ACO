@@ -834,6 +834,12 @@ def main(argv=None):
         "| Backend | Repeats | Median evaluation (s) | Speedup vs CPU-8 |",
         "|---|---:|---:|---:|",
     ]
+    if (output / "cohort.json").exists():
+        lines[2:2] = [
+            "本页是独立的 GPU 先行测量组。沿用原冻结源码、输入和预算，不等待 CPU 对照。",
+            "不与另一主机的 CPU 时间拼接计算加速比；原同机对照仍独立运行。",
+            "",
+        ]
     for backend in ("cpu1", "cpu8", "v1", "v2"):
         values = [r["evaluation_wall_s"] for r in totals if r["backend"] == backend]
         ratios = [r["speedup_vs_cpu8"] for r in speedups if r["backend"] == backend]
@@ -893,6 +899,25 @@ def main(argv=None):
             )
     progress_lines.append("")
     lines[position:position] = progress_lines
+    priority_state = output / "gpu_first/status.json"
+    if priority_state.exists():
+        queue = read_json(priority_state)
+        section = [
+            "## GPU-first queue",
+            "",
+            "[GPU 先行结果与图表](gpu_first/RESULTS.md)独立汇总，不受 CPU 队列进度限制。",
+            "",
+            "| Group | Status | Host / GPU | Current task |",
+            "|---|---|---|---|",
+        ]
+        for group, state in queue["groups"].items():
+            section.append(
+                f"| {group} | {state['status']} | {state.get('host', '—')} / "
+                f"{state.get('gpu', '—')} | {state.get('current_task') or '—'} |"
+            )
+        section.append("")
+        position = lines.index("## Available figures")
+        lines[position:position] = section
     for path in sorted((output / "figures").glob("*.svg")):
         lines.append(f"- [{path.stem}](figures/{path.name})")
     (output / "RESULTS.md").write_text("\n".join(lines) + "\n")

@@ -1,0 +1,44 @@
+{
+  "updated_at": "2026-09-15T11:27:48.488877+00:00",
+  "cohort": "gpu-first",
+  "groups": {
+    "gpu-main": {
+      "group": "gpu-main",
+      "host": "cuda12",
+      "gpu": 0,
+      "gpu_uuid": "GPU-eaae4626-0b5b-5897-32ea-8003857834e9",
+      "pid": 2735336,
+      "status": "running",
+      "started_at": "2026-09-15T11:24:39.354551+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "cohort": "gpu-first",
+      "heartbeat_at": "2026-09-15T11:27:48.401404+00:00",
+      "current_task": "E2-v1-r0"
+    },
+    "gpu-scaling": {
+      "group": "gpu-scaling",
+      "host": "cuda12",
+      "gpu": 1,
+      "gpu_uuid": "GPU-83d1d2fa-a36a-58dc-e461-3d2b3077301c",
+      "pid": 2735339,
+      "status": "running",
+      "started_at": "2026-09-15T11:24:39.343577+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "cohort": "gpu-first",
+      "heartbeat_at": "2026-09-15T11:27:46.975683+00:00",
+      "current_task": "E4-p100-n100-v2-r0"
+    },
+    "gpu-profile": {
+      "status": "pending"
+    }
+  },
+  "counts": {
+    "running": 2,
+    "pending": 1
+  },
+  "completed_tasks": 13,
+  "running_tasks": [
+    "E2-v1-r0",
+    "E4-p100-n100-v2-r0"
+  ]
+}

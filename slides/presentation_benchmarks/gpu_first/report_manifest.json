@@ -1,0 +1,15 @@
+{
+  "measurement_rows": 13,
+  "sanity_rows": 3,
+  "sources": [
+    "jobs/E2-v2-r0/result.json",
+    "jobs/E4-p1-n100-v2-r0/result.json",
+    "jobs/E4-p1-n100-v2-r1/result.json",
+    "jobs/E4-p1-n100-v2-r2/result.json",
+    "jobs/E4-p32-n100-v2-r0/result.json",
+    "jobs/E4-p32-n100-v2-r1/result.json",
+    "jobs/E4-p8-n100-v2-r0/result.json",
+    "jobs/E4-p8-n100-v2-r1/result.json",
+    "jobs/E4-p8-n100-v2-r2/result.json"
+  ]
+}

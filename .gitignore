@@ -71,3 +71,17 @@ references/tensoraco/
 /slides/presentation_benchmarks/controller.lock
 /slides/presentation_benchmarks/controller.json
 /slides/presentation_benchmarks/gpu-free-latest.txt
+
+# GPU 先行队列使用相同冻结输入，但单独保存测量 cohort。
+/slides/presentation_benchmarks/gpu_first/.mplcache/
+/slides/presentation_benchmarks/gpu_first/inputs
+/slides/presentation_benchmarks/gpu_first/baselines
+/slides/presentation_benchmarks/gpu_first/trace
+/slides/presentation_benchmarks/gpu_first/scans
+/slides/presentation_benchmarks/gpu_first/jobs/
+/slides/presentation_benchmarks/gpu_first/locks/
+/slides/presentation_benchmarks/gpu_first/groups/
+/slides/presentation_benchmarks/gpu_first/profiles/
+/slides/presentation_benchmarks/gpu_first/controller.lock
+/slides/presentation_benchmarks/gpu_first/controller.json
+/slides/presentation_benchmarks/gpu_first/gpu-free-latest.txt

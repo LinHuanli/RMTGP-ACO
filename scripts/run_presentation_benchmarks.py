@@ -149,6 +149,40 @@ def gpu_sample():
     return proc.stdout.strip()
 
 
+def process_job_token(pid):
+    """只读取本任务标记，不输出进程环境中的其它字段。"""
+    try:
+        values = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    prefix = b"PRESENTATION_JOB_TOKEN="
+    return next((v[len(prefix) :] for v in values if v.startswith(prefix)), None)
+
+
+def belongs_to_job(pid, root_pid):
+    """Nsight 可能让被测进程另建进程组，因此同时检查祖先与继承标记。"""
+    if pid == root_pid:
+        return True
+    try:
+        if os.getpgid(pid) == root_pid:
+            return True
+    except ProcessLookupError:
+        return False
+    current = pid
+    for _ in range(64):
+        if current == root_pid:
+            return True
+        if current <= 1:
+            break
+        try:
+            fields = Path(f"/proc/{current}/stat").read_text().rsplit(")", 1)[1].split()
+            current = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            break
+    token = process_job_token(root_pid)
+    return bool(token and process_job_token(pid) == token)
+
+
 def foreign_pids(uuid, pgid=None):
     proc = subprocess.run(
         ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid", "--format=csv,noheader,nounits"],
@@ -164,10 +198,7 @@ def foreign_pids(uuid, pgid=None):
         if len(parts) != 2 or parts[0] != uuid:
             continue
         pid = int(parts[1])
-        try:
-            if pgid is not None and os.getpgid(pid) == pgid:
-                continue
-        except ProcessLookupError:
+        if pgid is not None and belongs_to_job(pid, pgid):
             continue
         result.append(pid)
     return result
@@ -184,9 +215,15 @@ def physical_cores():
     return list(selected.values())
 
 
+class GPUUnavailable(RuntimeError):
+    """GPU 被其它任务占用；允许调度器释放 worker，之后再检查。"""
+
+
 class Worker:
-    def __init__(self, output, group, gpu):
+    def __init__(self, output, group, gpu, *, cpu_core_offset=0, gpu_wait_timeout=None):
         self.output, self.group, self.gpu = output, group, gpu
+        self.cpu_core_offset = cpu_core_offset
+        self.gpu_wait_timeout = gpu_wait_timeout
         self.host = socket.gethostname().split(".")[0]
         self.source = read(output / "source.json")
         self.snapshot = Path(self.source["snapshot"])
@@ -222,6 +259,8 @@ class Worker:
         is_gpu = not label.startswith("cpu") and action not in ("jit", "scans")
         cpu_count = 8 if label == "cpu8" else 1
         cores = physical_cores()
+        offset = self.cpu_core_offset % len(cores)
+        cores = cores[offset:] + cores[:offset]
         if len(cores) < cpu_count:
             raise RuntimeError("主机物理核心数不足")
         command = self.base + [
@@ -240,12 +279,27 @@ class Worker:
         timeout = timeout or (
             28800 if action in ("train", "trace", "baseline", "jit", "replay") else 7200
         )
-        for attempt in range(3):
+        previous = [int(p.stem.split("-")[-1]) for p in task_dir.glob("attempt-*.json")]
+        first_attempt = max(previous, default=-1) + 1
+        for attempt in range(first_attempt, first_attempt + 3):
             self.heartbeat(task)
+            waiting_started = time.monotonic()
             while is_gpu and foreign_pids(self.uuid):
                 # 空闲是瞬时状态；等待不会占用 CUDA context。
-                atomic(task_dir / "status.json", {"status": "waiting_gpu", "host": self.host})
+                atomic(
+                    task_dir / "status.json",
+                    {
+                        "status": "waiting_gpu",
+                        "host": self.host,
+                        "task": task,
+                        "gpu_uuid": self.uuid,
+                    },
+                )
                 self.heartbeat(task)
+                if self.gpu_wait_timeout is not None and (
+                    time.monotonic() - waiting_started > self.gpu_wait_timeout
+                ):
+                    raise GPUUnavailable(f"{self.host}:{self.gpu} is occupied")
                 time.sleep(15)
             cache = (
                 Path("/tmp")
@@ -270,6 +324,7 @@ class Worker:
                 CUDA_CACHE_PATH=str(cache / "driver"),
                 NUMBA_CACHE_DIR=str(cache / "numba"),
                 MPLCONFIGDIR=str(cache / "matplotlib"),
+                PRESENTATION_JOB_TOKEN=str(cache),
             )
             env["PATH"] = "/opt/cuda/bin:" + ":".join(
                 p for p in env.get("PATH", "").split(":") if "cuda-12.6" not in p
@@ -290,9 +345,11 @@ class Worker:
                 "cache": str(cache),
                 "destination": str(destination),
                 "source_hash": self.source["source_hash"],
+                "scheduler_path": str(Path(__file__).resolve()),
+                "scheduler_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             }
             atomic(task_dir / "status.json", record)
-            samples, contaminated = [], False
+            samples, contaminated, interfering_pids = [], False, set()
             started = time.monotonic()
             with (task_dir / f"attempt-{attempt}.log").open("w") as log:
                 env["PRESENTATION_PROCESS_START"] = str(time.perf_counter())
@@ -310,8 +367,10 @@ class Worker:
                         samples.append(
                             {"time_s": time.monotonic() - started, "sample": gpu_sample()}
                         )
-                        if foreign_pids(self.uuid, child.pid):
+                        interference = foreign_pids(self.uuid, child.pid)
+                        if interference:
                             contaminated = True
+                            interfering_pids.update(interference)
                     if time.monotonic() - started > timeout:
                         os.killpg(child.pid, signal.SIGTERM)
                         try:
@@ -327,6 +386,7 @@ class Worker:
                 completed_at=now(),
                 task_wall_s=time.monotonic() - started,
                 contaminated=contaminated,
+                interfering_pids=sorted(interfering_pids),
             )
             if record["status"] != "timeout":
                 record["status"] = (
