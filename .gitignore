@@ -54,3 +54,20 @@ references/tensoraco/
 .vscode/
 *.swp
 *.swo
+
+# 报告基准保留汇总表/图和配置；完整 trace、测量日志和编译快照保留在工作区。
+/slides/presentation_benchmarks/.mplcache/
+/slides/presentation_benchmarks/inputs/
+/slides/presentation_benchmarks/jobs/
+/slides/presentation_benchmarks/development-check/
+/slides/presentation_benchmarks/baselines/
+/slides/presentation_benchmarks/trace/
+/slides/presentation_benchmarks/scans/
+/slides/presentation_benchmarks/snapshots/
+/slides/presentation_benchmarks/profiles/
+/slides/presentation_benchmarks/logs/
+/slides/presentation_benchmarks/locks/
+/slides/presentation_benchmarks/groups/
+/slides/presentation_benchmarks/controller.lock
+/slides/presentation_benchmarks/controller.json
+/slides/presentation_benchmarks/gpu-free-latest.txt

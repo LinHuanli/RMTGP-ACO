@@ -1721,10 +1721,10 @@ def _command_benchmark_cutile(args: argparse.Namespace) -> int:
 
 
 def _command_benchmark_training(args: argparse.Namespace) -> int:
-    """用正式每代计算规模执行 1--3 代、但不做 validation/checkpoint。"""
+    """用正式每代计算规模执行 1--10 代、不做 validation/checkpoint。"""
 
-    if not 1 <= args.generations <= 3:
-        raise ValueError("benchmark-training 的 --generations 仅允许 1--3")
+    if not 1 <= args.generations <= 10:
+        raise ValueError("benchmark-training 的 --generations 仅允许 1--10")
     spec = _apply_runtime_overrides(load_run_spec(args.config), args)
     if args.baseline_policy is not None:
         spec = replace(
@@ -1797,8 +1797,13 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
     pending_cases = sampler.cases_for_generation(1)
     records: list[dict[str, object]] = []
     benchmark_started = perf_counter()
+    trace_writer = None
+    if getattr(args, "trace_output", None):
+        from .presentation_bench import TraceWriter
+        trace_writer = TraceWriter(Path(args.trace_output), spec.experiment.aco)
 
     with EvaluationPool(spec.experiment) as evaluator:
+        evaluator.benchmark_metrics_enabled = bool(getattr(args, "timing_output", None))
         evaluator.warm(pending_cases[0])
         for generation in range(1, args.generations + 1):
             generation_started = perf_counter()
@@ -1807,6 +1812,10 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
                 if generation == 1
                 else sampler.cases_for_generation(generation)
             )
+            if trace_writer is not None:
+                export_started = perf_counter()
+                trace_writer.capture(generation, population, cases)
+                generation_started += perf_counter() - export_started
             for individual in population:
                 if individual.fitness.valid:
                     del individual.fitness.values
@@ -1881,6 +1890,7 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
                 ),
                 "baseline_lookup_seconds": evaluation.baseline_wall_time,
                 "evaluation_seconds": evaluation.evaluation_wall_time,
+                "benchmark_metrics": evaluation.benchmark_metrics,
                 "breeding_seconds": breeding_seconds,
                 "generation_seconds": generation_seconds,
                 "constructed_tours": evaluation.constructed_tours,
@@ -1903,7 +1913,7 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
 
     payload = {
         "schema_version": 1,
-        "purpose": "1--3 generation acceleration benchmark; not a final run",
+        "purpose": "1--10 generation acceleration benchmark; not a final run",
         "config": str(Path(args.config).resolve()),
         "schedule_hash": schedule.manifest_hash,
         "variant": spec.experiment.aco.variant.value,
@@ -1938,6 +1948,9 @@ def _command_benchmark_training(args: argparse.Namespace) -> int:
         target = Path(args.output)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(rendered + "\n", encoding="utf-8")
+    if getattr(args, "timing_output", None):
+        from .presentation_bench import atomic_json
+        atomic_json(Path(args.timing_output), payload)
     return 0
 
 
@@ -2696,7 +2709,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     training_benchmark = subparsers.add_parser(
         "benchmark-training",
-        help="按正式每代规模短跑 1--3 代，不执行 validation/checkpoint",
+        help="按正式每代规模短跑 1--10 代，不执行 validation/checkpoint",
     )
     training_benchmark.add_argument("--config", required=True)
     training_benchmark.add_argument("--schedule")
@@ -2708,6 +2721,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     training_benchmark.add_argument("--generations", type=int, default=3)
     training_benchmark.add_argument("--output")
+    training_benchmark.add_argument("--trace-output", help="导出全部 evaluation 输入，开销不计入代时间")
+    training_benchmark.add_argument("--timing-output", help="保存包含后端子项的计时 JSON")
     training_benchmark.add_argument("--manifest", default="Datasets/manifest.json")
     training_benchmark.add_argument("--skip-manifest-check", action="store_true")
     training_benchmark.add_argument("--root-seed", type=int)
@@ -2740,6 +2755,27 @@ def build_parser() -> argparse.ArgumentParser:
     _add_aco_profile_arguments(training_benchmark)
     _add_gpu_arguments(training_benchmark)
     training_benchmark.set_defaults(handler=_command_benchmark_training)
+
+    def presentation_handler(action):
+        def handler(args):
+            from .presentation_bench import main as benchmark_main
+            argv = [action, "--output-root", args.output_root, "--destination", args.output]
+            if action == "replay":
+                argv.extend(["--backend", args.backend])
+                if args.trace:
+                    argv.extend(["--trace", args.trace])
+            benchmark_main(argv)
+            return 0
+        return handler
+
+    for command, action in (("benchmark-replay", "replay"), ("benchmark-individual-jit", "jit")):
+        entry = subparsers.add_parser(command, help="报告专用冻结基准，详见 slides 计划")
+        entry.add_argument("--output-root", default="slides/presentation_benchmarks")
+        entry.add_argument("--output", required=True)
+        if action == "replay":
+            entry.add_argument("--trace")
+            entry.add_argument("--backend", choices=("cpu1", "cpu8", "v1", "v2", "v2-interp4", "v2-gen4"), default="v2")
+        entry.set_defaults(handler=presentation_handler(action))
 
     plan_parser = subparsers.add_parser(
         "prepare-pilot-plan",

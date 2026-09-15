@@ -98,6 +98,7 @@ class PopulationEvaluationResult:
     baseline_wall_time: float
     evaluation_wall_time: float
     constructed_tours: int = 0
+    benchmark_metrics: dict[str, object] = field(default_factory=dict)
     racing_screen_evaluated_unique: int = 0
     racing_high_evaluated_unique: int = 0
     racing_screen_iterations: int = 0
@@ -737,6 +738,8 @@ def _batched_population_breakdowns(
     experiment: ExperimentConfig,
     cases: Sequence[EvaluationCase],
     baseline_values: Sequence[BaselineMeasurement],
+    *,
+    benchmark_metrics: dict[str, object] | None = None,
 ) -> tuple[list[FitnessBreakdown], int]:
     """用一个 population×instance native 边界计算全部训练 fitness。"""
 
@@ -776,7 +779,11 @@ def _batched_population_breakdowns(
                 ),
             )
 
+    encode_started = perf_counter()
     programs = [compile_individual(individual) for individual in individuals]
+    if benchmark_metrics is not None:
+        benchmark_metrics["encode_s"] = perf_counter() - encode_started
+        benchmark_metrics["backend_calls"] = []
     candidate: dict[int, list[torch.Tensor]] = {}
     baseline: dict[int, list[torch.Tensor]] = {}
     candidate_basin: dict[int, list[torch.Tensor]] = {}
@@ -786,7 +793,18 @@ def _batched_population_breakdowns(
     references: dict[int, list[torch.Tensor]] = {}
     constructed_tours = 0
     for case, baseline_value in zip(cases, baseline_values, strict=True):
+        backend_started = perf_counter()
         result = solve_population(case, programs)
+        if benchmark_metrics is not None:
+            benchmark_metrics["backend_calls"].append({
+                "backend_wall_s": perf_counter() - backend_started,
+                "native_reported_wall_s": result.wall_time_sec,
+                "instances": case.batch.batch_size,
+                "cities": case.batch.n,
+                "seed": case.seed,
+                "tours_executed": result.constructed_tours,
+                "metrics": dict(result.backend_metrics),
+            })
         candidate.setdefault(case.scale, []).append(result.best_length)
         baseline.setdefault(case.scale, []).append(
             baseline_value.best_length.detach().cpu()
@@ -1248,6 +1266,7 @@ class EvaluationPool:
     def __init__(self, experiment: ExperimentConfig) -> None:
         self.experiment = experiment
         self.executor: ProcessPoolExecutor | None = None
+        self.benchmark_metrics_enabled = False
 
     def __enter__(self) -> EvaluationPool:
         if self.experiment.runtime.processes > 1:
@@ -1402,6 +1421,7 @@ class EvaluationPool:
         cases: Sequence[EvaluationCase],
         baseline_cache: BaselineCache,
     ) -> PopulationEvaluationResult:
+        dedup_started = perf_counter()
         representatives: dict[str, RMTGPIndividual] = {}
         waiting: dict[str, list[RMTGPIndividual]] = {}
         for individual in population:
@@ -1412,6 +1432,10 @@ class EvaluationPool:
             waiting.setdefault(key, []).append(individual)
         if not representatives:
             return PopulationEvaluationResult(0, {}, 0.0, 0.0)
+
+        benchmark_metrics = {} if self.benchmark_metrics_enabled else None
+        if benchmark_metrics is not None:
+            benchmark_metrics["structural_dedup_s"] = perf_counter() - dedup_started
 
         baseline_started = perf_counter()
         baseline_values = self.baseline_values(
@@ -1438,6 +1462,7 @@ class EvaluationPool:
                 self.experiment,
                 cases,
                 baseline_values,
+                benchmark_metrics=benchmark_metrics,
             )
         elif self.executor is None:
             explicit_baselines = tuple(
@@ -1485,18 +1510,22 @@ class EvaluationPool:
             )
         evaluation_elapsed = perf_counter() - evaluation_started
 
+        assignment_started = perf_counter()
         by_hash: dict[str, FitnessBreakdown] = {}
         for key, breakdown in zip(ordered_keys, breakdowns, strict=True):
             by_hash[key] = breakdown
             for individual in waiting[key]:
                 individual.fitness.values = (float(breakdown.fitness),)
                 individual.metadata["fitness_breakdown"] = breakdown
+        if benchmark_metrics is not None:
+            benchmark_metrics["fitness_assign_s"] = perf_counter() - assignment_started
         return PopulationEvaluationResult(
             evaluated_unique=len(ordered_keys),
             breakdowns=by_hash,
             baseline_wall_time=baseline_elapsed,
             evaluation_wall_time=evaluation_elapsed,
             constructed_tours=constructed_tours,
+            benchmark_metrics=benchmark_metrics or {},
         )
 
     def validation_data(
