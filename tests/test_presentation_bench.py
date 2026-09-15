@@ -20,7 +20,7 @@ from rmtgp_aco.presentation_bench import (
     read_json,
     unpack_individual,
 )
-from rmtgp_aco.presentation_jit import postfix_sum, scalar_function
+from rmtgp_aco.presentation_jit import has_variable_output, postfix_sum, scalar_function
 from rmtgp_aco.program import compile_tree, create_primitive_sets
 from rmtgp_aco.sampling import EvaluationCase
 from rmtgp_aco.training import BaselineCache, EvaluationPool
@@ -151,3 +151,55 @@ def test_prepare_freezes_requested_generation_count(tmp_path, monkeypatch, gener
     assert [r["generation"] for r in result["records"]] == list(range(1, generations + 1))
     assert len(load_trace(tmp_path / "trace", exp.gp)) == generations
     assert not (tmp_path / "run/champion.pkl").exists()
+
+
+def test_speedup_requires_same_host_workload_and_source():
+    from rmtgp_aco.presentation_report import matched_summary
+
+    base = {
+        "experiment_id": "E2",
+        "host": "host-a",
+        "repeat_id": 0,
+        "source_hash": "revision-a",
+        "evaluation_call_id": 0,
+        "workload_id": "work-a",
+        "tasks_executed": 8,
+        "tours_executed": 128,
+        "backend": "cpu8",
+        "evaluation_wall_s": 10.0,
+    }
+    gpu = {**base, "backend": "v2", "evaluation_wall_s": 2.0}
+    _, ratios = matched_summary([base, gpu])
+    assert next(r for r in ratios if r["backend"] == "v2")["speedup_vs_cpu8"] == 5.0
+    for changed in (
+        {"host": "host-b"},
+        {"source_hash": "revision-b"},
+        {"workload_id": "work-b"},
+        {"tasks_executed": 7},
+    ):
+        _, ratios = matched_summary([base, {**gpu, **changed}])
+        assert not any(r["backend"] == "v2" for r in ratios)
+
+
+def test_jit_selection_excludes_constant_and_cancelled_expressions():
+    tr, _ = create_primitive_sets()
+    for expression, expected in (
+        ("ABS(NEG_ONE)", False),
+        ("SUB(RTau, RTau)", False),
+        ("ADD(RTau, REta)", True),
+    ):
+        tree = gp.PrimitiveTree.from_string(expression, tr)
+        assert has_variable_output(compile_tree(tree, role="transition"), "transition") == expected
+
+
+def test_nvrtc_audit_uses_active_cupy_entry(monkeypatch):
+    compiler = pytest.importorskip("cupy.cuda.compiler")
+    name = (
+        "_compile_using_nvrtc_no_warning"
+        if hasattr(compiler, "_compile_using_nvrtc_no_warning")
+        else "compile_using_nvrtc"
+    )
+    monkeypatch.setattr(compiler, name, lambda *args, **kwargs: (b"compiled", {}))
+    with CompilationAudit(True) as audit:
+        getattr(compiler, name)("source")
+        assert audit.compile_count == 1

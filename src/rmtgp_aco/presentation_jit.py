@@ -91,6 +91,23 @@ def sum_loop(function):
     return loop
 
 
+def varied_inputs(encoded):
+    """固定且随列变化的输入；选择树与正式微基准共用同一输入分布。"""
+    rng = np.random.default_rng(20260915)
+    terminals = max(1, int(encoded.integer_arguments.max()) + 1)
+    inputs = np.ascontiguousarray(rng.uniform(-2, 2, (terminals, 4096)))
+    inputs[:, ::31] = 0
+    return inputs
+
+
+def has_variable_output(program, role):
+    """排除常数树及输入相消树，防止编译器折叠掉整个表达式。"""
+    pure, _, encoded = scalar_function(program, role)
+    inputs = varied_inputs(encoded)
+    values = np.array([pure(inputs, index) for index in range(128)])
+    return bool(np.isfinite(values).all() and np.ptp(values) > 1e-12)
+
+
 @njit(cache=True)
 def postfix_sum(opcodes, floats, integers, inputs, count, stack_size):
     stack = np.empty(stack_size, dtype=np.float64)
@@ -116,8 +133,15 @@ def run_jit(output: Path, destination: Path):
                     trees[key] = (tree, role, program)
                     by_generation[key] = call["generation"]
     eligible = sorted(
-        (k for k in trees if len(trees[k][0]) > 1), key=lambda k: (len(trees[k][0]), k)
+        (
+            k
+            for k in trees
+            if len(trees[k][0]) > 1 and has_variable_output(trees[k][2], trees[k][1])
+        ),
+        key=lambda k: (len(trees[k][0]), k),
     )
+    if len(eligible) < 8:
+        raise ValueError("真实 trace 中不足 8 棵具有变化输出的非平凡树")
     selection = [eligible[int(i)] for i in np.linspace(0, len(eligible) - 1, 8)]
     rows, compilation_rows = [], []
     sources = {}
@@ -129,10 +153,7 @@ def run_jit(output: Path, destination: Path):
             pure, source, encoded = scalar_function(program, role)
             codegen = perf_counter() - code_started
             sources[key] = source
-            rng = np.random.default_rng(20260915)
-            terminals = max(1, int(encoded.integer_arguments.max()) + 1)
-            inputs = np.ascontiguousarray(rng.uniform(-2, 2, (terminals, 4096)))
-            inputs[:, ::31] = 0
+            inputs = varied_inputs(encoded)
             python_loop = sum_loop(pure)
             compiled = njit(fastmath=False)(sum_loop(njit(inline="always", fastmath=False)(pure)))
             compile_started = perf_counter()

@@ -348,7 +348,14 @@ class CompilationAudit:
 
         from . import aco_cuda
 
-        original_compile = compiler.compile_using_nvrtc
+        # CuPy 14 的模块缓存直接调用私有入口，公共 wrapper 不再经过。
+        # 挂接实际编译入口，不能把没有截获到的调用误记为缓存命中。
+        compile_entry = (
+            "_compile_using_nvrtc_no_warning"
+            if hasattr(compiler, "_compile_using_nvrtc_no_warning")
+            else "compile_using_nvrtc"
+        )
+        original_compile = getattr(compiler, compile_entry)
         original_source = aco_cuda._generated_gp_source
         original_load = aco_cuda._load_v2_kernels
         original_v1 = aco_cuda._load_kernel
@@ -380,7 +387,7 @@ class CompilationAudit:
             return kernel, seconds
 
         for obj, name, replacement in (
-            (compiler, "compile_using_nvrtc", count_compile),
+            (compiler, compile_entry, count_compile),
             (aco_cuda, "_generated_gp_source", source),
             (aco_cuda, "_load_v2_kernels", module),
             (aco_cuda, "_load_kernel", module_v1),
@@ -509,8 +516,10 @@ def evaluation_row(exp, label, population, cases, result, elapsed, audit, genera
     metrics = result.benchmark_metrics
     calls = metrics.get("backend_calls", [])
     gpu = not label.startswith("cpu")
+
     def summed(key):
         return sum(c["metrics"].get(key, 0.0) for c in calls)
+
     per_program = sum(c.batch.batch_size * exp.aco.ants * exp.aco.iterations for c in cases)
     executed = result.constructed_tours // per_program
     nodes = [p.total_nodes for p in population]

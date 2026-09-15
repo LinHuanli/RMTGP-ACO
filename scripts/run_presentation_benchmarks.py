@@ -102,9 +102,13 @@ def snapshot(output):
 
 
 def discover(output):
-    proc = subprocess.run(
-        ["/home/linbocheng/bin/gpu-free"], capture_output=True, text=True, timeout=60
-    )
+    try:
+        proc = subprocess.run(
+            ["/home/linbocheng/bin/gpu-free"], capture_output=True, text=True, timeout=60
+        )
+    except subprocess.TimeoutExpired:
+        print("gpu-free timed out; retry on next scheduling pass", flush=True)
+        return []
     (output / "gpu-free-latest.txt").write_text(proc.stdout + proc.stderr)
     cards = []
     for line in proc.stdout.splitlines():
@@ -233,7 +237,9 @@ class Worker:
         if profiler:
             command = profiler + command + ["--profile"]
         command = ["taskset", "-c", ",".join(map(str, cores[:cpu_count])), *command]
-        timeout = timeout or (28800 if action in ("train", "trace", "baseline", "jit") else 7200)
+        timeout = timeout or (
+            28800 if action in ("train", "trace", "baseline", "jit", "replay") else 7200
+        )
         for attempt in range(3):
             self.heartbeat(task)
             while is_gpu and foreign_pids(self.uuid):
@@ -587,7 +593,15 @@ def controller(output):
                 selected = desired if desired in pending else pending[0]
                 if selected == "main" and host != "cuda02" and ("cuda02", 0) in cards:
                     continue
-                launch_group(output, selected, host, gpu)
+                try:
+                    launch_group(output, selected, host, gpu)
+                except (subprocess.SubprocessError, OSError) as error:
+                    # SSH 失败不能让整个 nohup 调度器退出。远端已写运行状态时保留它。
+                    state_path = output / "groups" / f"{selected}.json"
+                    if read(state_path, {}).get("status") == "launching":
+                        atomic(state_path, {"status": "pending", "last_launch_error": str(error)})
+                    print(f"launch retry needed for {selected}: {error}", flush=True)
+                    continue
                 busy_hosts.add(host)
                 summary["groups"][selected] = {"status": "launching", "host": host}
             report(output)
@@ -608,7 +622,19 @@ def controller(output):
                             output / "groups" / f"{group}.json",
                             {"status": "blocked", "reason": "trace production failed"},
                         )
+            for prerequisite, dependents in (
+                ("scans-prepare", ("scaling",)),
+                ("gpu-setup", ("ablation-g3", "ablation-g5")),
+            ):
+                if summary["groups"][prerequisite]["status"] in ("failed", "blocked"):
+                    for dependent in dependents:
+                        if summary["groups"][dependent]["status"] == "pending":
+                            atomic(
+                                output / "groups" / f"{dependent}.json",
+                                {"status": "blocked", "reason": f"{prerequisite} failed"},
+                            )
             time.sleep(30)
+        report(output)
 
 
 def report(output):

@@ -115,9 +115,9 @@ def matched_summary(rows):
     by_run = defaultdict(list)
     for row in rows:
         if row["experiment_id"] == "E2":
-            by_run[(row["host"], row["repeat_id"], row["backend"])].append(row)
+            by_run[(row["host"], row["repeat_id"], row["backend"], row["source_hash"])].append(row)
     totals, speedups = [], []
-    for (host, repeat, backend), values in sorted(by_run.items()):
+    for (host, repeat, backend, source_hash), values in sorted(by_run.items()):
         signature = [
             (r["workload_id"], r["tasks_executed"], r["tours_executed"])
             for r in sorted(values, key=lambda r: r["evaluation_call_id"])
@@ -128,6 +128,7 @@ def matched_summary(rows):
                 "host": host,
                 "repeat_id": repeat,
                 "backend": backend,
+                "source_hash": source_hash,
                 "evaluation_wall_s": value,
                 "calls": len(values),
                 "signature": signature,
@@ -141,6 +142,7 @@ def matched_summary(rows):
                 if r["host"] == row["host"]
                 and r["repeat_id"] == row["repeat_id"]
                 and r["backend"] == "cpu8"
+                and r["source_hash"] == row["source_hash"]
             ),
             None,
         )
@@ -730,8 +732,7 @@ def outline(output):
     text = [
         "# GPU Acceleration for Simulation-based GP",
         "",
-        "英文页面与图表；中文讲解稿。"
-        "正文 36 分钟，讨论 4 分钟。",
+        "英文页面与图表；中文讲解稿。正文 36 分钟，讨论 4 分钟。",
         "",
         "结果页只引用本目录已完成的测量；缺失数据保持待补。",
         "",
@@ -839,6 +840,46 @@ def main(argv=None):
             "",
         ]
     )
+    # 真实演化的时间单独列出，不与固定 trace 的速度比混合。
+    position = lines.index("## Available figures")
+    progress_lines = [
+        "## Real 5-generation runs",
+        "",
+        "| Backend | Repeats | Median startup (s) | Median 5-generation wall (s) |",
+        "|---|---:|---:|---:|",
+    ]
+    for backend in ("cpu8", "v2"):
+        runs = defaultdict(list)
+        for row in rows:
+            if row["experiment_id"] == "E1" and row["backend"] == backend:
+                runs[(row["host"], row["source_hash"], row["repeat_id"])].append(row)
+        if runs:
+            startup = np.median([v[0]["startup_wall_s"] for v in runs.values()])
+            total = np.median([sum(r["generation_wall_s"] for r in v) for v in runs.values()])
+            progress_lines.append(
+                f"| {LABELS[backend]} | {len(runs)} | {startup:.3f} | {total:.3f} |"
+            )
+    progress_lines.extend(
+        ["", "不足 3 次重复时只是初步数据；不据此宣称稳定加速倍率。", "", "## Queue status", ""]
+    )
+    state_path = output / "status.json"
+    if state_path.exists():
+        queue = read_json(state_path)
+        progress_lines.extend(
+            [
+                f"更新时间（UTC）：{queue['updated_at']}",
+                "",
+                "| Group | Status | Host | Current task |",
+                "|---|---|---|---|",
+            ]
+        )
+        for group, state in queue["groups"].items():
+            progress_lines.append(
+                f"| {group} | {state['status']} | {state.get('host', '—')} | "
+                f"{state.get('current_task') or '—'} |"
+            )
+    progress_lines.append("")
+    lines[position:position] = progress_lines
     for path in sorted((output / "figures").glob("*.svg")):
         lines.append(f"- [{path.stem}](figures/{path.name})")
     (output / "RESULTS.md").write_text("\n".join(lines) + "\n")

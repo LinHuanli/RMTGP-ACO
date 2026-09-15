@@ -84,3 +84,17 @@ PyTorch 2.12.1+cu132、CuPy 14.1.1；CUDA toolkit 明确使用 /opt/cuda 13.3。
 
 已完成任务可以恢复跳过；同卡外部进程干扰的测量不进入有效汇总。
 显式 timeout/failed/unsupported 与 completed 分开记录，不补造数值。
+
+## 启动核查与修订记录
+
+2026-09-15：首条 5 代 trace 已冻结。初次核查发现 CuPy 14 的 NVRTC
+缓存路径不经过公共编译 wrapper，已改为截获实际编译入口，并在 A5000 验证。
+`modules_compiled` 记录评估期间 NVRTC 模块编译调用数，可能包含 CuPy 辅助内核，
+不等于新增 GP 树数。编译/装载时间仍来自后端墙钟。
+
+JIT 微基准会先检查输入变化是否使输出变化，排除常数树和相消表达式。
+全部唯一树的新增编译成本仍保留常数树，因为它们也可能在真实演化中出现。
+
+修订前的首次 E1 试跑保存在 `development-check/pre-audit-fix/`，不进入正式汇总。
+冻结输入、baseline 和 trace 保留各自原始 provenance；修订未改变 ACO 或 GP 的数值语义。
+正式计时重复统一使用新源码快照，并在相同源码、主机和工作量内配对。
