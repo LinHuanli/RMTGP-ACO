@@ -1,5 +1,7 @@
 {
-  "measurement_rows": 0,
-  "sanity_rows": 0,
-  "sources": []
+  "measurement_rows": 5,
+  "sanity_rows": 6,
+  "sources": [
+    "jobs/E1-v2-r0/result.json"
+  ]
 }

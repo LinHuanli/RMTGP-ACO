@@ -1,0 +1,14 @@
+{
+  "groups": [
+    "main",
+    "gpu-setup",
+    "scans-prepare",
+    "jit",
+    "scaling",
+    "ablation-g3",
+    "ablation-g5",
+    "profile-v1",
+    "profile-v2"
+  ],
+  "repeat_policy": "3; extend to 5 if range/median > 0.1"
+}

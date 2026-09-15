@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sqlite3
 from collections import defaultdict
@@ -15,7 +16,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
 
-from .presentation_bench import DEFAULT_OUTPUT, atomic_json, read_json, write_csv
+from .presentation_bench import DEFAULT_OUTPUT, atomic_json, read_json
+from .presentation_bench import write_csv as write_measurement_csv
 
 COLORS = {
     "cpu1": "#778899",
@@ -33,6 +35,17 @@ LABELS = {
     "v2-interp4": "v2 interpreter / 4 lanes",
     "v2-gen4": "v2 generated / 4 lanes",
 }
+
+
+def write_csv(path, rows):
+    """重建派生 CSV；没有有效行时不能遗留上次汇总的数据。"""
+    if rows:
+        write_measurement_csv(path, rows)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + f".{os.getpid()}.empty.tmp")
+        temporary.write_text("")
+        temporary.replace(path)
 
 
 def save(figure, directory, name):

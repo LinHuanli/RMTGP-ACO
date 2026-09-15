@@ -203,3 +203,13 @@ def test_nvrtc_audit_uses_active_cupy_entry(monkeypatch):
     with CompilationAudit(True) as audit:
         getattr(compiler, name)("source")
         assert audit.compile_count == 1
+
+
+def test_empty_report_removes_stale_derived_rows(tmp_path):
+    from rmtgp_aco.presentation_report import write_csv
+
+    path = tmp_path / "summary.csv"
+    write_csv(path, [{"seconds": 3.0}])
+    assert "3.0" in path.read_text()
+    write_csv(path, [])
+    assert path.read_text() == ""

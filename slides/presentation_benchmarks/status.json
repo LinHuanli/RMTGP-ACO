@@ -1,0 +1,60 @@
+{
+  "updated_at": "2026-09-15T10:08:52.319721+00:00",
+  "groups": {
+    "main": {
+      "group": "main",
+      "host": "cuda04",
+      "gpu": 0,
+      "gpu_uuid": "GPU-34b223c6-7502-b097-19e0-a411b1708f06",
+      "pid": 4021822,
+      "status": "running",
+      "started_at": "2026-09-15T10:06:21.373645+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-15T10:08:51.790223+00:00",
+      "current_task": "E1-cpu8-r0"
+    },
+    "gpu-setup": {
+      "group": "gpu-setup",
+      "host": "cuda08",
+      "gpu": 2,
+      "gpu_uuid": "GPU-9e271973-f616-3c82-922d-792bb30eefc0",
+      "pid": 2561544,
+      "status": "completed",
+      "started_at": "2026-09-15T09:53:29.852108+00:00",
+      "source_hash": "e37329218683d8c7df6d90c5753579f96a76a3fced660d16007140cbb0326c4f",
+      "heartbeat_at": "2026-09-15T09:54:52.568846+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-15T09:54:52.568830+00:00"
+    },
+    "scans-prepare": {
+      "status": "pending"
+    },
+    "jit": {
+      "status": "pending"
+    },
+    "scaling": {
+      "status": "pending"
+    },
+    "ablation-g3": {
+      "status": "pending"
+    },
+    "ablation-g5": {
+      "status": "pending"
+    },
+    "profile-v1": {
+      "status": "pending"
+    },
+    "profile-v2": {
+      "status": "pending"
+    }
+  },
+  "counts": {
+    "running": 1,
+    "completed": 1,
+    "pending": 7
+  },
+  "completed_tasks": 13,
+  "running_tasks": [
+    "E1-cpu8-r0"
+  ]
+}
