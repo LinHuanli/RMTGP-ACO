@@ -136,6 +136,26 @@ def affinity_path(task,out):
     return Path(out)/"affinity"/(key+".json")
 
 
+def archive_paused_validation(task,out):
+    """短验收被外部占用中断后保留整次证据，在新设备上重新验收。
+
+    验收规格包含设备 UUID 和环境，不能把另一张卡的前缀拼入同一记录。
+    只移动本任务的派生产物，保留重试日志；完整科学求解仍走检查点恢复。
+    """
+    if task.get("kind")!="numeric_validation":return None
+    out=Path(out);folder=out/"jobs"/task["id"]
+    if read_json(folder/"status.json",{}).get("status")!="resource_paused":return None
+    records=[p for p in folder.iterdir() if p.name not in ("status.json","attempts.json")
+             and not (p.name.startswith("attempt-") and p.suffix==".log")]
+    if not records:return None
+    destination=out/"resource_pauses"/task["id"]/str(time.time_ns())
+    destination.mkdir(parents=True)
+    for path in records:path.rename(destination/path.name)
+    atomic_json(destination/"interruption.json",{"task":task["id"],"status":read_json(folder/"status.json"),
+        "attempt":read_json(folder/"attempts.json",{}),"time":now(),"action":"保留中断证据；短验收从头重跑，不消耗数值失败次数"})
+    return destination
+
+
 def worker(device,out=OUT):
     """遇到外部占用让出 GPU；只终止自己启动的子进程，不操作其他用户。"""
     out=Path(out); initial=gpu_info(device)
@@ -169,6 +189,7 @@ def worker(device,out=OUT):
                     if attempt["count"]>=3: continue
                     info=gpu_info(device)
                     if info["uuid"]!=initial["uuid"] or info["pids"]: return
+                    archive_paused_validation(task,out)
                     attempt={"count":attempt["count"]+1,"host":socket.gethostname(),"gpu":info,"started_at":now()}
                     atomic_json(folder/"attempts.json",attempt)
                     atomic_json(folder/"status.json",{"status":"running","started_at":now(),"host":socket.gethostname(),"device":initial["uuid"]})

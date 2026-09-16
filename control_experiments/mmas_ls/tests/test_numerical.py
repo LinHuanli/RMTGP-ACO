@@ -41,3 +41,20 @@ def test_historical_gate_does_not_assert_math_correctness(tmp_path):
     atomic_json(tmp_path/"gates/historical_development.json",{"status":"approved"})
     assert ready(task,tmp_path)
     assert not ready({**task,"kind":"numeric_pair"},tmp_path)
+
+
+def test_paused_validation_preserves_artifacts_and_logs(tmp_path):
+    from control_experiments.mmas_ls.campaign import archive_paused_validation
+    from control_experiments.mmas_ls.common import read_json
+    task={"id":"check","kind":"numeric_validation"};folder=tmp_path/"jobs/check"
+    atomic_json(folder/"status.json",{"status":"resource_paused"})
+    atomic_json(folder/"partial.json",{"saved":True})
+    (folder/"attempt-1.log").write_text("interrupt evidence")
+    target=archive_paused_validation(task,tmp_path)
+    assert read_json(target/"partial.json")["saved"]
+    assert (folder/"attempt-1.log").read_text()=="interrupt evidence"
+    assert not (folder/"partial.json").exists()
+    assert archive_paused_validation(task,tmp_path) is None
+    atomic_json(folder/"status.json",{"status":"completed"})
+    atomic_json(folder/"partial.json",{"saved":True})
+    assert archive_paused_validation(task,tmp_path) is None
