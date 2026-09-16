@@ -1,0 +1,35 @@
+# P0–P4 的冻结默认值。P2 不因显著性追加样本。
+protocol_id: mmas-ls-mechanism-v1
+root_seed: 20260917
+base_commit: 2b847698225e1d0fff36a25c1015a080350a7f00
+phases: [P0, P1, P2, P3, P4]
+variants: [mmas, as]
+gp_seeds: [81001, 81002, 81003]
+ants: 32
+iterations: 5000
+candidate_size: 20
+local_search_candidate_size: 20
+gamma_transition: 0.3333333333333333
+gamma_pheromone: 0.3333333333333333
+development_instances: 32
+development_seeds: 5
+confirmation_instances: 128
+confirmation_seeds: 10
+ood_instances: 128
+epsilon_pp: 0.01
+bootstrap_replicates: 30000
+bootstrap_seed: 2026091701
+confidence: 0.95
+batch_size: 32
+precision: fp32_fast
+instrumentation_window: 25
+heavy_instances: 8
+heavy_seeds: 3
+snapshot_iterations: [1, 100, 250, 500, 1000, 2500]
+fork_iterations: [1, 25, 100, 500]
+gpu_model: NVIDIA RTX A5000
+attempts: 3
+reference_solver: LKH-3.0.13
+reference_runs: 10
+reference_max_trials: 10000
+reference_distance_scale: 1000000

@@ -44,6 +44,7 @@ from .config import (
     TransitionIntegration,
 )
 from .local_search import two_opt_first
+from .mechanisms import SolverControl
 from .model import (
     PopulationQualityResult,
     PopulationRunResult,
@@ -689,6 +690,7 @@ def _load_v2_kernels(
     register_cap: int,
     track_edge_gain: bool,
     generated_gp_source: str = "",
+    control: SolverControl | None = None,
 ) -> tuple[tuple[Any, ...], float]:
     """编译按 variant/shape/precision 专门化的 CUDA v2 kernel。"""
 
@@ -721,7 +723,8 @@ def _load_v2_kernels(
         )
     )
     source = (
-        prefix
+        (control.mechanism.cuda_prefix(control.instrumentation.level != "off") if control else "")
+        + prefix
         + _CUDA_SOURCE.read_text(encoding="utf-8")
         + "\n"
         + generated_gp_source
@@ -743,6 +746,8 @@ def _load_v2_kernels(
         options.append("--use_fast_math")
     digest_payload = "\0".join((source, *options))
     digest = sha256(digest_payload.encode("utf-8")).hexdigest()[:20]
+    if control:
+        control.kernel_hashes.add(sha256(digest_payload.encode("utf-8")).hexdigest())
     key = (device, digest)
     with _MODULE_LOCK:
         cached = _V2_MODULES.get(key)
@@ -1498,6 +1503,7 @@ def _run_device_v2(
     record_anytime: bool,
     basin_top_q: int,
     audit_local_search: bool,
+    control: SolverControl | None = None,
 ) -> _DeviceResult:
     """在一个设备上运行分阶段、candidate-tiled CUDA v2。"""
 
@@ -1548,6 +1554,10 @@ def _run_device_v2(
         ls_gain_requested and config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE
     )
     track_origin = origin_requested or audit_local_search
+    if control and control.instrumentation.level == "heavy":
+        # 零 GP 轨迹也维护历史边元数据，供同状态切换至非零 PH 使用。
+        track_origin = True
+        track_edge_gain = True
     track_pre_tour = track_origin or pre_freq_requested
     if (track_edge_gain or pre_freq_requested) and config.local_search is not LocalSearch.TWO_OPT:
         raise ValueError("逐边 LSGain/PreFreq terminal 当前要求 local_search=two_opt")
@@ -1574,6 +1584,7 @@ def _run_device_v2(
             stack_depth=stack_depth,
             precision=precision,
             register_cap=runtime.cuda_register_cap,
+            control=control,
             track_edge_gain=track_edge_gain,
             generated_gp_source=(
                 _generated_gp_source(
@@ -1900,6 +1911,45 @@ def _run_device_v2(
             anytime_sum = cp.zeros(count, dtype=cp.float32)
             diagnostics = cp.empty((count, 8), dtype=cp.uint64)
 
+            if control:
+                from .mechanisms import TRACE_FIELDS
+                trace = cp.zeros(
+                    (count, config.iterations, len(TRACE_FIELDS))
+                    if control.instrumentation.level != "off" else (1,), dtype=cp.float32,
+                )
+                def event_array(values: Any, default: int) -> Any:
+                    if values is None:
+                        return cp.full((count, config.iterations), default, dtype=cp.int8)
+                    values = np.asarray(values)
+                    if values.shape != (batch, config.iterations):
+                        raise ValueError("回放事件须具有 [instance,horizon] shape")
+                    return cp.asarray(values[selected % batch], dtype=cp.int8)
+                replay_events = event_array(control.replay_restarts, 0)
+                source_slots = event_array(control.source_slots, -1)
+                control_args = (trace, replay_events, source_slots,
+                                np.uint64(int(seed) % (2**64)), resident.instance_keys)
+                # 快照只包含可变求解器状态；几何和程序通过独立哈希验证。
+                state_names = (
+                    "pheromone_workspace", "tour_workspace", "visited_workspace",
+                    "length_workspace", "score_workspace", "deposit_workspace",
+                    "edge_frequency", "pre_edge_frequency", "restart_tour", "best_tours",
+                    "global_best_lengths", "restart_best_lengths", "task_tau_min", "task_tau_max",
+                    "best_iterations", "stagnation", "restart_found_best", "restart_iteration",
+                    "global_best_ls_gain", "restart_best_ls_gain", "ls_gain_workspace",
+                    "edge_gain_workspace", "global_best_edge_gain", "restart_best_edge_gain",
+                    "length_before_workspace", "pre_tour_workspace", "origin_workspace",
+                    "global_best_origin", "restart_best_origin", "basin_sum", "pre_basin_sum",
+                    "retained_edge_sum", "position_workspace", "order_workspace", "dlb_workspace",
+                    "scratch_tour_workspace", "anytime", "anytime_sum", "diagnostics",
+                )
+                scope = locals()
+                state = {name: scope[name] for name in state_names}
+                state.update(flat_indices=selected.copy(), batch_size=batch,
+                             instance_ids=problem.instance_ids, count=count,
+                             mechanism_trace=trace)
+            else:
+                control_args = ()
+
             start_event = cp.cuda.Event()
             end_event = cp.cuda.Event()
             start_event.record()
@@ -1928,94 +1978,83 @@ def _run_device_v2(
                     diagnostics,
                 ),
             )
-            for iteration in range(1, config.iterations + 1):
-                construct_kernel(
-                    (count,),
-                    (construct_threads,),
-                    (
-                        resident.coords,
-                        static_distances,
-                        static_heuristic,
-                        static_log_heuristic,
-                        resident.nearest,
-                        resident.full_nn_rank,
-                        tr_ops,
-                        tr_fargs,
-                        tr_iargs,
-                        tr_lengths,
-                        tr_masks,
-                        tr_is_active,
-                        np.int32(tr_ops.shape[1]),
-                        task_program,
-                        task_instance,
-                        np.int32(count),
-                        np.int32(n),
-                        np.int32(candidate_size),
-                        np.int32(ants),
-                        np.int32(config.iterations),
-                        np.int32(iteration),
-                        np.float32(config.alpha),
-                        np.float32(config.beta),
-                        np.float32(config.q0),
-                        np.float32(config.xi),
-                        np.float32(config.gamma_transition),
-                        np.int32(transition_mode),
-                        np.float32(config.epsilon_numeric),
-                        np.uint64(int(seed) % (2**64)),
-                        resident.instance_keys,
-                        tau0,
-                        pheromone_workspace,
-                        tour_workspace,
-                        visited_workspace,
-                        length_workspace,
-                        score_workspace,
-                        stagnation,
-                        diagnostics,
-                    ),
-                )
-                if config.uses_local_search:
-                    total_tours = count * ants
-                    ls_blocks = (total_tours + ls_warps_per_block - 1) // ls_warps_per_block
-                    two_opt_kernel(
-                        (ls_blocks,),
-                        (ls_threads,),
+            first_iteration = 1
+            resume_phase = "iteration_end"
+            if control:
+                if control.observer:
+                    control.observer("initialised", 0, state)
+                if control.resume is not None:
+                    snapshot = control.resume
+                    if not np.array_equal(snapshot["flat_indices"], selected):
+                        raise ValueError("恢复必须保持快照 task 顺序和完整分块")
+                    for name in state_names:
+                        if name not in snapshot["arrays"]:
+                            raise ValueError(f"快照缺少 {name}")
+                        saved = snapshot["arrays"][name]
+                        if state[name].shape != saved.shape or state[name].dtype != saved.dtype:
+                            raise ValueError(f"快照 shape/dtype 不兼容: {name}")
+                        state[name][...] = cp.asarray(saved)
+                    resume_phase = snapshot["phase"]
+                    if resume_phase not in ("post_ls", "iteration_end"):
+                        raise ValueError("未知快照恢复阶段")
+                    first_iteration = int(snapshot["iteration"]) + (resume_phase == "iteration_end")
+            final_iteration = control.stop_iteration if control and control.stop_iteration else config.iterations
+            if not first_iteration <= final_iteration <= config.iterations:
+                raise ValueError("续跑区间越界")
+            for iteration in range(first_iteration, final_iteration + 1):
+                skip_construction = bool(control and control.resume is not None
+                                         and iteration == first_iteration and resume_phase == "post_ls")
+                if not skip_construction:
+                    construct_kernel(
+                        (count,),
+                        (construct_threads,),
                         (
-                            resident.distances,
+                            resident.coords,
+                            static_distances,
+                            static_heuristic,
+                            static_log_heuristic,
                             resident.nearest,
+                            resident.full_nn_rank,
+                            tr_ops,
+                            tr_fargs,
+                            tr_iargs,
+                            tr_lengths,
+                            tr_masks,
+                            tr_is_active,
+                            np.int32(tr_ops.shape[1]),
+                            task_program,
                             task_instance,
                             np.int32(count),
                             np.int32(n),
-                            np.int32(nearest_stride),
-                            np.int32(local_candidate_size),
+                            np.int32(candidate_size),
                             np.int32(ants),
+                            np.int32(config.iterations),
                             np.int32(iteration),
-                            np.int32(config.local_search_dlb),
-                            np.int32(
-                                config.local_search is LocalSearch.TWO_OPT
-                            ),
+                            np.float32(config.alpha),
+                            np.float32(config.beta),
+                            np.float32(config.q0),
+                            np.float32(config.xi),
+                            np.float32(config.gamma_transition),
+                            np.int32(transition_mode),
+                            np.float32(config.epsilon_numeric),
                             np.uint64(int(seed) % (2**64)),
                             resident.instance_keys,
+                            tau0,
+                            pheromone_workspace,
                             tour_workspace,
+                            visited_workspace,
                             length_workspace,
-                            length_before_workspace,
-                            ls_gain_workspace,
-                            position_workspace,
-                            order_workspace,
-                            dlb_workspace,
-                            pre_tour_workspace,
-                            origin_workspace,
-                            edge_gain_workspace,
-                            np.int32(track_pre_tour),
-                            np.int32(track_origin),
-                            np.int32(track_edge_gain),
+                            score_workspace,
+                            stagnation,
                             diagnostics,
                         ),
-                        shared_mem=two_opt_shared_bytes,
                     )
-                    if config.local_search is LocalSearch.THREE_OPT:
-                        three_opt_kernel(
-                            (total_tours,),
-                            (runtime.cuda_three_opt_block_threads,),
+                    if config.uses_local_search:
+                        total_tours = count * ants
+                        ls_blocks = (total_tours + ls_warps_per_block - 1) // ls_warps_per_block
+                        two_opt_kernel(
+                            (ls_blocks,),
+                            (ls_threads,),
                             (
                                 resident.distances,
                                 resident.nearest,
@@ -2025,7 +2064,13 @@ def _run_device_v2(
                                 np.int32(nearest_stride),
                                 np.int32(local_candidate_size),
                                 np.int32(ants),
+                                np.int32(iteration),
                                 np.int32(config.local_search_dlb),
+                                np.int32(
+                                    config.local_search is LocalSearch.TWO_OPT
+                                ),
+                                np.uint64(int(seed) % (2**64)),
+                                resident.instance_keys,
                                 tour_workspace,
                                 length_workspace,
                                 length_before_workspace,
@@ -2033,11 +2078,44 @@ def _run_device_v2(
                                 position_workspace,
                                 order_workspace,
                                 dlb_workspace,
-                                scratch_tour_workspace,
+                                pre_tour_workspace,
+                                origin_workspace,
+                                edge_gain_workspace,
+                                np.int32(track_pre_tour),
+                                np.int32(track_origin),
+                                np.int32(track_edge_gain),
                                 diagnostics,
                             ),
-                            shared_mem=three_opt_shared_bytes,
+                            shared_mem=two_opt_shared_bytes,
                         )
+                        if config.local_search is LocalSearch.THREE_OPT:
+                            three_opt_kernel(
+                                (total_tours,),
+                                (runtime.cuda_three_opt_block_threads,),
+                                (
+                                    resident.distances,
+                                    resident.nearest,
+                                    task_instance,
+                                    np.int32(count),
+                                    np.int32(n),
+                                    np.int32(nearest_stride),
+                                    np.int32(local_candidate_size),
+                                    np.int32(ants),
+                                    np.int32(config.local_search_dlb),
+                                    tour_workspace,
+                                    length_workspace,
+                                    length_before_workspace,
+                                    ls_gain_workspace,
+                                    position_workspace,
+                                    order_workspace,
+                                    dlb_workspace,
+                                    scratch_tour_workspace,
+                                    diagnostics,
+                                ),
+                                shared_mem=three_opt_shared_bytes,
+                            )
+                if control and control.observer:
+                    control.observer("post_ls", iteration, state)
                 update_kernel(
                     (count,),
                     (256,),
@@ -2109,8 +2187,11 @@ def _run_device_v2(
                         anytime,
                         np.int32(record_anytime),
                         diagnostics,
+                        *control_args,
                     ),
                 )
+                if control and control.observer:
+                    control.observer("iteration_end", iteration, state)
             end_event.record()
             end_event.synchronize()
             kernel_seconds += float(
@@ -2118,6 +2199,13 @@ def _run_device_v2(
             ) / 1000.0
 
             d2h_started = perf_counter()
+            if control and control.collected is not None:
+                control.collected.append({
+                    "flat_indices": selected.copy(),
+                    "trace": cp.asnumpy(trace) if control.instrumentation.level != "off" else None,
+                    "diagnostics": cp.asnumpy(diagnostics),
+                    "final_iteration": final_iteration,
+                })
             index_parts.append(selected)
             tour_parts.append(cp.asnumpy(best_tours))
             length_parts.append(cp.asnumpy(global_best_lengths))
@@ -2219,10 +2307,20 @@ def _solve_population_impl(
     record_anytime: bool,
     basin_top_q: int = 0,
     audit_local_search: bool = False,
+    control: SolverControl | None = None,
 ) -> tuple[PopulationQualityResult, torch.Tensor | None]:
     if not programs:
         raise ValueError("program population 不得为空")
     use_v2 = runtime.aco_backend is ExecutionBackend.CUDA_TILED_V2
+    if control:
+        if not use_v2 or config.local_search is not LocalSearch.TWO_OPT:
+            raise ValueError("机制干预仅用于原 CUDA v2 + two_opt 路径")
+        if config.variant is ACOVariant.ACS or config.pheromone_integration is not PheromoneIntegration.BUDGET_RESIDUAL:
+            raise ValueError("机制实验支持 AS/MMAS 与 budget_residual")
+        if control.mechanism.restart_policy == "replay" and control.replay_restarts is None:
+            raise ValueError("replay 缺少外部重启事件")
+        if control.mechanism.source_policy.startswith("native_slots_") and control.source_slots is None:
+            raise ValueError("固定来源时隙缺少外部 source slots")
     if config.uses_local_search and not use_v2:
         raise ValueError("CUDA 局部搜索只由 cuda_tiled_v2 后端实现")
     if config.resolve_ants(problem.n) > 32:
@@ -2298,6 +2396,8 @@ def _solve_population_impl(
     )
     used_devices = devices[: len(shards)]
     initial_tau = _initial_pheromone_parameters(problem, config, seed)
+    if control and control.mechanism.initial_tau_scale != 1.0:
+        initial_tau = (initial_tau[0] * np.float32(control.mechanism.initial_tau_scale), *initial_tau[1:])
     run_device = _run_device_v2 if use_v2 else _run_device
 
     def run_shard(device: int, shard: np.ndarray) -> list[_DeviceResult]:
@@ -2331,6 +2431,7 @@ def _solve_population_impl(
                 record_anytime=record_anytime,
                 basin_top_q=basin_top_q,
                 audit_local_search=audit_local_search,
+                **({"control": control} if use_v2 else {}),
             )
             for semantic_shard in semantic_shards
         ]
@@ -2634,6 +2735,7 @@ def solve_population_cuda(
     runtime: RuntimeConfig,
     basin_top_q: int = 0,
     audit_local_search: bool = False,
+    control: SolverControl | None = None,
 ) -> PopulationQualityResult:
     """融合评估 population，并返回 CPU FP64 精确长度。"""
 
@@ -2646,6 +2748,7 @@ def solve_population_cuda(
         record_anytime=False,
         basin_top_q=basin_top_q,
         audit_local_search=audit_local_search,
+        control=control,
     )
     return result
 
@@ -2657,6 +2760,7 @@ def solve_population_cuda_anytime(
     *,
     seed: int,
     runtime: RuntimeConfig,
+    control: SolverControl | None = None,
 ) -> PopulationRunResult:
     """融合评估多个锁定 program，并保留各自完整 anytime 曲线。"""
 
@@ -2667,6 +2771,7 @@ def solve_population_cuda_anytime(
         seed=seed,
         runtime=runtime,
         record_anytime=True,
+        control=control,
     )
     assert anytime is not None
     return PopulationRunResult(

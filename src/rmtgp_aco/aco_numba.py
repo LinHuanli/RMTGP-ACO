@@ -32,6 +32,7 @@ from .model import (
     RunDiagnostics,
     RunResult,
 )
+from .mechanisms import SOURCE_POLICIES, SolverControl, TRACE_FIELDS
 from .program import TensorProgram
 
 # Postfix opcode。整数编码既减少 pickle 体积，也让 Numba 避免字符串分支。
@@ -1623,6 +1624,8 @@ def _global_pheromone_update(
     stagnation: int,
     total_iterations: int,
     update_workspace: tuple,
+    mechanism=None,
+    mechanism_trace=None,
 ) -> None:
     (
         heuristic,
@@ -1741,13 +1744,55 @@ def _global_pheromone_update(
                 source_kind = 2
             else:
                 source_kind = 1
-    for source in range(source_count):
+    native_source_kind = source_kind
+    source_indices = np.arange(tours.shape[0])
+    shadow_budget = 0.0
+    inverse_length_sum = 0.0
+    floor_before = diagnostics[2]
+    if mechanism is not None:
         if variant == 0:
-            source_tour = tours[source]
-            source_length = lengths[source]
-            source_ls_gain = ls_gains[source]
-            source_edge_gain = edge_gains[source]
-            source_origin = origins[source]
+            for a in range(tours.shape[0]):
+                shadow_budget += n / lengths[a]
+        else:
+            shadow_length = lengths[iteration_best_index] if source_kind == 0 else restart_best_length if source_kind == 1 else global_best_length
+            shadow_budget = n / shadow_length
+        policy = int(mechanism[2])
+        if policy != 0:
+            source_count = 1
+            source_kind = 1 if policy == 2 else 2 if policy == 3 else 0
+            if policy == 6:
+                source_count = int(mechanism[3])
+                for a in range(1, tours.shape[0]):
+                    chosen = source_indices[a]
+                    b = a
+                    while b > 0 and lengths[chosen] < lengths[source_indices[b-1]]:
+                        source_indices[b] = source_indices[b-1]
+                        b -= 1
+                    source_indices[b] = chosen
+            else:
+                source_indices[0] = iteration_best_index
+        elif variant == 2:
+            source_indices[0] = iteration_best_index
+        for a in range(source_count):
+            actual_length = lengths[source_indices[a]] if source_kind == 0 else restart_best_length if source_kind == 1 else global_best_length
+            inverse_length_sum += 1.0 / actual_length
+        if mechanism_trace is not None:
+            row = iteration - 1
+            mechanism_trace[row,0] = source_kind
+            mechanism_trace[row,1] = native_source_kind
+            mechanism_trace[row,2] = resolved_period
+            mechanism_trace[row,3] = source_count
+            mechanism_trace[row,4] = shadow_budget if mechanism[4] else n * inverse_length_sum
+    for source in range(source_count):
+        current_source = variant == 0 and (mechanism is None or int(mechanism[2]) == 0)
+        current_source = current_source or (mechanism is not None and int(mechanism[2]) != 0 and source_kind == 0)
+        if current_source:
+            a = source if mechanism is None else source_indices[source]
+            source_tour = tours[a]
+            source_length = lengths[a]
+            source_ls_gain = ls_gains[a]
+            source_edge_gain = edge_gains[a]
+            source_origin = origins[a]
         elif variant == 1:
             source_tour = global_best_tour
             source_length = global_best_length
@@ -1842,6 +1887,15 @@ def _global_pheromone_update(
                 for edge in range(n):
                     deposits[edge] *= scale
 
+        if mechanism is not None and int(mechanism[2]) != 0 and mechanism[4] != 0:
+            factor = shadow_budget / (n * inverse_length_sum)
+            for edge in range(n):
+                deposits[edge] *= factor
+        if mechanism_trace is not None:
+            for edge in range(n):
+                mechanism_trace[iteration-1,5] += deposits[edge]
+            mechanism_trace[iteration-1,13] = source_length
+
         if variant == 1:
             # ACS 只蒸发并强化 global-best tour 上的 n 条边，无需构造和扫描
             # n×n dense deposit 矩阵。各 tour edge 相互独立，数值语义不变。
@@ -1876,7 +1930,8 @@ def _global_pheromone_update(
                 j = nearest[i, candidate_index]
                 raw = (1.0 - rho) * pheromone[i, j]
                 if variant == 2:
-                    updated = max(raw, tau_min)
+                    floor_scale = 1.0 if mechanism is None else mechanism[1]
+                    updated = raw if floor_scale == 0 else max(raw, tau_min * floor_scale)
                     if updated != raw:
                         diagnostics[2] += 1
                     pheromone[i, j] = updated
@@ -1908,6 +1963,9 @@ def _global_pheromone_update(
         edge_frequency[frequency_active_edges[index]] = 0
     for index in range(pre_frequency_active_count):
         pre_edge_frequency[pre_frequency_active_edges[index]] = 0
+    if mechanism_trace is not None:
+        mechanism_trace[iteration-1,6] = diagnostics[2] - floor_before
+        mechanism_trace[iteration-1,20] = abs(mechanism_trace[iteration-1,5] / mechanism_trace[iteration-1,4] - 1.0)
 
 
 @njit(cache=True)
@@ -1999,6 +2057,8 @@ def _solve_instance_inplace(
     pheromone_program: tuple,
     task_parameters: tuple,
     workspace: tuple,
+    mechanism=None,
+    mechanism_trace=None,
 ) -> tuple:
     """在调用方提供的可复用工作区内求解一个 TSP 实例。"""
 
@@ -2012,6 +2072,8 @@ def _solve_instance_inplace(
         node_log_eta_mean,
     ) = geometry
     tau0, tau_min, tau_max = initial_pheromone
+    if mechanism is not None:
+        tau0 *= mechanism[5]
     (
         variant,
         ants,
@@ -2370,6 +2432,8 @@ def _solve_instance_inplace(
             stagnation,
             iterations,
             update_workspace,
+            mechanism,
+            mechanism_trace,
         )
         if (
             variant == 2
@@ -2396,15 +2460,20 @@ def _solve_instance_inplace(
                 branch_sum += branches
             branching_factor = branch_sum / (2.0 * n)
             if branching_factor < mmas_branch_threshold:
-                for first in range(n):
-                    for second in range(n):
-                        pheromone[first, second] = tau_max
-                    pheromone[first, first] = 0.0
-                restart_best_length = np.inf
-                restart_found_best = iteration
-                restart_iteration = iteration
-                restart_best_ls_gain = -1.0
-                diagnostics[3] += 1
+                if mechanism_trace is not None:
+                    mechanism_trace[iteration-1,9] = 1
+                if mechanism is None or mechanism[0] != 0:
+                    for first in range(n):
+                        for second in range(n):
+                            pheromone[first, second] = tau_max * (1.0 if mechanism is None else mechanism[6])
+                        pheromone[first, first] = 0.0
+                    restart_best_length = np.inf
+                    restart_found_best = iteration
+                    restart_iteration = iteration
+                    restart_best_ls_gain = -1.0
+                    diagnostics[3] += 1
+                    if mechanism_trace is not None:
+                        mechanism_trace[iteration-1,8] = 1
         anytime[iteration - 1] = global_best_length
 
     return (
@@ -2907,9 +2976,23 @@ def solve_numba(
     transition_program: TensorProgram | None = None,
     pheromone_program: TensorProgram | None = None,
     seed: int = 0,
+    control: SolverControl | None = None,
 ) -> RunResult:
     """使用确定性 Numba CPU 内核求解一个同规模 batch。"""
 
+    mechanism = None
+    if control:
+        m = control.mechanism
+        if (config.local_search is not LocalSearch.TWO_OPT or config.variant is ACOVariant.ACS
+            or config.pheromone_integration is not PheromoneIntegration.BUDGET_RESIDUAL):
+            raise ValueError("Numba 机制 oracle 要求 AS/MMAS + two_opt + budget_residual")
+        if (m.restart_policy == "replay" or m.source_policy not in SOURCE_POLICIES[:4]+("top_k",)
+            or m.hard_upper_clip or m.terminal_normalization_horizon is not None
+            or m.tau_headroom_override is not None or control.resume is not None or control.observer is not None):
+            raise NotImplementedError("FP64 oracle 当前仅支持 R/F/H、固定来源、top-k 与尺度干预")
+        mechanism = np.asarray([m.restart_policy == "native", m.floor_scale,
+            SOURCE_POLICIES.index(m.source_policy), m.source_count,
+            m.budget_policy == "native_shadow_total", m.initial_tau_scale,m.restart_tau_scale],dtype=np.float64)
     if config.device != "cpu" or problem.device.type != "cpu":
         raise ValueError("Numba ACO 后端仅支持 CPU ProblemBatch")
     if config.dtype != torch.float64 or problem.coords.dtype != torch.float64:
@@ -3106,6 +3189,7 @@ def solve_numba(
             0,
             False,
         )
+        mechanism_trace = np.zeros((config.iterations,len(TRACE_FIELDS)),dtype=np.float64) if control else None
         (
             best_tour,
             best_length,
@@ -3125,12 +3209,17 @@ def solve_numba(
             pheromone_program_state,
             task_parameters,
             workspace,
+            mechanism,
+            mechanism_trace,
         )
         best_tours[batch_index] = best_tour
         best_lengths[batch_index] = best_length
         best_iterations[batch_index] = best_iteration
         anytime[batch_index] = instance_anytime
         diagnostics += instance_diagnostics
+        if control and control.collected is not None:
+            control.collected.append({"flat_indices": np.asarray([batch_index]),
+                "trace": mechanism_trace[None,...], "diagnostics": instance_diagnostics.copy()[None,...]})
     elapsed = perf_counter() - started
 
     return RunResult(

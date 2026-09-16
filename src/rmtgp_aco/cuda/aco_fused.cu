@@ -26,6 +26,23 @@ namespace {
 constexpr int MAX_ANTS = 32;
 constexpr int MAX_STACK = 32;
 
+__device__ __forceinline__ int mechanism_horizon(int original) {
+#if RMTGP_MECH_CONTROL && RMTGP_MECH_TERMINAL_H > 0
+    return RMTGP_MECH_TERMINAL_H;
+#else
+    return original;
+#endif
+}
+
+__device__ __forceinline__ float mechanism_progress(int iteration, int original) {
+    float value = 2.0f * static_cast<float>(iteration - 1)
+        / static_cast<float>(max(mechanism_horizon(original) - 1, 1)) - 1.0f;
+#if RMTGP_MECH_CONTROL && RMTGP_MECH_TERMINAL_CLIP
+    value = fminf(1.0f, fmaxf(-1.0f, value));
+#endif
+    return value;
+}
+
 enum Opcode : int8_t {
     OP_CONST = 0,
     OP_TERMINAL = 1,
@@ -733,13 +750,12 @@ __device__ float pheromone_terminal(
         return source_quality;
     }
     if (terminal == 5) {
-        return 2.0f * static_cast<float>(iteration - 1)
-            / static_cast<float>(max(total_iterations - 1, 1)) - 1.0f;
+        return mechanism_progress(iteration, total_iterations);
     }
     if (terminal == 6) {
         return 2.0f * fminf(
             static_cast<float>(stagnation)
-                / static_cast<float>(total_iterations),
+                / static_cast<float>(mechanism_horizon(total_iterations)),
             1.0f
         ) - 1.0f;
     }
@@ -752,6 +768,9 @@ __device__ float pheromone_terminal(
         return static_cast<float>(source_origin[edge]);
     }
     if (terminal == 9) {
+#if RMTGP_MECH_CONTROL
+        if (RMTGP_MECH_HEADROOM >= 0.0f) return RMTGP_MECH_HEADROOM;
+#endif
         const float evaporated = (1.0f - rho) * pheromone[u * n + v];
         return fminf(
             1.0f,

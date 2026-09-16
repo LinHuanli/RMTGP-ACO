@@ -313,11 +313,9 @@ __device__ __forceinline__ float transition_score_tiled(
     terminals[4] = stats.entropy;
     terminals[5] = 2.0f * static_cast<float>(construction_step)
         / static_cast<float>(n > 1 ? n - 1 : 1) - 1.0f;
-    terminals[6] = 2.0f * static_cast<float>(iteration - 1)
-        / static_cast<float>(total_iterations > 1 ? total_iterations - 1 : 1)
-        - 1.0f;
+    terminals[6] = mechanism_progress(iteration, total_iterations);
     terminals[7] = 2.0f * fminf(
-        static_cast<float>(stagnation) / static_cast<float>(total_iterations),
+        static_cast<float>(stagnation) / static_cast<float>(mechanism_horizon(total_iterations)),
         1.0f
     ) - 1.0f;
     terminals[8] = pheromone[edge];
@@ -1080,6 +1078,13 @@ extern "C" __global__ void v2_update(
     float* anytime,
     int record_anytime,
     uint64_t* diagnostics
+#if RMTGP_MECH_CONTROL
+    , float* mechanism_trace,
+    const int8_t* replay_events,
+    const int8_t* source_slots,
+    uint64_t mechanism_seed,
+    const uint64_t* mechanism_instance_keys
+#endif
 ) {
     using namespace rmtgp_v2;
     const int task = blockIdx.x;
@@ -1147,6 +1152,21 @@ extern "C" __global__ void v2_update(
     __shared__ unsigned int bound_counts[V2_UPDATE_THREADS];
     __shared__ float basin_post_best[V2_MAX_ANTS];
     __shared__ float basin_pre_best[V2_MAX_ANTS];
+#if RMTGP_MECH_CONTROL
+    __shared__ int native_source_kind;
+    __shared__ int actual_source_count;
+    __shared__ int source_ants[V2_MAX_ANTS];
+    __shared__ float shadow_budget;
+    __shared__ float inverse_length_sum;
+    __shared__ unsigned long long floor_before;
+    __shared__ int restart_would_trigger;
+    __shared__ float measured_branch_factor;
+    __shared__ float source_lengths[V2_MAX_ANTS];
+    float* trace_row = mechanism_trace;
+#if RMTGP_MECH_RECORD
+    trace_row += (static_cast<size_t>(task) * total_iterations + iteration - 1) * RMTGP_MECH_TRACE_WIDTH;
+#endif
+#endif
 
     if (tid == 0) {
         if (basin_top_q > 0) {
@@ -1285,6 +1305,95 @@ extern "C" __global__ void v2_update(
             ) ? 2 : 1;
         }
 #endif
+#if RMTGP_MECH_CONTROL
+        native_source_kind = mmas_source_kind;
+        floor_before = diagnostics[static_cast<size_t>(task) * 8 + 2];
+        restart_would_trigger = 0;
+        measured_branch_factor = -1.0f;
+        shadow_budget = 0.0f;
+#if RMTGP_VARIANT == 0
+        for (int a = 0; a < ants; ++a) shadow_budget += static_cast<float>(n) / colony_lengths[a];
+#else
+        const float shadow_length = native_source_kind == 0 ? iteration_best_length
+            : (native_source_kind == 1 ? restart_best_lengths[task] : global_best_lengths[task]);
+        shadow_budget = static_cast<float>(n) / shadow_length;
+#endif
+        actual_source_count = RMTGP_VARIANT == 0 ? ants : 1;
+        for (int a = 0; a < ants; ++a) source_ants[a] = a;
+#if RMTGP_VARIANT == 2 && RMTGP_MECH_SOURCE != 6
+        source_ants[0] = iteration_best_index;
+#endif
+#if RMTGP_MECH_SOURCE != 0
+        actual_source_count = 1;
+        mmas_source_kind = 0;
+#if RMTGP_MECH_SOURCE != 6
+        source_ants[0] = iteration_best_index;
+#endif
+#if RMTGP_MECH_SOURCE == 2
+        mmas_source_kind = 1;
+#elif RMTGP_MECH_SOURCE == 3
+        mmas_source_kind = 2;
+#elif RMTGP_MECH_SOURCE == 4 || RMTGP_MECH_SOURCE == 5
+        const int slot = source_slots[static_cast<size_t>(task) * total_iterations + iteration - 1];
+        mmas_source_kind = slot == 0 ? 0 : (RMTGP_MECH_SOURCE == 4 ? 1 : 2);
+#elif RMTGP_MECH_SOURCE == 6
+        actual_source_count = min(RMTGP_MECH_SOURCE_COUNT, ants);
+        for (int a = 1; a < ants; ++a) {
+            const int chosen = source_ants[a];
+            int b = a;
+            while (b > 0 && (colony_lengths[chosen] < colony_lengths[source_ants[b-1]]
+                || (colony_lengths[chosen] == colony_lengths[source_ants[b-1]] && chosen < source_ants[b-1]))) {
+                source_ants[b] = source_ants[b-1]; --b;
+            }
+            source_ants[b] = chosen;
+        }
+#elif RMTGP_MECH_SOURCE == 7
+        mmas_source_kind = counter_uniform(mechanism_seed, mechanism_instance_keys[instance],
+            iteration, 0, 0, 1001) < RMTGP_MECH_P_HISTORY ? 2 : 0;
+#elif RMTGP_MECH_SOURCE == 8
+        // AS 无 restart epoch：此处明确使用全局日历和 GB。
+        const int age = max(iteration - 2, 0);
+        const int period = age < 25 ? 25 : age < 75 ? 5 : age < 125 ? 3 : age < 250 ? 2 : 1;
+        mmas_source_kind = iteration % period == 0 ? 2 : 0;
+#endif
+#endif
+        inverse_length_sum = 0.0f;
+        for (int a = 0; a < actual_source_count; ++a) {
+            const float len = mmas_source_kind == 1 ? restart_best_lengths[task]
+                : mmas_source_kind == 2 ? global_best_lengths[task]
+                : colony_lengths[source_ants[a]];
+            source_lengths[a] = len;
+            inverse_length_sum += 1.0f / len;
+        }
+#if RMTGP_MECH_RECORD
+        trace_row[0] = mmas_source_kind;
+        trace_row[1] = native_source_kind;
+        trace_row[2] = mmas_resolved_period;
+        trace_row[3] = actual_source_count;
+        trace_row[4] = RMTGP_MECH_SHADOW_BUDGET ? shadow_budget : n * inverse_length_sum;
+        trace_row[13] = source_lengths[0];
+        trace_row[14] = mmas_source_kind == 1 ? iteration - restart_found_best[task]
+            : mmas_source_kind == 2 ? iteration - global_best_iterations[task] : 0;
+        trace_row[15] = stagnation_all[task];
+        float pre_total = 0.0f, post_total = 0.0f, pre_best = CUDART_INF_F;
+        float pre_rank[V2_MAX_ANTS], post_rank[V2_MAX_ANTS];
+        for (int a = 0; a < ants; ++a) {
+            const float pre = length_before_workspace[static_cast<size_t>(task) * ants + a];
+            pre_total += pre; post_total += colony_lengths[a]; pre_best = fminf(pre_best, pre);
+            pre_rank[a] = pre; post_rank[a] = colony_lengths[a];
+        }
+        for (int a = 0; a < min(7, ants); ++a) {
+            for (int b = a + 1; b < ants; ++b) {
+                if (pre_rank[b] < pre_rank[a]) { float v=pre_rank[a]; pre_rank[a]=pre_rank[b]; pre_rank[b]=v; }
+                if (post_rank[b] < post_rank[a]) { float v=post_rank[a]; post_rank[a]=post_rank[b]; post_rank[b]=v; }
+            }
+            trace_row[24] += pre_rank[a] / min(7, ants);
+            trace_row[25] += post_rank[a] / min(7, ants);
+        }
+        trace_row[16] = pre_best; trace_row[17] = iteration_best_length;
+        trace_row[18] = pre_total / ants; trace_row[19] = post_total / ants;
+#endif
+#endif
     }
     __syncthreads();
 
@@ -1391,14 +1500,36 @@ extern "C" __global__ void v2_update(
         __syncthreads();
     }
 
-    const int source_count = RMTGP_VARIANT == 0 ? ants : 1;
+    const int source_count =
+#if RMTGP_MECH_CONTROL
+        actual_source_count;
+#else
+        RMTGP_VARIANT == 0 ? ants : 1;
+#endif
     if (tid < source_count) {
         const uint16_t* source_tour;
         float source_length;
         float source_ls_gain;
         const float* source_edge_gain;
         const int8_t* source_origin;
-#if RMTGP_VARIANT == 0
+#if RMTGP_MECH_CONTROL && RMTGP_MECH_SOURCE != 0
+        if (mmas_source_kind == 0) {
+            const int a = source_ants[tid];
+            source_tour = tours + static_cast<size_t>(a) * (n + 1);
+            source_length = colony_lengths[a];
+            source_ls_gain = ls_gain_workspace[static_cast<size_t>(task) * ants + a];
+            source_edge_gain = edge_gains + static_cast<size_t>(a) * n;
+            source_origin = origins + static_cast<size_t>(a) * n;
+        } else if (mmas_source_kind == 1) {
+            source_tour = restart_tour; source_length = restart_best_lengths[task];
+            source_ls_gain = restart_best_ls_gain[task]; source_edge_gain = restart_best_edge_gain;
+            source_origin = restart_best_origin;
+        } else {
+            source_tour = global_best_tour; source_length = global_best_lengths[task];
+            source_ls_gain = global_best_ls_gain[task]; source_edge_gain = global_best_edge_gain;
+            source_origin = global_best_origin;
+        }
+#elif RMTGP_VARIANT == 0
         source_tour = tours + static_cast<size_t>(tid) * (n + 1);
         source_length = colony_lengths[tid];
         source_ls_gain = ls_gain_workspace[
@@ -1472,6 +1603,11 @@ extern "C" __global__ void v2_update(
             rho,
             deposits
         );
+#if RMTGP_MECH_CONTROL && RMTGP_MECH_SOURCE != 0 && RMTGP_MECH_SHADOW_BUDGET
+        // 只调整干预分支的总量；source_length 保持实际来源语义。
+        const float factor = shadow_budget / (static_cast<float>(n) * inverse_length_sum);
+        for (int e = 0; e < n; ++e) deposits[tid * n + e] *= factor;
+#endif
     }
     __syncthreads();
 
@@ -1500,7 +1636,12 @@ extern "C" __global__ void v2_update(
             const int edge = u * n + v;
             const float raw = (1.0f - rho) * pheromone[edge];
 #if RMTGP_VARIANT == 2
-            const float bounded = fmaxf(task_tau_min[task], raw);
+            const float bounded =
+#if RMTGP_MECH_CONTROL
+                RMTGP_MECH_FLOOR_SCALE == 0.0f ? raw : fmaxf(task_tau_min[task] * RMTGP_MECH_FLOOR_SCALE, raw);
+#else
+                fmaxf(task_tau_min[task], raw);
+#endif
             pheromone[edge] = bounded;
             if (bounded != raw) {
                 atomicAdd(
@@ -1528,7 +1669,11 @@ extern "C" __global__ void v2_update(
     if (tid == 0) {
         for (int source = 0; source < source_count; ++source) {
             const uint16_t* source_tour;
-#if RMTGP_VARIANT == 0
+#if RMTGP_MECH_CONTROL && RMTGP_MECH_SOURCE != 0
+            source_tour = mmas_source_kind == 0
+                ? tours + static_cast<size_t>(source_ants[source]) * (n + 1)
+                : mmas_source_kind == 1 ? restart_tour : global_best_tour;
+#elif RMTGP_VARIANT == 0
             source_tour = tours + static_cast<size_t>(source) * (n + 1);
 #else
             source_tour = mmas_source_kind == 0
@@ -1614,22 +1759,89 @@ extern "C" __global__ void v2_update(
         const float branching_factor = branch_sum
             / (2.0f * static_cast<float>(n));
         if (branching_factor < mmas_branch_threshold) {
+#if RMTGP_MECH_CONTROL
+            restart_would_trigger = 1;
+#endif
+#if !RMTGP_MECH_CONTROL || RMTGP_MECH_RESTART == 1
             restart_now = 1;
             restart_best_lengths[task] = CUDART_INF_F;
             restart_found_best[task] = iteration;
             restart_iteration[task] = iteration;
             restart_best_ls_gain[task] = -1.0f;
             ++diagnostics[static_cast<size_t>(task) * 8 + 3];
+#endif
         }
+#if RMTGP_MECH_CONTROL
+        measured_branch_factor = branching_factor;
+#endif
     }
+#if RMTGP_MECH_CONTROL && RMTGP_MECH_RESTART == 2
+    if (tid == 0 && replay_events[static_cast<size_t>(task) * total_iterations + iteration - 1]) {
+        restart_now = RMTGP_MECH_RESET_PHEROMONE;
+        if (RMTGP_MECH_RESET_EPOCH) {
+            restart_best_lengths[task] = CUDART_INF_F;
+            restart_found_best[task] = iteration;
+            restart_iteration[task] = iteration;
+            restart_best_ls_gain[task] = -1.0f;
+        }
+        if (RMTGP_MECH_RESET_PHEROMONE || RMTGP_MECH_RESET_EPOCH)
+            ++diagnostics[static_cast<size_t>(task) * 8 + 3];
+    }
+#endif
     __syncthreads();
     if (restart_now) {
         for (int edge = tid; edge < n * n; edge += blockDim.x) {
             pheromone[edge] = edge / n == edge % n
                 ? 0.0f
-                : task_tau_max[task];
+                : task_tau_max[task]
+#if RMTGP_MECH_CONTROL
+                  * RMTGP_MECH_RESTART_SCALE
+#endif
+                ;
         }
     }
+#endif
+#if RMTGP_MECH_CONTROL
+    __syncthreads();
+    if (tid == 0) {
+#if RMTGP_MECH_RECORD
+        trace_row[6] = static_cast<float>(diagnostics[static_cast<size_t>(task) * 8 + 2] - floor_before);
+        trace_row[8] = RMTGP_MECH_RESTART == 2
+            ? (replay_events[static_cast<size_t>(task) * total_iterations + iteration - 1] && (RMTGP_MECH_RESET_PHEROMONE || RMTGP_MECH_RESET_EPOCH))
+            : restart_now;
+        trace_row[9] = restart_would_trigger; trace_row[10] = measured_branch_factor;
+        trace_row[11] = task_tau_min[task]; trace_row[12] = task_tau_max[task];
+        double total = 0.0, squares = 0.0;
+        for (int e = 0; e < source_count * n; ++e) { total += deposits[e]; squares += static_cast<double>(deposits[e]) * deposits[e]; }
+        trace_row[5] = static_cast<float>(total);
+        trace_row[20] = static_cast<float>(fabs(total / fmax(trace_row[4], 1e-30f) - 1.0));
+        trace_row[23] = total > 0 ? static_cast<float>(sqrt(fmax(0.0, source_count*n*squares/(total*total)-1.0))) : 0;
+        // 按无向边集比较实际路径，消除起点与反向等价。
+        const uint16_t* actual = mmas_source_kind == 1 ? restart_tour : mmas_source_kind == 2 ? global_best_tour
+            : tours + static_cast<size_t>(RMTGP_MECH_SOURCE == 0 && RMTGP_VARIANT == 2 ? iteration_best_index : source_ants[0]) * (n+1);
+        if (source_count == 1) {
+            // 每轮计算 O(n) 无向边哈希；窗口聚合由实验记录层处理。
+            uint64_t ah=0, ih=0, gh=0;
+            for (int e=0; e<n; ++e) {
+                ah ^= mix64(static_cast<uint64_t>(min(actual[e],actual[e+1]))*n+max(actual[e],actual[e+1]));
+                ih ^= mix64(static_cast<uint64_t>(min(iteration_best_tour[e],iteration_best_tour[e+1]))*n+max(iteration_best_tour[e],iteration_best_tour[e+1]));
+                gh ^= mix64(static_cast<uint64_t>(min(global_best_tour[e],global_best_tour[e+1]))*n+max(global_best_tour[e],global_best_tour[e+1]));
+            }
+            trace_row[21] = ah == ih; trace_row[22] = ah == gh;
+        }
+#endif
+    }
+#if RMTGP_MECH_UPPER
+    __syncthreads();
+    for (int e=tid; e<n*n; e+=blockDim.x) {
+        if (pheromone[e] > task_tau_max[task]) {
+            pheromone[e] = task_tau_max[task];
+#if RMTGP_MECH_RECORD
+            atomicAdd(trace_row+7, 1.0f);
+#endif
+        }
+    }
+#endif
 #endif
     if (tid == 0) {
         // 训练只需要 best-so-far 曲线的均值。直接在设备端累加一个标量，
