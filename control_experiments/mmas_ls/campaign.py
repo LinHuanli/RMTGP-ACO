@@ -246,7 +246,8 @@ def main():
             task=read_json(a.task)["task"]
             if task.get("kind")=="diagnostic_pilot":
                 from .diagnostic_validation import pilot
-                pilot(a.output/"jobs"/task["id"],task.get("instances",2),task.get("steps",100))
+                pilot(a.output/"jobs"/task["id"],task.get("instances",2),task.get("steps",100),
+                      task.get("variants",("mmas","as")),task.get("check_reorder",True))
                 result=read_json(a.output/"jobs"/task["id"]/"status.json")
                 result["validation_status"]=result["status"]
                 result["status"]="completed" if result["validation_status"]=="passed" else "failed"

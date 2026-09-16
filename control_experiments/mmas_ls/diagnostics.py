@@ -8,10 +8,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import threading
 import time
+import zipfile
 import numpy as np
 
 from .common import atomic_json, atomic_npz, digest, file_hash, now, read_json
@@ -77,6 +79,21 @@ def array_digest(arrays):
     return h.hexdigest()
 
 
+def atomic_diagnostic_npz(path,arrays):
+    """低压缩级别的无损 NPZ；减少 CPU 压缩停顿，不改 dtype 或任何数值。"""
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    temporary=path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp.npz")
+    try:
+        with zipfile.ZipFile(temporary,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=1,allowZip64=True) as archive:
+            for key,value in arrays.items():
+                with archive.open(key+".npy","w",force_zip64=True) as member:
+                    np.lib.format.write_array(member,np.ascontiguousarray(value),allow_pickle=False)
+        temporary.replace(path)
+    finally:
+        # 仅删除本次写入失败产生的临时文件，不删除已提交数据。
+        temporary.unlink(missing_ok=True)
+
+
 class Journal:
     """先落数据再提交索引。崩溃留下的未索引文件不会被当成完成结果。"""
     def __init__(self, directory, specification, min_free_bytes=2*1024**3):
@@ -113,7 +130,7 @@ class Journal:
                 raise ValueError(f"恢复重放与已提交块不一致: {name}")
             return
         began=time.perf_counter()
-        atomic_npz(self.directory/name,**arrays)
+        atomic_diagnostic_npz(self.directory/name,arrays)
         self.index["files"][name]={"sha256":file_hash(self.directory/name),"content_hash":content,
             "arrays":{k:{"shape":list(v.shape),"dtype":v.dtype.str} for k,v in arrays.items()},
             "uncompressed_bytes":size,"compressed_bytes":(self.directory/name).stat().st_size,
@@ -181,6 +198,7 @@ class DiagnosticRecorder:
         self.pending=[]; self.shards=[]; self.last_commit={}; self.timings=[]
         self.restart_candidates={}
         self.transfer_seconds=0.
+        self.geometry_submitted=False
 
     def _submit(self,name,arrays,metadata,restart_only=False):
         import cupy as cp
@@ -221,10 +239,13 @@ class DiagnosticRecorder:
             state["audit_diagnostics_ring"]=cp.zeros((count,100,8),dtype=cp.uint64)
             state["audit_restart_after_ring"]=cp.zeros((count,100,6),dtype=cp.float64)
             geometry=state["audit_geometry"]
-            self._submit(f"{shard}/inputs.npz",{**geometry,"task_instance":state["task_instance"],
+            if not self.geometry_submitted:
+                self._submit("geometry.npz",geometry,{"kind":"geometry","instance_ids":list(state["instance_ids"])})
+                self.geometry_submitted=True
+            self._submit(f"{shard}/inputs.npz",{"task_instance":state["task_instance"],
                 "task_program":state["task_program"]},
                 {"kind":"inputs","shard":shard,"flat_indices":state["flat_indices"].tolist(),
-                 "hardware":state["audit_hardware"]})
+                 "hardware":state["audit_hardware"],"geometry_file":"geometry.npz"})
             return
         if phase=="resumed":
             self.last_commit[shard]=iteration

@@ -12,7 +12,7 @@ from rmtgp_aco.mechanisms import InstrumentationConfig,factorial_conditions
 V3=ROOT/"control_experiments/mmas_ls/artifacts/v3-r2"
 
 
-def prepare(out=V3):
+def prepare(out=V3,io_only=False):
     out=Path(out)
     if (out/"queue").exists() and any((out/"queue").iterdir()):
         raise ValueError("已有 v3 队列不能覆盖；修改后请创建新的验收 cohort")
@@ -53,14 +53,19 @@ def prepare(out=V3):
                 "split":"diagnosis_dev","indices":list(range(8)),"replicate":rep,"condition":condition,
                 "variant":"mmas","mechanism":asdict(mechanism),"iterations":5000,"modes":["full"],
                 "instrumentation":heavy})
+    if io_only:
+        tasks=[{"id":"diagnostic-io-batch32-a5000","kind":"diagnostic_pilot","stage":"D0",
+            "split":"diagnosis_dev","instances":32,"steps":100,"variants":["mmas"],
+            "check_reorder":False,"required_gpu_model":ALLOWED_GPU_MODELS[0]}]
     for order,task in enumerate(tasks):
         atomic_json(out/"queue"/(task["id"]+".json"),{"task":task,"order":order,
             "snapshot":str(destination),"source_hash":source["source_hash"]})
     atomic_json(out/"protocol/queue_freeze.json",{"source":source,"snapshot":str(destination),
-        "task_count":len(tasks),"heavy_logical_solves":8*3*8*4,"created_at":now(),
-        "stages":["D0","P1","P3-heavy"],"confirmation_frozen":False})
+        "task_count":len(tasks),"heavy_logical_solves":0 if io_only else 8*3*8*4,"created_at":now(),
+        "stages":["D0-io"] if io_only else ["D0","P1","P3-heavy"],"confirmation_frozen":False})
     return out
 
 
 if __name__=="__main__":
-    p=argparse.ArgumentParser();p.add_argument("--output",type=Path,default=V3);a=p.parse_args();print(prepare(a.output))
+    p=argparse.ArgumentParser();p.add_argument("--output",type=Path,default=V3);p.add_argument("--io-only",action="store_true")
+    a=p.parse_args();print(prepare(a.output,a.io_only))

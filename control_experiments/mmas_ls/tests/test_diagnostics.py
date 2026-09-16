@@ -56,3 +56,13 @@ def test_constant_field_oracle_reveals_cancellation():
     assert variance<0
     unstable=np.tanh(np.float32(value-mean)/np.float32(1e-8))
     assert unstable==1  # 与真实 GPU 日志一致；不是通过放宽 oracle 阈值解决的问题。
+
+
+def test_fast_archive_is_lossless(tmp_path):
+    from control_experiments.mmas_ls.diagnostics import atomic_diagnostic_npz
+    arrays={"float":np.array([1,np.nan,-np.inf],dtype=np.float32),
+        "counter":np.array([0,2**64-1],dtype=np.uint64),"view":np.arange(30).reshape(5,6)[:,::2]}
+    path=tmp_path/"fast.npz";atomic_diagnostic_npz(path,arrays)
+    with np.load(path,allow_pickle=False) as data:
+        for key,value in arrays.items():
+            np.testing.assert_array_equal(value,data[key]);assert value.dtype==data[key].dtype

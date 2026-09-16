@@ -13,16 +13,17 @@ from .diagnostics import DiagnosticRecorder
 from .diagnostic_analysis import summarize,check_program_outputs
 
 
-def pilot(directory,instances=2,steps=100):
+def pilot(directory,instances=2,steps=100,variants=("mmas","as"),check_reorder=True):
     from rmtgp_aco.aco_cuda import solve_population_cuda_anytime,_active_and_representative_programs
     from rmtgp_aco.mechanisms import SolverControl,InstrumentationConfig
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
     specification={"source":source_manifest(),"environment":environment(),"instances":instances,"steps":steps,
-        "aco_horizon":5000,"seed":57231,"purpose":"配对轨迹与记录验收；非科学效果比较"}
+        "aco_horizon":5000,"seed":57231,"variants":list(variants),"check_reorder":check_reorder,
+        "purpose":"配对轨迹与记录验收；非科学效果比较"}
     atomic_json(directory/"status.json",{"status":"running","started_at":now(),"specification":specification})
     rows=[]; problem=batch("diagnosis_dev",range(instances),OUT)
     try:
-        for variant in ("mmas","as"):
+        for variant in variants:
             aco,runtime=experiment(variant)
             entries=program_entries(variant);programs=[e["program"] for e in entries]
             # 少量热身避免把第一次 resident/编译全部误计为诊断开销。
@@ -55,7 +56,7 @@ def pilot(directory,instances=2,steps=100):
             assert torch.equal(results["off"].best_tour,results["mechanism_v3"].best_tour), "审计改变 tour"
             assert torch.equal(results["off"].anytime_best[:,:,:steps],results["mechanism_v3"].anytime_best[:,:,:steps]), "审计改变轨迹"
             chunk_reorder=None
-            if instances>=32:
+            if instances>=32 and check_reorder:
                 # 单独验收完整的 32-instance 形状；不将这些重复运行视为科学样本。
                 changed=solve_population_cuda_anytime(problem,aco,programs,seed=57231,
                     runtime=replace(runtime,gpu_task_chunk_size=7),
@@ -98,4 +99,6 @@ def pilot(directory,instances=2,steps=100):
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("directory",type=Path)
     p.add_argument("--instances",type=int,default=2);p.add_argument("--steps",type=int,default=100)
-    a=p.parse_args();print(pilot(a.directory,a.instances,a.steps))
+    p.add_argument("--variants",nargs="+",choices=("mmas","as"),default=["mmas","as"])
+    p.add_argument("--skip-reorder",action="store_true")
+    a=p.parse_args();print(pilot(a.directory,a.instances,a.steps,a.variants,not a.skip_reorder))

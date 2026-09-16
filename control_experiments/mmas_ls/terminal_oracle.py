@@ -107,7 +107,10 @@ def inspect(directory,atol=2e-5,rtol=2e-5):
     for name,record in index["files"].items():
         meta=record["metadata"]
         if meta["kind"]=="inputs":
-            with np.load(directory/name) as f:geometry[meta["shard"]]=dict(f)
+            shared={}
+            if meta.get("geometry_file"):
+                with np.load(directory/meta["geometry_file"]) as f:shared=dict(f)
+            with np.load(directory/name) as f:geometry[meta["shard"]]={**shared,**dict(f)}
         elif meta["kind"]=="iterations":
             with np.load(directory/name) as f:
                 for j in range(meta["end"]-meta["start"]+1):
