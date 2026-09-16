@@ -5,13 +5,14 @@
 
 自动汇总完成且未检测到同卡外部进程干扰的任务。
 
-当前有效测量行：13；功能检查结果：3。
+当前有效测量行：66；功能检查结果：3。
 
 ## Matched trace results
 
 | Backend | Repeats | Median evaluation (s) | Speedup vs CPU-8 |
 |---|---:|---:|---:|
-| GPU-v2 generated / 8 lanes | 1 | 101.6567 | pending matched reference |
+| GPU-v1 (FP32) | 3 | 133.8885 | pending matched reference |
+| GPU-v2 generated / 8 lanes | 3 | 101.2323 | pending matched reference |
 
 速度比仅使用同主机、同输入哈希、同实际 tasks/tours 的完整回放。
 CPU 为 FP64；GPU 搜索为普通 FP32，返回 tour 后 CPU FP64 计分。
@@ -21,24 +22,30 @@ CPU 为 FP64；GPU 搜索为普通 FP32，返回 tour 后 CPU FP64 计分。
 
 | Backend | Repeats | Median startup (s) | Median 5-generation wall (s) |
 |---|---:|---:|---:|
+| GPU-v2 generated / 8 lanes | 3 | 8.418 | 100.350 |
 
 不足 3 次重复时只是初步数据；不据此宣称稳定加速倍率。
 
 ## Queue status
 
-更新时间（UTC）：2026-09-15T11:27:20.378135+00:00
+更新时间（UTC）：2026-09-15T12:14:20.572811+00:00
 
 | Group | Status | Host | Current task |
 |---|---|---|---|
-| gpu-main | running | cuda12 | E2-v1-r0 |
-| gpu-scaling | running | cuda12 | E4-p32-n100-v2-r1 |
-| gpu-profile | pending | — | — |
+| gpu-main | completed | cuda12 | — |
+| gpu-scaling | completed | cuda12 | — |
+| gpu-profile | completed | cuda12 | — |
 
 ## Available figures
 
+- [C1_stage_time_v2](figures/C1_stage_time_v2.svg)
 - [C3_matched_backends](figures/C3_matched_backends.svg)
+- [C4_generation_stages_v2](figures/C4_generation_stages_v2.svg)
 - [C5_matched_generations](figures/C5_matched_generations.svg)
 - [C6_population](figures/C6_population.svg)
+- [C7_cities](figures/C7_cities.svg)
+- [C9_timeline_v1](figures/C9_timeline_v1.svg)
+- [C9_timeline_v2](figures/C9_timeline_v2.svg)
 - [D1_compute_hierarchy](figures/D1_compute_hierarchy.svg)
 - [D2_deap_numba](figures/D2_deap_numba.svg)
 - [D3_a5000_hardware](figures/D3_a5000_hardware.svg)

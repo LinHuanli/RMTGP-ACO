@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-15T10:08:52.319721+00:00",
+  "updated_at": "2026-09-16T07:35:10.307233+00:00",
   "groups": {
     "main": {
       "group": "main",
@@ -7,11 +7,12 @@
       "gpu": 0,
       "gpu_uuid": "GPU-34b223c6-7502-b097-19e0-a411b1708f06",
       "pid": 4021822,
-      "status": "running",
+      "status": "completed",
       "started_at": "2026-09-15T10:06:21.373645+00:00",
       "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
-      "heartbeat_at": "2026-09-15T10:08:51.790223+00:00",
-      "current_task": "E1-cpu8-r0"
+      "heartbeat_at": "2026-09-16T07:29:05.346303+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-16T07:29:05.346274+00:00"
     },
     "gpu-setup": {
       "group": "gpu-setup",
@@ -27,34 +28,102 @@
       "completed_at": "2026-09-15T09:54:52.568830+00:00"
     },
     "scans-prepare": {
-      "status": "pending"
+      "group": "scans-prepare",
+      "host": "cuda08",
+      "gpu": 2,
+      "gpu_uuid": "GPU-9e271973-f616-3c82-922d-792bb30eefc0",
+      "pid": 2579395,
+      "status": "completed",
+      "started_at": "2026-09-15T10:10:36.381549+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-15T10:10:44.447312+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-15T10:10:44.447283+00:00"
     },
     "jit": {
-      "status": "pending"
+      "group": "jit",
+      "host": "cuda08",
+      "gpu": 2,
+      "gpu_uuid": "GPU-9e271973-f616-3c82-922d-792bb30eefc0",
+      "pid": 2580203,
+      "status": "completed",
+      "started_at": "2026-09-15T10:11:12.665764+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-15T10:15:19.420620+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-15T10:15:19.420587+00:00"
     },
     "scaling": {
-      "status": "pending"
+      "group": "scaling",
+      "host": "cuda02",
+      "gpu": 1,
+      "gpu_uuid": "GPU-b78cc880-5f61-6e66-d09c-e91cbe6e94a0",
+      "pid": 450257,
+      "status": "failed",
+      "started_at": "2026-09-15T10:12:26.013597+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-16T07:35:06.397503+00:00",
+      "current_task": null,
+      "error": "Traceback (most recent call last):\n  File \"/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/slides/presentation_benchmarks/snapshots/3e36d7276307c1fc/scripts/run_presentation_benchmarks.py\", line 493, in worker\n    runner.execute()\n  File \"/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/slides/presentation_benchmarks/snapshots/3e36d7276307c1fc/scripts/run_presentation_benchmarks.py\", line 403, in execute\n    self.repeats(\n  File \"/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/slides/presentation_benchmarks/snapshots/3e36d7276307c1fc/scripts/run_presentation_benchmarks.py\", line 360, in repeats\n    result = self.run(f\"{prefix}-{label}-r{repeat}\", action, label, extra=extra)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/slides/presentation_benchmarks/snapshots/3e36d7276307c1fc/scripts/run_presentation_benchmarks.py\", line 346, in run\n    raise RuntimeError(f\"{task}: GPU 持续受到外部任务干扰\")\nRuntimeError: E4-p100-n500-v2-r2: GPU 持续受到外部任务干扰\n",
+      "completed_at": "2026-09-16T07:35:06.397475+00:00"
     },
     "ablation-g3": {
-      "status": "pending"
+      "group": "ablation-g3",
+      "host": "cuda01",
+      "gpu": 1,
+      "gpu_uuid": "GPU-6a8d4409-1aff-259d-9729-2d12a7e5ef97",
+      "pid": 337848,
+      "status": "completed",
+      "started_at": "2026-09-15T10:12:26.114224+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-15T10:20:23.954745+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-15T10:20:23.954718+00:00"
     },
     "ablation-g5": {
-      "status": "pending"
+      "group": "ablation-g5",
+      "host": "cuda08",
+      "gpu": 2,
+      "gpu_uuid": "GPU-9e271973-f616-3c82-922d-792bb30eefc0",
+      "pid": 2582440,
+      "status": "completed",
+      "started_at": "2026-09-15T10:15:36.190903+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-15T10:21:16.302350+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-15T10:21:16.302325+00:00"
     },
     "profile-v1": {
-      "status": "pending"
+      "group": "profile-v1",
+      "host": "cuda01",
+      "gpu": 1,
+      "gpu_uuid": "GPU-6a8d4409-1aff-259d-9729-2d12a7e5ef97",
+      "pid": 340941,
+      "status": "completed",
+      "started_at": "2026-09-15T10:20:36.337270+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-15T10:27:14.181044+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-15T10:27:14.181013+00:00"
     },
     "profile-v2": {
-      "status": "pending"
+      "group": "profile-v2",
+      "host": "cuda08",
+      "gpu": 2,
+      "gpu_uuid": "GPU-9e271973-f616-3c82-922d-792bb30eefc0",
+      "pid": 2596134,
+      "status": "completed",
+      "started_at": "2026-09-15T10:21:20.266212+00:00",
+      "source_hash": "3e36d7276307c1fca8852ebc053d202c1e1c68713cc11aed1adcdc07745b41aa",
+      "heartbeat_at": "2026-09-15T10:23:00.984396+00:00",
+      "current_task": null,
+      "completed_at": "2026-09-15T10:23:00.984355+00:00"
     }
   },
   "counts": {
-    "running": 1,
-    "completed": 1,
-    "pending": 7
+    "completed": 8,
+    "failed": 1
   },
-  "completed_tasks": 13,
-  "running_tasks": [
-    "E1-cpu8-r0"
-  ]
+  "completed_tasks": 105,
+  "running_tasks": []
 }
