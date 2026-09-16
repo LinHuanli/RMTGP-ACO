@@ -81,9 +81,19 @@ Uniform 优先从已有 64k training pool 留出未用实例。先排除历史 t
 
 ## 5. 调度、复现与缓存
 
-`campaign.py` 使用 `gpu-free` 当前空闲的 **RTX A5000**。每卡一个 worker，CUDA 只看到
+根据用户后续授权，`campaign.py` 使用 `gpu-free` 当前空闲的 **RTX A5000、RTX 4000 Ada、RTX A4000**。每卡一个 worker，CUDA 只看到
 这一张卡的 UUID。远程启动前重新检查进程、显存和型号；运行中检查后来进入的其他进程。
 如果发生资源冲突，只停止本 worker 的子进程，不操作其他用户进程。
+
+`watch.py` 是 nohup 后台资源监控，每 60 秒扫描一次，自动为已放行、未领取的任务增加
+worker。SSH 或发现失败后继续重试；同一设备启动尝试冷却 300 秒。没有可运行任务时
+仍监控，但不占用 GPU，也不跳过验收门禁。停止监控可创建 `artifacts/v2/WATCH_STOP`，
+该标记不停止已有 worker；`STOP` 会同时停止监控和本 cohort 的 GPU worker。
+通过原子目录锁保证仅一个监控进程；遗留锁需核查进程后处理，不自动抢占。
+
+扩充硬件不改变冻结的模型、随机流或迭代预算。资源授权单独记录于
+`protocol/resource_amendment.json`。保留每个任务的型号、UUID、驱动和 kernel 哈希；
+不同型号的耗时不直接混合解释为算法加速，数值一致性也不能仅凭相同精度名称假定。
 
 每个任务包含同条件 baseline 和全部固定冠军。GP individual × instance 维度使用原 GPU
 task matrix。蚂蚁及 2-opt 使用现有 CUDA 并行。不同任务分配到不同 GPU。
@@ -125,8 +135,15 @@ P2 启动前仍须完成：历史现象审阅、FP64 组件效应审阅、强制
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m control_experiments.mmas_ls.campaign status
+PYTHONPATH=src .venv/bin/python -m control_experiments.mmas_ls.watch status
 PYTHONPATH=src .venv/bin/python -m control_experiments.mmas_ls.review
 PYTHONPATH=src .venv/bin/python -m control_experiments.mmas_ls.statistics --split diagnosis_dev
+```
+
+启动持续资源监控：
+
+```bash
+PYTHONPATH=src .venv/bin/python -m control_experiments.mmas_ls.watch start --interval 60
 ```
 
 创建新 cohort 时先 prepare、数据审计、原生验收，再 freeze/launch。已有 cohort 的

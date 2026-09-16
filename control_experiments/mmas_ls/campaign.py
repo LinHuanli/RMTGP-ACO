@@ -14,6 +14,8 @@ import time
 import traceback
 from .common import ROOT,CODE_ROOT,OUT,atomic_json,digest,file_hash,now,read_json,source_manifest
 
+ALLOWED_GPU_MODELS=("NVIDIA RTX A5000","NVIDIA RTX 4000 Ada Generation","NVIDIA RTX A4000")
+
 
 @contextmanager
 def lock(path,blocking=False):
@@ -77,14 +79,21 @@ def freeze(stages,out=OUT):
     print(f"frozen {len(tasks)} tasks; {destination}",flush=True)
 
 
-def devices():
-    """只采纳 gpu-free 当时标为 IDLE 的 A5000；启动前在远端再核验。"""
-    output=subprocess.check_output(["/home/linbocheng/bin/gpu-free"],text=True,timeout=90)
+def parse_devices(output):
+    """只解析用户允许的完整型号，不把 A40/PRO 4000 等型号误配进去。"""
     result=[]
     for line in output.splitlines():
         fields=line.split()
-        if fields and fields[0]=="IDLE" and "NVIDIA RTX A5000" in line:
-            result.append((fields[1],int(fields[2])))
+        if len(fields)>3 and fields[0]=="IDLE" and any(line.strip().endswith(m) for m in ALLOWED_GPU_MODELS):
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*",fields[1]) and fields[2].isdigit():
+                result.append((fields[1],int(fields[2])))
+    return list(dict.fromkeys(result))
+
+
+def devices():
+    """gpu-free 只报告瞬时空闲；启动前必须在远端再核验。"""
+    output=subprocess.check_output(["/home/linbocheng/bin/gpu-free"],text=True,timeout=90)
+    result=parse_devices(output)
     return result,output
 
 
@@ -111,8 +120,8 @@ def eligible(task,out):
 def worker(device,out=OUT):
     """遇到外部占用让出 GPU；只终止自己启动的子进程，不操作其他用户。"""
     out=Path(out); initial=gpu_info(device)
-    if initial["name"]!="NVIDIA RTX A5000" or initial["pids"] or initial["memory_mib"]>1024 or initial["utilization"]>5:
-        raise RuntimeError(f"设备不是空闲 A5000: {initial}")
+    if initial["name"] not in ALLOWED_GPU_MODELS or initial["pids"] or initial["memory_mib"]>1024 or initial["utilization"]>5:
+        raise RuntimeError(f"设备不是允许型号的空闲卡: {initial}")
     label=f"{socket.gethostname()}-{initial['uuid']}"
     with lock(out/"locks"/(label+".lock")) as acquired:
         if not acquired: raise RuntimeError("本实验已占用此 GPU")
@@ -146,8 +155,13 @@ def worker(device,out=OUT):
                         conflict=False
                         while child.poll() is None:
                             time.sleep(10)
-                            active=gpu_info(device)
-                            if any(pid!=child.pid for pid in active["pids"]) or (out/"STOP").exists():
+                            try:
+                                active=gpu_info(device)
+                                unavailable=any(pid!=child.pid for pid in active["pids"])
+                            except (OSError,ValueError,subprocess.SubprocessError):
+                                # 监控失效时保守退出，不能留下无人监管的 GPU 子进程。
+                                unavailable=True
+                            if unavailable or (out/"STOP").exists():
                                 conflict=True;child.terminate()
                                 try:child.wait(timeout=20)
                                 except subprocess.TimeoutExpired:child.kill();child.wait()
@@ -165,14 +179,24 @@ def worker(device,out=OUT):
                 return
 
 
+def launch_device(host,gpu,out=OUT):
+    """远程 nohup worker，返回启动 PID；真正领取仍受跨主机目录锁保护。"""
+    out=Path(out).resolve()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*",host) or gpu<0:raise ValueError("无效设备地址")
+    log=out/"logs"/f"{host}-gpu{gpu}-{time.time_ns()}.log";log.parent.mkdir(parents=True,exist_ok=True)
+    command=f"cd {shlex.quote(str(ROOT))} && (nohup env PYTHONPATH=src:. OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 {shlex.quote(str(ROOT/'.venv/bin/python'))} -m control_experiments.mmas_ls.campaign worker --device {gpu} --output {shlex.quote(str(out))} > {shlex.quote(str(log))} 2>&1 < /dev/null & echo $!)"
+    result=subprocess.check_output(["ssh","-o","BatchMode=yes","-o","ConnectTimeout=10",host,command],text=True,timeout=30)
+    pid=int(result.strip().splitlines()[-1])
+    record={"host":host,"gpu":gpu,"pid":pid,"log":str(log),"time":now()}
+    print(f"launched {host} GPU{gpu} pid={pid}: {log}",flush=True)
+    return record
+
+
 def launch(out=OUT):
     available,listing=devices(); out=Path(out)
     atomic_json(out/"protocol/gpu_discovery.json",{"time":now(),"output":listing,"selected":available})
     for host,gpu in available:
-        log=out/"logs"/f"{host}-gpu{gpu}-{int(time.time())}.log";log.parent.mkdir(parents=True,exist_ok=True)
-        command=f"cd {shlex.quote(str(ROOT))} && nohup env PYTHONPATH=src:. OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 {shlex.quote(str(ROOT/'.venv/bin/python'))} -m control_experiments.mmas_ls.campaign worker --device {gpu} --output {shlex.quote(str(out))} > {shlex.quote(str(log))} 2>&1 < /dev/null &"
-        subprocess.run(["ssh","-o","BatchMode=yes",host,command],check=True,timeout=30)
-        print(f"launched {host} GPU{gpu}: {log}",flush=True)
+        launch_device(host,gpu,out)
 
 
 def status(out=OUT):
