@@ -10,6 +10,30 @@ from .prepare import batch
 from .evaluate import program_entries
 
 
+def resume_probe(mode,variant,problem,aco,runtime,programs):
+    """从同一运行的 post-LS 与轮末状态续跑；保留原 horizon 和计数随机流。"""
+    import cupy as cp
+    from rmtgp_aco.aco_cuda import solve_population_cuda_anytime
+    from rmtgp_aco.mechanisms import SolverControl,InstrumentationConfig,MechanismConfig
+    mechanism=MechanismConfig(terminal_statistics=mode)
+    inst=InstrumentationConfig(profile="mechanism_v3",schema_version=3);saved={}
+    def observe(phase,iteration,state):
+        if iteration==25 and phase in ("post_ls","iteration_end"):
+            saved.setdefault(phase,{})[tuple(state["flat_indices"]) ]={
+                "phase":phase,"iteration":iteration,"flat_indices":state["flat_indices"].copy(),
+                "arrays":{k:cp.asnumpy(v) for k,v in state.items() if isinstance(v,cp.ndarray)}}
+    result=solve_population_cuda_anytime(problem,aco,programs,seed=57231,runtime=runtime,
+        control=SolverControl(mechanism,inst,observer=observe,stop_iteration=30))
+    for phase,states in saved.items():
+        resumed=solve_population_cuda_anytime(problem,aco,programs,seed=57231,runtime=runtime,
+            control=SolverControl(mechanism,inst,resume=lambda selected:states[tuple(selected)],stop_iteration=30))
+        assert torch.equal(result.best_tour,resumed.best_tour),phase
+        assert torch.equal(result.anytime_best[...,:30],resumed.anytime_best[...,:30]),phase
+    if set(saved)!={"post_ls","iteration_end"}:raise AssertionError("缺少两个恢复阶段")
+    return {"status":"passed","phases":list(saved),"snapshot_iteration":25,"end_iteration":30,
+            "instances":problem.batch_size,"mode":mode,"variant":variant}
+
+
 def operator_probe(mode,directory):
     """直接调用生产 CUDA 的稳定统计 helper，覆盖常量、近常量和大动态范围。"""
     import cupy as cp
@@ -66,6 +90,9 @@ def validate(task,out):
     problem=batch("diagnosis_dev",range(task["instances"]),out)
     aco,runtime=experiment(variant)
     programs=[e["program"] for e in program_entries(variant)]
+    if task["instances"]>=32:
+        recovery=resume_probe(mode,variant,problem.take([0,1]),aco,runtime,programs)
+        atomic_json(target/"resume_validation.json",recovery)
     with np.load(target/f"{variant}-off.npz") as data:
         expected_tour=data["tour"].copy();expected_curve=data["anytime"].copy()
     if mode=="legacy":

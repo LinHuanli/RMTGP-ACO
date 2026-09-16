@@ -71,6 +71,10 @@ def run(out=OUT,interval=60,cooldown=300,once=False):
                 started=time.monotonic()
                 try:
                     cycle=scan(out,last_launch,cooldown)
+                    if (out/"protocol/numerical.json").exists():
+                        # 独立 CPU 汇总，按结果签名缓存；不改变科学门禁或 GPU 任务。
+                        from .numerical_report import summarize
+                        summarize(out)
                     atomic_json(out/"monitor/last_launch.json",last_launch)
                     payload={**base,"status":"watching","last_scan":cycle}
                 except Exception as error:
