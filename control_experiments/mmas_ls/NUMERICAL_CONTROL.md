@@ -80,3 +80,30 @@ AS 的平均收益现象复现，但少量个体轨迹分叉，不能声称逐�
 300 轮 GPU 与 Numba FP64 的组件效应差异最高约 `0.067` gap 百分点，
 超过预设 `0.01` 的实际意义阈值。该比较混合后端与 LS 约简差异，不是单一 terminal 干预。
 因此只批准原实现行为的开发集分析，不批准数值无关的机制结论，也不放行确认集。
+
+`numerical_context.py` 对已保存的原状态做独立 CPU FP64 PH 重算，不运行另一条轨迹。
+在小样本中，MMAS-81002 第 1 轮一个实例的 EdgeTau 为 1、参考值为 0；
+在相同来源和预算下，更正全部 PH 输入后，饱和边比例从 0.394 降到 0.112，
+归一化沉积分布的 L1 差除以预算约为 0.09958。
+这是单状态观测，说明错误可能传递到实际沉积，不是最终质量改善或主要机制的证明。
+CPU 按原输入重算的 deposit 与 GPU 实际 deposit 的相对 L1 差约 `3.1e-7`。
+
+## 7. 当前后台入口
+
+完整队列为 `artifacts/numerical-v1`，冻结求解源码提交 `f23033f`。
+队列共 98 个任务：18 个分型号验收、40 个三模式配对和 40 个历史机制开发集任务。
+旧 `v3-r2` 和小样本队列停止的只是资源扫描器，结果及旧门禁没有改写。
+
+```bash
+PYTHONPATH=src CUDA_VISIBLE_DEVICES='' .venv/bin/python \
+  -m control_experiments.mmas_ls.watch status \
+  --output control_experiments/mmas_ls/artifacts/numerical-v1
+
+PYTHONPATH=src CUDA_VISIBLE_DEVICES='' .venv/bin/python \
+  -m control_experiments.mmas_ls.numerical_report \
+  --output control_experiments/mmas_ls/artifacts/numerical-v1
+```
+
+后台扫描器持续更新 `reports/numerical_summary.json`。
+配对任务完成后更新 `numeric_quality.csv` 和 PNG/PDF 图。
+未配齐 32 实例 × 5 seeds 时只显示明确标注样本覆盖的描述统计，不生成完整样本 CI。
