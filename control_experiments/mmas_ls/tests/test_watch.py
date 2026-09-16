@@ -50,3 +50,12 @@ def test_launch_failure_does_not_stop_scan(tmp_path,monkeypatch):
     monkeypatch.setattr(watch,"launch_device",launch)
     result=watch.scan(tmp_path,{})
     assert len(result["errors"])==1 and len(result["launched"])==1
+
+
+def test_scan_does_not_launch_surplus_workers_for_another_model(tmp_path,monkeypatch):
+    listing="\n".join(f"IDLE cuda0{i} 0 0.0 / 24.0 0% 0 - NVIDIA RTX A5000" for i in range(3))
+    monkeypatch.setattr(watch,"devices",lambda:([(f"cuda0{i}",0) for i in range(3)],listing))
+    monkeypatch.setattr(watch,"runnable_tasks",lambda out,model=None:["one"] if model else ["one","waiting-a4000","waiting-ada"])
+    monkeypatch.setattr(watch,"launch_device",lambda host,gpu,out:{"host":host,"gpu":gpu})
+    result=watch.scan(tmp_path,{})
+    assert len(result["launched"])==1

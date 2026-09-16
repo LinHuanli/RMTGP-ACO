@@ -32,19 +32,24 @@ def scan(out,last_launch,cooldown=300):
     out=Path(out);available,listing=devices()
     atomic_json(out/"monitor/discovery.json",{"time":now(),"output":listing,"idle_allowed":available})
     count=len(runnable_tasks(out));launched=[];errors=[];remaining=count
+    model_slots={}
     for host,gpu in available:
         if remaining==0:break
         # 单型号验收不能被另一型号 worker 反复领取。
         model=next((m for line in listing.splitlines() for m in ALLOWED_GPU_MODELS
                     if len(line.split())>2 and line.split()[0]=="IDLE" and line.split()[1:3]==[host,str(gpu)]
                     and line.strip().endswith(m)),None)
-        if model is not None and not runnable_tasks(out,model): continue
+        if model is not None:
+            # 每型号独立计数，不能用等待 A4000 的任务给 A5000 启动空 worker。
+            if model not in model_slots:model_slots[model]=len(runnable_tasks(out,model))
+            if model_slots[model]<=0:continue
         key=f"{host}:{gpu}";stamp=time.time()
         if stamp-last_launch.get(key,0)<cooldown:continue
         # 即使 SSH 返回失败也冷却，避免环境故障时每分钟重复启动。
         last_launch[key]=stamp
         try:
             launched.append(launch_device(host,gpu,out));remaining-=1
+            if model is not None:model_slots[model]-=1
         except (OSError,ValueError,subprocess.SubprocessError) as error:
             errors.append({"host":host,"gpu":gpu,"error":repr(error)})
     return {"time":now(),"idle_allowed":available,"runnable_unclaimed_tasks":count,"launched":launched,"errors":errors}
