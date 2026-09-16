@@ -41,3 +41,18 @@ def test_json_profile_and_fingerprint():
     assert InstrumentationConfig(**json.loads(json.dumps(asdict(config))))==config
     np.testing.assert_array_equal(edge_fingerprint([0,1,2,3,0]),edge_fingerprint([2,1,0,3,2]))
     assert not np.array_equal(edge_fingerprint([0,1,2,3,0]),edge_fingerprint([0,2,1,3,0]))
+
+
+def test_constant_field_oracle_reveals_cancellation():
+    from control_experiments.mmas_ls.terminal_oracle import normalized
+    value=np.log(np.float32(0.2818513810634613))
+    np.testing.assert_allclose(normalized(np.full(500,value)),0.,atol=1e-6)
+    total=np.float32(0);squares=np.float32(0);inverse=np.float32(1)/np.float32(500)
+    for _ in range(500):
+        total=np.float32(total+value)
+        squares=np.float32(float(squares)+float(value)*float(value))
+    mean=np.float32(total*inverse)
+    variance=np.float32(float(np.float32(squares*inverse))-float(mean)*float(mean))
+    assert variance<0
+    unstable=np.tanh(np.float32(value-mean)/np.float32(1e-8))
+    assert unstable==1  # 与真实 GPU 日志一致；不是通过放宽 oracle 阈值解决的问题。
