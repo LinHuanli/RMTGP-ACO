@@ -8,14 +8,17 @@ import socket
 import subprocess
 import time
 from .common import ROOT,OUT,atomic_json,now,read_json
-from .campaign import ALLOWED_GPU_MODELS,devices,eligible,launch_device,lock
+from .campaign import ALLOWED_GPU_MODELS,devices,eligible,launch_device,lock,affinity_path
 
 
-def runnable_tasks(out):
+def runnable_tasks(out,gpu_model=None):
     """排除已完成、正在领取、达到失败上限和未过验收的任务。"""
     tasks=[];out=Path(out)
     for path in (out/"queue").glob("*.json"):
         task=read_json(path)["task"];folder=out/"jobs"/task["id"]
+        if gpu_model is not None and task.get("required_gpu_model",gpu_model)!=gpu_model:continue
+        affinity=affinity_path(task,out)
+        if gpu_model is not None and affinity and read_json(affinity,{}).get("gpu_model",gpu_model)!=gpu_model:continue
         if read_json(folder/"status.json",{}).get("status")=="completed":continue
         if (out/"locks/tasks"/(task["id"]+".lock.d")).exists():continue
         if read_json(folder/"attempts.json",{"count":0})["count"]>=3:continue
@@ -29,6 +32,11 @@ def scan(out,last_launch,cooldown=300):
     count=len(runnable_tasks(out));launched=[];errors=[];remaining=count
     for host,gpu in available:
         if remaining==0:break
+        # 单型号验收不能被另一型号 worker 反复领取。
+        model=next((m for line in listing.splitlines() for m in ALLOWED_GPU_MODELS
+                    if len(line.split())>2 and line.split()[0]=="IDLE" and line.split()[1:3]==[host,str(gpu)]
+                    and line.strip().endswith(m)),None)
+        if model is not None and not runnable_tasks(out,model): continue
         key=f"{host}:{gpu}";stamp=time.time()
         if stamp-last_launch.get(key,0)<cooldown:continue
         # 即使 SSH 返回失败也冷却，避免环境故障时每分钟重复启动。

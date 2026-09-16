@@ -30,7 +30,9 @@ def run_task(task,out=OUT):
     horizon=task.get("iterations",5000); variant=task.get("variant","mmas")
     entries=program_entries(variant,tuple(task.get("modes",["full"])))
     mechanism=MechanismConfig(**task["mechanism"])
-    instrumentation=InstrumentationConfig(task.get("instrumentation","light"))
+    audit_spec=task.get("instrumentation","light")
+    instrumentation=(InstrumentationConfig(**audit_spec) if isinstance(audit_spec,dict)
+                     else InstrumentationConfig(audit_spec))
     seed=task.get("seed",evaluation_seed(split,task["replicate"]))
     source=source_manifest()
     frozen=read_json(out/"manifests/checkpoints.json")
@@ -47,6 +49,9 @@ def run_task(task,out=OUT):
     if existing.get("status")=="completed" and existing.get("scientific_hash")==key:
         for name,expected in existing.get("files",{}).items():
             if file_hash(target/name)!=expected: raise RuntimeError(f"已完成结果损坏: {target/name}")
+        if instrumentation.detailed:
+            from .diagnostics import validate_completed
+            validate_completed(target/"diagnostics")
         return existing
     if existing.get("status")=="completed":
         raise RuntimeError(f"科学配置变化，必须新建 cohort，不能覆盖完成结果: {target}")
@@ -56,6 +61,12 @@ def run_task(task,out=OUT):
     runtime=replace(runtime,gpu_task_chunk_size=task.get("task_chunk_size",0))
     programs=[e["program"] for e in entries]
     control=SolverControl(mechanism,instrumentation,collected=[])
+    recorder=None
+    if instrumentation.detailed:
+        from .diagnostics import DiagnosticRecorder
+        recorder=DiagnosticRecorder(target/"diagnostics",scientific,instrumentation)
+        control.observer=recorder
+        control.resume=recorder.journal.latest
     if task.get("replay_from"):
         parent=out/"jobs"/task["replay_from"]
         prior=read_json(parent/"manifest.json")
@@ -65,7 +76,11 @@ def run_task(task,out=OUT):
             control.replay_restarts=data["trace"][0,:,:,8].astype(np.int8)
             control.source_slots=data["trace"][0,:,:,0].astype(np.int8)
     started=time.perf_counter()
-    result=solve_population_cuda_anytime(problem,aco,programs,seed=seed,runtime=runtime,control=control)
+    try:
+        result=solve_population_cuda_anytime(problem,aco,programs,seed=seed,runtime=runtime,control=control)
+        if recorder: recorder.finish(horizon)
+    finally:
+        if recorder: recorder.close()
     elapsed=time.perf_counter()-started
     validate_tours(result.best_tour.numpy(),problem.n)
     _,_,_,_,representatives,inverse=_active_and_representative_programs(programs,aco)
@@ -94,11 +109,17 @@ def run_task(task,out=OUT):
         "wall_seconds":elapsed,"backend_metrics":result.backend_metrics,"completed_at":now(),"environment":environment(),
         "trace_length_precision":"GPU FP32 search incumbent; final length CPU FP64",
         "logical_solves":len(entries)*b,"executed_solves":p*b}
+    if recorder:
+        manifest["diagnostic_index_sha256"]=file_hash(target/"diagnostics/index.json")
+        manifest["stage_timings"]=control.stage_timings
+        manifest["timing_scope"]="有审计批量运行；不得除以模型数作为单模型部署时间"
     # torch dtype 不可直接 JSON 化；配置哈希另存完整文本表达。
     manifest["aco"]={k:str(v) if k=="dtype" else v for k,v in manifest["aco"].items()}
     atomic_json(target/"manifest.json",manifest)
     status={"status":"completed","scientific_hash":key,"wall_seconds":elapsed,
         "completed_at":now(),"files":{"raw.npz":file_hash(target/"raw.npz"),"manifest.json":file_hash(target/"manifest.json")}}
+    if recorder:
+        status["files"]["diagnostics/index.json"]=file_hash(target/"diagnostics/index.json")
     atomic_json(target/"status.json",status)
     return status
 

@@ -270,6 +270,9 @@ extern "C" __global__ void v2_two_opt(
     int track_origin,
     int track_edge_gain,
     uint64_t* diagnostics
+#if RMTGP_DIAG_V3
+    , uint64_t* audit_ls_counts
+#endif
 ) {
     using namespace rmtgp_ls;
     const int lane = threadIdx.x & 31;
@@ -673,6 +676,11 @@ extern "C" __global__ void v2_two_opt(
             fmaxf(0.0f, (before - after) / fmaxf(before, 1.0e-20f))
         );
         ls_gain_workspace[flat_tour] = 2.0f * gain - 1.0f;
+#if RMTGP_DIAG_V3
+        uint64_t* audit=audit_ls_counts+((static_cast<size_t>(task)*RMTGP_DIAG_RING+(iteration-1)%RMTGP_DIAG_RING)*ants+ant)*4;
+        audit[0]=move_counts[warp_in_block];audit[1]=check_counts[warp_in_block];
+        audit[2]=final_stage!=0 && after<before-LS_TOLERANCE;audit[3]=pass_counts[warp_in_block];
+#endif
         atomicAdd(
             reinterpret_cast<unsigned long long*>(
                 diagnostics + static_cast<size_t>(task) * 8 + 4

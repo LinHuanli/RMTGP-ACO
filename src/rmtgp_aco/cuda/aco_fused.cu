@@ -827,9 +827,24 @@ __device__ void prepare_source_deposits(
     float tau_max,
     float rho,
     float* deposits
+#if RMTGP_DIAG_V3
+    , float* audit = nullptr, double* audit_moments = nullptr
+#endif
 ) {
     const float base_deposit = 1.0f / source_length;
-    if (!program_active) {
+#if RMTGP_DIAG_V3
+    if (audit_moments) {
+        for (int k=0;k<6;++k) audit_moments[k]=0;
+        audit_moments[0]=n;
+    }
+#endif
+    const bool observing =
+#if RMTGP_DIAG_V3
+        audit != nullptr;
+#else
+        false;
+#endif
+    if (!program_active && !observing) {
         for (int edge = 0; edge < n; ++edge) {
             deposits[source_index * n + edge] = base_deposit;
         }
@@ -840,10 +855,10 @@ __device__ void prepare_source_deposits(
     float edge_eta_sq = 0.0f;
     float edge_tau_sum = 0.0f;
     float edge_tau_sq = 0.0f;
-    const bool need_edge_eta = (
+    const bool need_edge_eta = observing || (
         required_mask & (UINT64_C(1) << 0)
     ) != 0;
-    const bool need_edge_tau = (
+    const bool need_edge_tau = observing || (
         required_mask & (UINT64_C(1) << 1)
     ) != 0;
     for (int edge = 0; edge < n; ++edge) {
@@ -885,7 +900,7 @@ __device__ void prepare_source_deposits(
         : 0.0f;
 
     float colony_mean = 0.0f;
-    const bool need_source_quality = (
+    const bool need_source_quality = observing || (
         required_mask & (UINT64_C(1) << 4)
     ) != 0;
     if (need_source_quality) {
@@ -917,7 +932,7 @@ __device__ void prepare_source_deposits(
         const int v = source_tour[edge + 1];
         float terminals[12];
         for (int terminal = 0; terminal < 12; ++terminal) {
-            if ((required_mask & (UINT64_C(1) << terminal)) != 0) {
+            if (observing || (required_mask & (UINT64_C(1) << terminal)) != 0) {
                 terminals[terminal] = pheromone_terminal(
                     terminal,
                     edge,
@@ -951,20 +966,30 @@ __device__ void prepare_source_deposits(
             }
         }
 #if RMTGP_GENERATED_GP
-        const float raw = evaluate_pheromone_generated(
+        const float raw = program_active ? evaluate_pheromone_generated(
             program_index,
             terminals
-        );
+        ) : 0.0f;
 #else
-        const float raw = evaluate_program(
+        const float raw = program_active ? evaluate_program(
             opcodes,
             float_arguments,
             integer_arguments,
             program_length,
             terminals
-        );
+        ) : 0.0f;
 #endif
-        if (pheromone_mode == 3) {
+#if RMTGP_DIAG_V3
+        if (audit_moments) {
+            const double activated=tanhf(raw);
+            audit_moments[1]+=fabs(activated)>=0.99;
+            audit_moments[2]+=raw; audit_moments[3]+=static_cast<double>(raw)*raw;
+            audit_moments[4]+=activated; audit_moments[5]+=activated*activated;
+        }
+#endif
+        if (!program_active) {
+            deposit = base_deposit;
+        } else if (pheromone_mode == 3) {
             deposit = base_deposit * (
                 softplus_clipped(raw) + epsilon_numeric
             );
@@ -980,12 +1005,24 @@ __device__ void prepare_source_deposits(
             );
         }
         deposits[source_index * n + edge] = deposit;
+#if RMTGP_DIAG_V3
+        if (observing) {
+            float* row = audit + (source_index * n + edge) * 18;
+            for (int k=0; k<12; ++k) row[k] = terminals[k];
+            row[12] = raw; row[13] = tanhf(raw);
+            row[14] = program_active ? 1.0f + gamma_pheromone*tanhf(raw) : 1.0f;
+            row[15] = deposit; row[16] = 1.0f; row[17] = base_deposit;
+        }
+#endif
         total += deposit;
     }
-    if (pheromone_mode == 0) {
+    if (pheromone_mode == 0 && program_active) {
         const float scale = budget / fmaxf(total, epsilon_numeric);
         for (int edge = 0; edge < n; ++edge) {
             deposits[source_index * n + edge] *= scale;
+#if RMTGP_DIAG_V3
+            if (observing) audit[(source_index * n + edge) * 18 + 16] = scale;
+#endif
         }
     }
 }

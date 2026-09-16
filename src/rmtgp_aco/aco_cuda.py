@@ -724,6 +724,7 @@ def _load_v2_kernels(
     )
     source = (
         (control.mechanism.cuda_prefix(control.instrumentation.level != "off") if control else "")
+        + (control.instrumentation.cuda_prefix() if control else "")
         + prefix
         + _CUDA_SOURCE.read_text(encoding="utf-8")
         + "\n"
@@ -1554,7 +1555,7 @@ def _run_device_v2(
         ls_gain_requested and config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE
     )
     track_origin = origin_requested or audit_local_search
-    if control and control.instrumentation.level == "heavy":
+    if control and (control.instrumentation.level == "heavy" or control.instrumentation.detailed):
         # 零 GP 轨迹也维护历史边元数据，供同状态切换至非零 PH 使用。
         track_origin = True
         track_edge_gain = True
@@ -1696,6 +1697,11 @@ def _run_device_v2(
             record_anytime,
             config.local_search,
         )
+        if control and control.instrumentation.detailed:
+            # 包括审计环、全量 terminal 缓冲与分位数排序临时区，避免按旧轻量路径过量分块。
+            bytes_per_task += (n*n*4*16 + 16*n*22*4 + ants*n*18*4
+                               + 100*ants*(6*4+2*8+6*8+3*4)
+                               + config.iterations*26*4 + ants*n*20)
         (
             driver_free_before,
             pool_free_before,
@@ -1904,7 +1910,7 @@ def _run_device_v2(
                 else cp.empty(1, dtype=cp.uint16)
             )
             anytime = (
-                cp.empty((count, config.iterations), dtype=cp.float32)
+                cp.full((count, config.iterations), cp.nan, dtype=cp.float32)
                 if record_anytime
                 else cp.empty(1, dtype=cp.float32)
             )
@@ -1947,8 +1953,57 @@ def _run_device_v2(
                 state.update(flat_indices=selected.copy(), batch_size=batch,
                              instance_ids=problem.instance_ids, count=count,
                              mechanism_trace=trace)
+                # 独立诊断区不参与求解器决策。环形区在提交后才复用。
+                detailed = control.instrumentation.detailed
+                if detailed:
+                    if ants != 32 or not config.uses_local_search or config.variant is ACOVariant.ACS:
+                        raise ValueError("mechanism_v3 当前限定 32 ants 的 AS/MMAS + LS")
+                    ring = control.instrumentation.commit_every
+                    audit_arrays = {
+                        "audit_tr": cp.full((count, 16, n, 22), cp.nan, dtype=cp.float32),
+                        "audit_context": cp.full((count, 16, 10), -1, dtype=cp.int32),
+                        "audit_visited": cp.zeros((count, 16, words), dtype=cp.uint64),
+                        "audit_counters": cp.zeros((count, ring, 4), dtype=cp.uint32),
+                        "audit_ph": cp.full((count, ants, n, 18), cp.nan, dtype=cp.float32),
+                        "audit_sources": cp.zeros((count, ants, n + 1), dtype=cp.uint16),
+                        "audit_source_origin": cp.zeros((count, ants, n), dtype=cp.int8),
+                        "audit_source_gain": cp.zeros((count, ants, n), dtype=cp.float32),
+                        "audit_source_hash": cp.zeros((count, ring, ants, 2), dtype=cp.uint64),
+                        "audit_source_info": cp.full((count, ring, ants, 6), cp.nan, dtype=cp.float32),
+                        "audit_ph_moments": cp.zeros((count, ring, ants, 6), dtype=cp.float64),
+                        "audit_restart_state": cp.zeros((count, ring, 6), dtype=cp.float64),
+                        "audit_ls_counts": cp.zeros((count, ring, ants, 4), dtype=cp.uint64),
+                        "audit_tau": cp.empty((count, 3, n, n), dtype=cp.float32),
+                    }
+                    state.update(audit_arrays)
+                    tr_audit_args = tuple(audit_arrays[k] for k in
+                        ("audit_tr", "audit_context", "audit_visited", "audit_counters"))
+                    control_args += tuple(audit_arrays[k] for k in
+                        ("audit_ph", "audit_sources", "audit_source_origin", "audit_source_gain",
+                         "audit_source_hash", "audit_source_info", "audit_tau", "audit_ph_moments", "audit_restart_state"))
+                    state.update(task_program=task_program, task_instance=task_instance,
+                                 ph_masks=ph_masks, tr_masks=tr_masks,
+                                 ph_is_active=ph_is_active, tr_is_active=tr_is_active,
+                                 seed=int(seed), horizon=config.iterations, candidate_size=candidate_size)
+                    state["audit_geometry"] = {
+                        "coords": resident.coords, "distances": resident.distances,
+                        "log_heuristic": resident.log_heuristic, "nearest": resident.nearest,
+                        "rank": resident.full_nn_rank, "node_log_eta_mean": resident.node_log_eta_mean,
+                        "instance_keys": resident.instance_keys,
+                    }
+                    state["audit_hardware"] = {
+                        "model": cp.cuda.runtime.getDeviceProperties(device)["name"].decode(),
+                        "compute_capability": cp.cuda.Device(device).compute_capability,
+                        "driver": cp.cuda.runtime.driverGetVersion(),
+                    }
+                    policy = control.mechanism.source_policy
+                    state["audit_source_capacity"] = (ants if policy=="native_schedule" and config.variant is ACOVariant.AS
+                        else min(control.mechanism.source_count,ants) if policy=="top_k" else 1)
+                else:
+                    tr_audit_args = ()
             else:
                 control_args = ()
+                tr_audit_args = ()
 
             start_event = cp.cuda.Event()
             end_event = cp.cuda.Event()
@@ -1984,10 +2039,18 @@ def _run_device_v2(
                 if control.observer:
                     control.observer("initialised", 0, state)
                 if control.resume is not None:
-                    snapshot = control.resume
+                    snapshot = control.resume(selected) if callable(control.resume) else control.resume
+                else:
+                    snapshot = None
+                if snapshot is not None:
                     if not np.array_equal(snapshot["flat_indices"], selected):
                         raise ValueError("恢复必须保持快照 task 顺序和完整分块")
-                    for name in state_names:
+                    restore_names = list(state_names)
+                    if "mechanism_trace" in snapshot["arrays"]:
+                        restore_names.append("mechanism_trace")
+                    if control.instrumentation.detailed:
+                        restore_names.extend(k for k,v in state.items() if k.startswith("audit_") and isinstance(v,cp.ndarray))
+                    for name in restore_names:
                         if name not in snapshot["arrays"]:
                             raise ValueError(f"快照缺少 {name}")
                         saved = snapshot["arrays"][name]
@@ -1998,13 +2061,25 @@ def _run_device_v2(
                     if resume_phase not in ("post_ls", "iteration_end"):
                         raise ValueError("未知快照恢复阶段")
                     first_iteration = int(snapshot["iteration"]) + (resume_phase == "iteration_end")
+                    if control.observer:
+                        control.observer("resumed", int(snapshot["iteration"]), state)
             final_iteration = control.stop_iteration if control and control.stop_iteration else config.iterations
-            if not first_iteration <= final_iteration <= config.iterations:
+            stage_events = []
+            def timing_mark():
+                event = cp.cuda.Event(); event.record(); return event
+            detailed_timing = bool(control and control.instrumentation.detailed)
+            if not first_iteration <= final_iteration + 1 <= config.iterations + 1:
                 raise ValueError("续跑区间越界")
             for iteration in range(first_iteration, final_iteration + 1):
                 skip_construction = bool(control and control.resume is not None
                                          and iteration == first_iteration and resume_phase == "post_ls")
+                if control and control.instrumentation.detailed and not skip_construction:
+                    if iteration == 1 or iteration % control.instrumentation.aggregate_every == 0:
+                        state["audit_tr"].fill(cp.nan)
+                        state["audit_context"].fill(-1)
+                        state["audit_ph"].fill(cp.nan)
                 if not skip_construction:
+                    if detailed_timing: construct_start = timing_mark()
                     construct_kernel(
                         (count,),
                         (construct_threads,),
@@ -2047,9 +2122,14 @@ def _run_device_v2(
                             score_workspace,
                             stagnation,
                             diagnostics,
+                            *tr_audit_args,
                         ),
                     )
+                    if detailed_timing:
+                        construct_end = timing_mark()
+                        stage_events.append(("construct", construct_start, construct_end))
                     if config.uses_local_search:
+                        if detailed_timing: ls_start = timing_mark()
                         total_tours = count * ants
                         ls_blocks = (total_tours + ls_warps_per_block - 1) // ls_warps_per_block
                         two_opt_kernel(
@@ -2085,6 +2165,7 @@ def _run_device_v2(
                                 np.int32(track_origin),
                                 np.int32(track_edge_gain),
                                 diagnostics,
+                                *((state["audit_ls_counts"],) if detailed_timing else ()),
                             ),
                             shared_mem=two_opt_shared_bytes,
                         )
@@ -2114,8 +2195,13 @@ def _run_device_v2(
                                 ),
                                 shared_mem=three_opt_shared_bytes,
                             )
+                        if detailed_timing: stage_events.append(("local_search", ls_start, timing_mark()))
+                if detailed_timing: audit_start = timing_mark()
                 if control and control.observer:
                     control.observer("post_ls", iteration, state)
+                if detailed_timing:
+                    stage_events.append(("audit_post_ls", audit_start, timing_mark()))
+                    update_start = timing_mark()
                 update_kernel(
                     (count,),
                     (256,),
@@ -2150,7 +2236,8 @@ def _run_device_v2(
                         np.float32(config.mmas_branch_threshold),
                         np.int32(config.mmas_restart_stagnation),
                         np.int32(config.uses_local_search),
-                        np.int32(track_edge_gain),
+                        # 是否维护逐边元数据不能改变 terminal 本身的科学语义。
+                        np.int32(track_edge_gain and config.ls_gain_semantics is LSGainSemantics.EDGE_LAST_MOVE),
                         pheromone_workspace,
                         tour_workspace,
                         pre_tour_workspace,
@@ -2190,10 +2277,24 @@ def _run_device_v2(
                         *control_args,
                     ),
                 )
+                if detailed_timing:
+                    stage_events.append(("update_including_in_kernel_audit", update_start, timing_mark()))
+                    audit_start = timing_mark()
                 if control and control.observer:
                     control.observer("iteration_end", iteration, state)
+                if detailed_timing: stage_events.append(("audit_end_including_transfer", audit_start, timing_mark()))
+            if control and control.observer:
+                control.observer("chunk_end", final_iteration, state)
             end_event.record()
             end_event.synchronize()
+            if detailed_timing:
+                durations = {}
+                for name, begin, end in stage_events:
+                    durations[name] = durations.get(name, 0.) + cp.cuda.get_elapsed_time(begin, end)/1000.
+                control.stage_timings.append({"flat_indices": selected.tolist(), "device": device,
+                    "first_iteration": first_iteration, "last_iteration": final_iteration,
+                    "seconds": durations,
+                    "scope": "CUDA event elapsed; 含阶段内主机发射间隙，in-kernel 审计不能从 update 单独扣除"})
             kernel_seconds += float(
                 cp.cuda.get_elapsed_time(start_event, end_event)
             ) / 1000.0
@@ -2313,6 +2414,8 @@ def _solve_population_impl(
         raise ValueError("program population 不得为空")
     use_v2 = runtime.aco_backend is ExecutionBackend.CUDA_TILED_V2
     if control:
+        if control.instrumentation.detailed and (runtime.gpu_mode is not GPUMode.SINGLE or problem.n<8):
+            raise ValueError("mechanism_v3 采用单 GPU worker 且 n>=8；多卡通过任务队列并行")
         if not use_v2 or config.local_search is not LocalSearch.TWO_OPT:
             raise ValueError("机制干预仅用于原 CUDA v2 + two_opt 路径")
         if config.variant is ACOVariant.ACS or config.pheromone_integration is not PheromoneIntegration.BUDGET_RESIDUAL:

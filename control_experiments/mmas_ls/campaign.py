@@ -107,14 +107,26 @@ def gpu_info(device):
 
 def eligible(task,out):
     stage=task["stage"]
+    if task.get("kind")=="diagnostic_pilot":
+        return read_json(Path(out)/"validation/data_provenance.json",{}).get("status")=="passed"
     if read_json(Path(out)/"validation/native.json",{}).get("status")!="passed": return False
     if read_json(Path(out)/"validation/data_provenance.json",{}).get("status")!="passed": return False
     if stage!="P0" and read_json(Path(out)/"gates/P0.json",{}).get("status")!="approved": return False
+    if isinstance(task.get("instrumentation"),dict) and task["instrumentation"].get("profile")=="mechanism_v3":
+        gate=read_json(Path(out)/"validation/diagnostics.json",{})
+        if gate.get("status")!="passed" or not gate.get("complete_acceptance",False): return False
     if stage in ("P2","P3","P4") and read_json(Path(out)/"gates/P1.json",{}).get("status")!="approved": return False
     if stage in ("P2","P3","P4") and not (Path(out)/"protocol/extensions_frozen.json").exists(): return False
     if not (Path(out)/f"inputs/{task['split']}.npz").exists(): return False
     if task.get("replay_from") and read_json(Path(out)/"jobs"/task["replay_from"]/"status.json",{}).get("status")!="completed": return False
     return True
+
+
+def affinity_path(task,out):
+    """同实例块和随机重复的所有条件固定 GPU 型号；冠军仍在同任务内配对。"""
+    if "indices" not in task or "replicate" not in task:return None
+    key=digest({k:task[k] for k in ("split","replicate","indices")})
+    return Path(out)/"affinity"/(key+".json")
 
 
 def worker(device,out=OUT):
@@ -123,7 +135,8 @@ def worker(device,out=OUT):
     if initial["name"] not in ALLOWED_GPU_MODELS or initial["pids"] or initial["memory_mib"]>1024 or initial["utilization"]>5:
         raise RuntimeError(f"设备不是允许型号的空闲卡: {initial}")
     label=f"{socket.gethostname()}-{initial['uuid']}"
-    with lock(out/"locks"/(label+".lock")) as acquired:
+    # 新 cohort 共享设备锁；防止两个实验目录同时通过空闲检查。
+    with lock(ROOT/"control_experiments/mmas_ls/artifacts/resource_locks"/(label+".lock")) as acquired:
         if not acquired: raise RuntimeError("本实验已占用此 GPU")
         atomic_json(out/"workers"/(label+".json"),{"pid":os.getpid(),"device":initial,"status":"started","time":now()})
         while True:
@@ -131,10 +144,19 @@ def worker(device,out=OUT):
             work=False
             for path in sorted((out/"queue").glob("*.json"),key=lambda p:read_json(p)["order"]):
                 payload=read_json(path); task=payload["task"]; folder=out/"jobs"/task["id"]
+                if task.get("required_gpu_model",initial["name"])!=initial["name"]: continue
+                affinity=affinity_path(task,out)
+                if affinity and read_json(affinity,{}).get("gpu_model",initial["name"])!=initial["name"]:continue
                 status=read_json(folder/"status.json",{})
                 if status.get("status")=="completed" or not eligible(task,out): continue
                 with lock(out/"locks/tasks"/(task["id"]+".lock")) as claimed:
                     if not claimed: continue
+                    if affinity:
+                        with lock(str(affinity)+".lock") as assigning:
+                            if not assigning:continue
+                            assigned=read_json(affinity,{})
+                            if assigned and assigned["gpu_model"]!=initial["name"]:continue
+                            if not assigned:atomic_json(affinity,{"gpu_model":initial["name"],"first_task":task["id"],"time":now()})
                     if read_json(folder/"status.json",{}).get("status")=="completed": continue
                     attempt=read_json(folder/"attempts.json",{"count":0})
                     if attempt["count"]>=3: continue
@@ -222,7 +244,14 @@ def main():
         from .evaluate import run_task
         try:
             task=read_json(a.task)["task"]
-            if task.get("kind")=="precision":
+            if task.get("kind")=="diagnostic_pilot":
+                from .diagnostic_validation import pilot
+                pilot(a.output/"jobs"/task["id"],task.get("instances",2),task.get("steps",100))
+                result=read_json(a.output/"jobs"/task["id"]/"status.json")
+                result["validation_status"]=result["status"]
+                result["status"]="completed" if result["validation_status"]=="passed" else "failed"
+                atomic_json(a.output/"jobs"/task["id"]/"status.json",result)
+            elif task.get("kind")=="precision":
                 from .precision import run
                 run(task["backend"],task["condition"],task["replicate"],a.output)
                 result=read_json(a.output/"precision"/f"{task['backend']}-{task['condition']}-s{task['replicate']}"/"status.json")

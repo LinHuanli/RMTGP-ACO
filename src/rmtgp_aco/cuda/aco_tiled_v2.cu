@@ -237,6 +237,9 @@ __device__ __forceinline__ float transition_score_tiled(
     int stagnation,
     int total_iterations,
     const Stats& stats
+#if RMTGP_DIAG_V3
+    , float* audit = nullptr
+#endif
 ) {
     const int edge = current * n + city;
     const float baseline = base_score_tiled(
@@ -249,9 +252,14 @@ __device__ __forceinline__ float transition_score_tiled(
         alpha,
         beta
     );
-    if (!program_active) {
+    bool observing = false;
+#if RMTGP_DIAG_V3
+    observing = audit != nullptr;
+#endif
+    if (!program_active && !observing) {
         return baseline;
     }
+    if (observing) required_mask = UINT64_C(65535);
 
     float terminals[16];
     if ((required_mask & (UINT64_C(1) << 0)) != 0) {
@@ -379,19 +387,26 @@ __device__ __forceinline__ float transition_score_tiled(
     }
 
 #if RMTGP_GENERATED_GP
-    const float raw = evaluate_transition_generated(
+    const float raw = program_active ? evaluate_transition_generated(
         program_index,
         terminals
-    );
+    ) : 0.0f;
 #else
-    const float raw = evaluate_program_small(
+    const float raw = program_active ? evaluate_program_small(
         opcodes,
         float_arguments,
         integer_arguments,
         program_length,
         terminals
-    );
+    ) : 0.0f;
 #endif
+#if RMTGP_DIAG_V3
+    if (observing) {
+        for (int k=0; k<16; ++k) audit[k] = terminals[k];
+        audit[16] = raw; audit[17] = baseline; audit[21] = position;
+    }
+#endif
+    if (!program_active) return baseline;
     if (transition_mode == 1) {
         return softplus_clipped(raw) + epsilon_numeric;
     }
@@ -495,6 +510,10 @@ extern "C" __global__ void v2_construct(
     float* score_workspace,
     const int32_t* stagnation_all,
     uint64_t* diagnostics
+#if RMTGP_DIAG_V3
+    , float* audit_tr, int32_t* audit_context, uint64_t* audit_visited,
+    unsigned int* audit_counters
+#endif
 ) {
     using namespace rmtgp_v2;
     const int task = blockIdx.x;
@@ -544,6 +563,11 @@ extern "C" __global__ void v2_construct(
 
     uint64_t local_candidate_fallbacks = 0;
     uint64_t local_uniform_fallbacks = 0;
+#if RMTGP_DIAG_V3
+    const bool audit_sample = iteration == 1 || iteration % RMTGP_DIAG_EVERY == 0;
+    unsigned int* counters = audit_counters + (task * RMTGP_DIAG_RING + (iteration-1)%RMTGP_DIAG_RING)*4;
+    if (tid < 4) counters[tid] = 0;
+#endif
     if (lane == 0) {
         for (int word = 0; word < words; ++word) {
             ant_visited[word] = 0;
@@ -568,6 +592,15 @@ extern "C" __global__ void v2_construct(
     __syncthreads();
 
     for (int step = 1; step < n; ++step) {
+#if RMTGP_DIAG_V3
+        const int probe_step = step == 1 ? 0 : step == n/4 ? 1 : step == n/2 ? 2 : step == 3*n/4 ? 3 : -1;
+        const int probe = audit_sample && ant%8 == 0 && ant<32 && probe_step>=0
+            ? ant/8*4+probe_step : -1;
+        float* probe_rows = probe>=0 ? audit_tr + (task*16+probe)*n*22 : nullptr;
+        if (probe>=0 && lane==0) {
+            for (int w=0; w<words; ++w) audit_visited[(task*16+probe)*words+w] = ant_visited[w];
+        }
+#endif
         const int current = static_cast<int>(ant_tour[step - 1]);
         int local_count = 0;
         for (
@@ -585,6 +618,9 @@ extern "C" __global__ void v2_construct(
         if (fallback && lane == 0) {
             ++local_candidate_fallbacks;
             ++local_uniform_fallbacks;
+#if RMTGP_DIAG_V3
+            atomicAdd(counters, 1U);
+#endif
         }
         const int limit = fallback ? n : candidate_size;
         const uint16_t* current_nearest = nearest
@@ -598,16 +634,32 @@ extern "C" __global__ void v2_construct(
         float distance_sum = 0.0f;
         float base_total = 0.0f;
         local_count = 0;
-        const bool need_log_tau = (
+        const bool need_log_tau =
+#if RMTGP_DIAG_V3
+            probe>=0 ||
+#endif
+            (
             required_mask & (UINT64_C(1) << 0)
         ) != 0;
-        const bool need_log_eta = (
+        const bool need_log_eta =
+#if RMTGP_DIAG_V3
+            probe>=0 ||
+#endif
+            (
             required_mask & (UINT64_C(1) << 1)
         ) != 0;
-        const bool need_tau_mean = (
+        const bool need_tau_mean =
+#if RMTGP_DIAG_V3
+            probe>=0 ||
+#endif
+            (
             required_mask & (UINT64_C(1) << 10)
         ) != 0;
-        const bool need_distance_mean = (
+        const bool need_distance_mean =
+#if RMTGP_DIAG_V3
+            probe>=0 ||
+#endif
+            (
             required_mask & (UINT64_C(1) << 11)
         ) != 0;
         for (
@@ -693,7 +745,11 @@ extern "C" __global__ void v2_construct(
             stats.distance_mean = distance_sum * inverse;
         }
 
-        if ((required_mask & (UINT64_C(1) << 4)) != 0) {
+        if (
+#if RMTGP_DIAG_V3
+            probe>=0 ||
+#endif
+            (required_mask & (UINT64_C(1) << 4)) != 0) {
             if (stats.count == 1) {
                 stats.entropy = -1.0f;
             } else if (stats.base_total <= epsilon_numeric) {
@@ -779,8 +835,14 @@ extern "C" __global__ void v2_construct(
                     stagnation_all[task],
                     total_iterations,
                     stats
+#if RMTGP_DIAG_V3
+                    , probe_rows ? probe_rows + city*22 : nullptr
+#endif
                 );
                 score = score_storage_round(score);
+#if RMTGP_DIAG_V3
+                if (probe_rows) probe_rows[city*22+18] = score;
+#endif
                 local_score_total += score;
             }
             if (fallback) {
@@ -893,6 +955,29 @@ extern "C" __global__ void v2_construct(
                     }
                 }
             }
+#if RMTGP_DIAG_V3
+            // 分支条件与实际选择完全一致；候选耗尽执行贪心，不是均匀抽样。
+            const bool audit_greedy = fallback || (RMTGP_VARIANT == 1 && counter_uniform(
+                seed, instance_key, iteration, ant, step, 2) <= q0);
+            if (stats.base_total <= epsilon_numeric) atomicAdd(counters+1, 1U);
+            if (score_total <= epsilon_numeric) atomicAdd(counters+2, 1U);
+            if (!audit_greedy && score_total <= epsilon_numeric) atomicAdd(counters+3, 1U);
+            if (probe>=0) {
+                int32_t* context = audit_context + (task*16+probe)*10;
+                context[0]=iteration; context[1]=ant; context[2]=step; context[3]=current;
+                context[4]=step<2 ? -1 : ant_tour[step-2]; context[5]=chosen;
+                context[6]=fallback; context[7]=stats.count; context[8]=audit_greedy;
+                context[9]=!audit_greedy && score_total<=epsilon_numeric;
+                for (int pos=0; pos<limit; ++pos) {
+                    const int city = fallback ? pos : current_nearest[pos];
+                    if (is_visited(ant_visited,city)) continue;
+                    float* row = probe_rows+city*22;
+                    row[19] = audit_greedy ? float(city==chosen)
+                        : score_total<=epsilon_numeric ? 1.0f/stats.count : row[18]/score_total;
+                    row[20] = counter_uniform(seed,instance_key,iteration,ant,step,3);
+                }
+            }
+#endif
             ant_tour[step] = static_cast<uint16_t>(chosen);
             edge_u[ant] = current;
             edge_v[ant] = chosen;
@@ -1085,6 +1170,11 @@ extern "C" __global__ void v2_update(
     uint64_t mechanism_seed,
     const uint64_t* mechanism_instance_keys
 #endif
+#if RMTGP_DIAG_V3
+    , float* audit_ph, uint16_t* audit_sources, int8_t* audit_source_origin,
+    float* audit_source_gain, uint64_t* audit_source_hash, float* audit_source_info,
+    float* audit_tau, double* audit_ph_moments, double* audit_restart_state
+#endif
 ) {
     using namespace rmtgp_v2;
     const int task = blockIdx.x;
@@ -1094,6 +1184,20 @@ extern "C" __global__ void v2_update(
     const int tid = threadIdx.x;
     const int program = task_program[task];
     const int instance = task_instance[task];
+#if RMTGP_DIAG_V3
+    const bool audit_sample = iteration==1 || iteration%RMTGP_DIAG_EVERY==0;
+    float* audit_task_ph = audit_sample ? audit_ph+static_cast<size_t>(task)*ants*n*18 : nullptr;
+    float* audit_task_tau = audit_tau+static_cast<size_t>(task)*3*n*n;
+    if (audit_sample) for (int e=tid; e<n*n; e+=blockDim.x)
+        audit_task_tau[e] = pheromone_workspace[static_cast<size_t>(task)*n*n+e];
+    if (tid < ants) {
+        float* info = audit_source_info+((task*RMTGP_DIAG_RING+(iteration-1)%RMTGP_DIAG_RING)*ants+tid)*6;
+        for (int k=0;k<6;++k) info[k]=CUDART_NAN_F;
+        uint64_t* hash = audit_source_hash+((task*RMTGP_DIAG_RING+(iteration-1)%RMTGP_DIAG_RING)*ants+tid)*2;
+        hash[0]=hash[1]=0;
+    }
+    __syncthreads();
+#endif
     const float* log_heuristic = log_heuristic_all
         + static_cast<size_t>(instance) * n * n;
     const uint16_t* nearest = nearest_all
@@ -1432,6 +1536,10 @@ extern "C" __global__ void v2_update(
     __syncthreads();
 
     if (
+#if RMTGP_DIAG_V3
+        audit_sample ||
+#endif
+        (
         ph_active[program] != 0
         && (
             ph_required_masks[program]
@@ -1439,7 +1547,7 @@ extern "C" __global__ void v2_update(
                 (UINT64_C(1) << 3)
                 | (UINT64_C(1) << 11)
             )
-        ) != 0
+        ) != 0)
     ) {
         for (int edge = tid; edge < n * n; edge += blockDim.x) {
             edge_frequency[edge] = 0;
@@ -1469,8 +1577,12 @@ extern "C" __global__ void v2_update(
         __syncthreads();
     }
     if (
+#if RMTGP_DIAG_V3
+        audit_sample ||
+#endif
+        (
         ph_active[program] != 0
-        && (ph_required_masks[program] & (UINT64_C(1) << 10)) != 0
+        && (ph_required_masks[program] & (UINT64_C(1) << 10)) != 0)
     ) {
         for (int edge = tid; edge < n * n; edge += blockDim.x) {
             pre_edge_frequency[edge] = 0;
@@ -1602,11 +1714,40 @@ extern "C" __global__ void v2_update(
             task_tau_max[task],
             rho,
             deposits
+#if RMTGP_DIAG_V3
+            , audit_task_ph,
+            audit_ph_moments+((static_cast<size_t>(task)*RMTGP_DIAG_RING+(iteration-1)%RMTGP_DIAG_RING)*ants+tid)*6
+#endif
         );
 #if RMTGP_MECH_CONTROL && RMTGP_MECH_SOURCE != 0 && RMTGP_MECH_SHADOW_BUDGET
         // 只调整干预分支的总量；source_length 保持实际来源语义。
         const float factor = shadow_budget / (static_cast<float>(n) * inverse_length_sum);
         for (int e = 0; e < n; ++e) deposits[tid * n + e] *= factor;
+#endif
+#if RMTGP_DIAG_V3
+        // 每轮保存来源标识；无向边的双 64-bit 校验码不用于独立样本计数。
+        uint64_t hash1=0, hash2=0;
+        for (int e=0;e<n;++e) {
+            const uint64_t code=static_cast<uint64_t>(min(source_tour[e],source_tour[e+1]))*n
+                +max(source_tour[e],source_tour[e+1]);
+            hash1 ^= mix64(code); hash2 += mix64(code ^ UINT64_C(0xD6E8FEB86659FD93));
+            if (audit_sample) {
+                const size_t offset=(static_cast<size_t>(task)*ants+tid)*n+e;
+                audit_source_origin[offset]=source_origin[e];
+                audit_source_gain[offset]=ls_gain_semantics==1 ? source_edge_gain[e] : source_ls_gain;
+            }
+        }
+        const size_t row=(static_cast<size_t>(task)*RMTGP_DIAG_RING+(iteration-1)%RMTGP_DIAG_RING)*ants+tid;
+        audit_source_hash[row*2]=hash1; audit_source_hash[row*2+1]=hash2;
+        float* info=audit_source_info+row*6;
+        info[0]=mmas_source_kind; info[1]=mmas_source_kind==0 ? source_ants[tid] : -1;
+        info[2]=source_length;
+        info[3]=mmas_source_kind==1 ? restart_found_best[task] : mmas_source_kind==2 ? global_best_iterations[task] : iteration;
+        info[4]=source_ls_gain;
+        double source_budget=0; for (int e=0;e<n;++e) source_budget+=deposits[tid*n+e];
+        info[5]=static_cast<float>(source_budget);
+        if (audit_sample) for (int e=0;e<=n;++e)
+            audit_sources[(static_cast<size_t>(task)*ants+tid)*(n+1)+e]=source_tour[e];
 #endif
     }
     __syncthreads();
@@ -1666,6 +1807,10 @@ extern "C" __global__ void v2_update(
         }
     }
     __syncthreads();
+#if RMTGP_DIAG_V3
+    if (audit_sample) for (int e=tid;e<n*n;e+=blockDim.x) audit_task_tau[n*n+e]=pheromone[e];
+    __syncthreads();
+#endif
     if (tid == 0) {
         for (int source = 0; source < source_count; ++source) {
             const uint16_t* source_tour;
@@ -1727,6 +1872,15 @@ extern "C" __global__ void v2_update(
 #endif
     __syncthreads();
 
+#if RMTGP_DIAG_V3
+    if (audit_sample) for (int e=tid;e<n*n;e+=blockDim.x) audit_task_tau[2*n*n+e]=pheromone[e];
+    if (tid==0) {
+        double* state=audit_restart_state+(static_cast<size_t>(task)*RMTGP_DIAG_RING+(iteration-1)%RMTGP_DIAG_RING)*6;
+        state[0]=restart_best_lengths[task];state[1]=restart_found_best[task];state[2]=restart_iteration[task];
+        state[3]=restart_best_ls_gain[task];state[4]=stagnation_all[task];state[5]=global_best_iterations[task];
+    }
+    __syncthreads();
+#endif
 #if RMTGP_VARIANT == 2
     if (
         iteration % mmas_branch_check_period == 0

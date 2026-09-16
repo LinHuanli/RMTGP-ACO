@@ -101,10 +101,36 @@ class InstrumentationConfig:
     level: str = "light"
     aggregate_every: int = 25
     snapshot_iterations: tuple[int, ...] = ()
+    # 独立版本，不能把历史 light 文件解释为完整机制诊断。
+    profile: str = "legacy"
+    schema_version: int = 1
+    commit_every: int = 100
+    checkpoint_every: int = 500
+    probe_ants: tuple[int, ...] = (0, 8, 16, 24)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self,"probe_ants",tuple(self.probe_ants))
+        object.__setattr__(self,"snapshot_iterations",tuple(self.snapshot_iterations))
         if self.level not in ("off", "light", "heavy") or self.aggregate_every < 1:
             raise ValueError("无效审计配置")
+        if self.profile not in ("legacy", "mechanism_v3"):
+            raise ValueError("未知诊断 profile")
+        if self.profile == "mechanism_v3":
+            if self.level == "off" or self.schema_version != 3:
+                raise ValueError("mechanism_v3 必须启用记录并使用 schema 3")
+            if self.commit_every != 100 or self.checkpoint_every != 500:
+                raise ValueError("正式诊断固定每 100 轮提交、每 500 轮恢复检查点")
+            if self.aggregate_every != 25 or self.probe_ants != (0, 8, 16, 24):
+                raise ValueError("正式采样规则固定为 25 轮、蚂蚁 0/8/16/24")
+
+    @property
+    def detailed(self) -> bool:
+        return self.profile == "mechanism_v3"
+
+    def cuda_prefix(self) -> str:
+        return (f"#define RMTGP_DIAG_V3 {int(self.detailed)}\n"
+                f"#define RMTGP_DIAG_EVERY {self.aggregate_every}\n"
+                f"#define RMTGP_DIAG_RING {self.commit_every}\n")
 
 
 @dataclass
@@ -121,6 +147,7 @@ class SolverControl:
     stop_iteration: int | None = None
     collected: list[dict[str, Any]] | None = None
     kernel_hashes: set[str] = field(default_factory=set)
+    stage_timings: list[dict[str, Any]] = field(default_factory=list)
 
 
 def factorial_conditions() -> dict[str, MechanismConfig]:
