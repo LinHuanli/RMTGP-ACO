@@ -105,8 +105,15 @@ def gpu_info(device):
     return {"uuid":fields[0],"name":fields[1],"memory_mib":int(fields[2]),"utilization":int(fields[3]),"driver":fields[4],"pids":pids}
 
 
-def eligible(task,out):
+def eligible(task,out,gpu_model=None):
     stage=task["stage"]
+    if task.get("kind") in ("numeric_validation","numeric_pair","historical_mechanism"):
+        if read_json(Path(out)/"validation/data_provenance.json",{}).get("status")!="passed":return False
+        # 完整日志的空间保护。资源不足不是放宽采样规则的理由。
+        if shutil.disk_usage(out).free < 150*1024**3:return False
+        if task["kind"]=="numeric_validation":return True
+        from .numerical_campaign import ready
+        return ready(task,out,gpu_model)
     if task.get("kind")=="diagnostic_pilot":
         return read_json(Path(out)/"validation/data_provenance.json",{}).get("status")=="passed"
     if read_json(Path(out)/"validation/native.json",{}).get("status")!="passed": return False
@@ -148,7 +155,7 @@ def worker(device,out=OUT):
                 affinity=affinity_path(task,out)
                 if affinity and read_json(affinity,{}).get("gpu_model",initial["name"])!=initial["name"]:continue
                 status=read_json(folder/"status.json",{})
-                if status.get("status")=="completed" or not eligible(task,out): continue
+                if status.get("status")=="completed" or not eligible(task,out,initial["name"]): continue
                 with lock(out/"locks/tasks"/(task["id"]+".lock")) as claimed:
                     if not claimed: continue
                     if affinity:
@@ -244,7 +251,13 @@ def main():
         from .evaluate import run_task
         try:
             task=read_json(a.task)["task"]
-            if task.get("kind")=="diagnostic_pilot":
+            if task.get("kind")=="numeric_validation":
+                from .numerical_validation import validate
+                validate(task,a.output)
+            elif task.get("kind")=="numeric_pair":
+                from .numerical_campaign import paired_run
+                paired_run(task,a.output)
+            elif task.get("kind")=="diagnostic_pilot":
                 from .diagnostic_validation import pilot
                 pilot(a.output/"jobs"/task["id"],task.get("instances",2),task.get("steps",100),
                       task.get("variants",("mmas","as")),task.get("check_reorder",True))

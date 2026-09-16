@@ -2983,6 +2983,8 @@ def solve_numba(
     mechanism = None
     if control:
         m = control.mechanism
+        if m.terminal_statistics != "legacy":
+            raise ValueError("稳定 terminal 统计对照仅实现于 CUDA v2；Numba 不得静默忽略")
         if (config.local_search is not LocalSearch.TWO_OPT or config.variant is ACOVariant.ACS
             or config.pheromone_integration is not PheromoneIntegration.BUDGET_RESIDUAL):
             raise ValueError("Numba 机制 oracle 要求 AS/MMAS + two_opt + budget_residual")

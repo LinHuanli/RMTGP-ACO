@@ -22,7 +22,9 @@ def runnable_tasks(out,gpu_model=None):
         if read_json(folder/"status.json",{}).get("status")=="completed":continue
         if (out/"locks/tasks"/(task["id"]+".lock.d")).exists():continue
         if read_json(folder/"attempts.json",{"count":0})["count"]>=3:continue
-        if eligible(task,out):tasks.append(task["id"])
+        allowed=(eligible(task,out,gpu_model) if task.get("kind") in
+                 ("numeric_validation","numeric_pair","historical_mechanism") else eligible(task,out))
+        if allowed:tasks.append(task["id"])
     return tasks
 
 

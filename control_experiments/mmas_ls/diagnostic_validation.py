@@ -13,36 +13,40 @@ from .diagnostics import DiagnosticRecorder
 from .diagnostic_analysis import summarize,check_program_outputs
 
 
-def pilot(directory,instances=2,steps=100,variants=("mmas","as"),check_reorder=True):
+def pilot(directory,instances=2,steps=100,variants=("mmas","as"),check_reorder=True,
+          terminal_statistics="legacy",data_root=OUT):
     from rmtgp_aco.aco_cuda import solve_population_cuda_anytime,_active_and_representative_programs
-    from rmtgp_aco.mechanisms import SolverControl,InstrumentationConfig
+    from rmtgp_aco.mechanisms import SolverControl,InstrumentationConfig,MechanismConfig
+    mechanism=MechanismConfig(terminal_statistics=terminal_statistics)
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
     specification={"source":source_manifest(),"environment":environment(),"instances":instances,"steps":steps,
         "aco_horizon":5000,"seed":57231,"variants":list(variants),"check_reorder":check_reorder,
+        "mechanism":asdict(mechanism),
         "purpose":"配对轨迹与记录验收；非科学效果比较"}
     atomic_json(directory/"status.json",{"status":"running","started_at":now(),"specification":specification})
-    rows=[]; problem=batch("diagnosis_dev",range(instances),OUT)
+    rows=[]; problem=batch("diagnosis_dev",range(instances),data_root)
     try:
         for variant in variants:
             aco,runtime=experiment(variant)
             entries=program_entries(variant);programs=[e["program"] for e in entries]
             # 少量热身避免把第一次 resident/编译全部误计为诊断开销。
             solve_population_cuda_anytime(problem,aco,programs,seed=57231,runtime=runtime,
-                control=SolverControl(instrumentation=InstrumentationConfig("off"),stop_iteration=1))
+                control=SolverControl(mechanism=mechanism,instrumentation=InstrumentationConfig("off"),stop_iteration=1))
             warm_inst=InstrumentationConfig(profile="mechanism_v3",schema_version=3)
-            warm_writer=DiagnosticRecorder(directory/"warmup"/variant,{"pilot":specification,"variant":variant},warm_inst)
+            recorded_spec={"pilot":specification,"variant":variant,"task":{"mechanism":asdict(mechanism)}}
+            warm_writer=DiagnosticRecorder(directory/"warmup"/variant,recorded_spec,warm_inst)
             try:
                 solve_population_cuda_anytime(problem,aco,programs,seed=57231,runtime=runtime,
-                    control=SolverControl(instrumentation=warm_inst,observer=warm_writer,stop_iteration=1))
+                    control=SolverControl(mechanism=mechanism,instrumentation=warm_inst,observer=warm_writer,stop_iteration=1))
                 warm_writer.finish(1)
             finally:warm_writer.close()
             times={};results={};timings={}
             for profile in ("off","mechanism_v3"):
                 inst=(InstrumentationConfig("off") if profile=="off" else
                       InstrumentationConfig(profile="mechanism_v3",schema_version=3))
-                writer=(DiagnosticRecorder(directory/variant,{"pilot":specification,"variant":variant},inst)
+                writer=(DiagnosticRecorder(directory/variant,recorded_spec,inst)
                         if profile!="off" else None)
-                control=SolverControl(instrumentation=inst,stop_iteration=steps,observer=writer,collected=[])
+                control=SolverControl(mechanism=mechanism,instrumentation=inst,stop_iteration=steps,observer=writer,collected=[])
                 started=time.perf_counter()
                 try:
                     result=solve_population_cuda_anytime(problem,aco,programs,seed=57231,runtime=runtime,control=control)
@@ -60,12 +64,12 @@ def pilot(directory,instances=2,steps=100,variants=("mmas","as"),check_reorder=T
                 # 单独验收完整的 32-instance 形状；不将这些重复运行视为科学样本。
                 changed=solve_population_cuda_anytime(problem,aco,programs,seed=57231,
                     runtime=replace(runtime,gpu_task_chunk_size=7),
-                    control=SolverControl(instrumentation=warm_inst,stop_iteration=steps))
+                    control=SolverControl(mechanism=mechanism,instrumentation=warm_inst,stop_iteration=steps))
                 assert torch.equal(changed.best_tour,results["off"].best_tour), "分块改变 tour"
                 assert torch.equal(changed.anytime_best[:,:,:steps],results["off"].anytime_best[:,:,:steps]), "分块改变轨迹"
                 order=np.random.default_rng(88241).permutation(instances);inverse=np.argsort(order)
                 changed=solve_population_cuda_anytime(problem.take(order.tolist()),aco,programs,seed=57231,runtime=runtime,
-                    control=SolverControl(instrumentation=warm_inst,stop_iteration=steps))
+                    control=SolverControl(mechanism=mechanism,instrumentation=warm_inst,stop_iteration=steps))
                 assert torch.equal(changed.best_tour[:,inverse],results["off"].best_tour), "重排改变 tour"
                 assert torch.equal(changed.anytime_best[:,inverse,:steps],results["off"].anytime_best[:,:,:steps]), "重排改变轨迹"
                 chunk_reorder={"status":"passed","instances":instances,"chunk_size":7,"permutation":order.tolist()}

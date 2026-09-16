@@ -26,6 +26,70 @@ namespace {
 constexpr int MAX_ANTS = 32;
 constexpr int MAX_STACK = 32;
 
+#if RMTGP_MECH_TERMINAL_STATS
+// 只改变标准化 terminal 的统计量。搜索状态、GP 输出和信息素仍为 FP32。
+#if RMTGP_MECH_TERMINAL_STATS == 2
+using TerminalReal = double;
+#else
+using TerminalReal = float;
+#endif
+struct CenteredTerminal {
+    TerminalReal mean;
+    TerminalReal deviation;
+};
+
+__device__ __forceinline__ TerminalReal terminal_log(TerminalReal x) {
+#if RMTGP_MECH_TERMINAL_STATS == 2
+    return log(x);
+#else
+    return logf(x);
+#endif
+}
+
+__device__ __forceinline__ TerminalReal terminal_sqrt(TerminalReal x) {
+#if RMTGP_MECH_TERMINAL_STATS == 2
+    return sqrt(x);
+#else
+    return sqrtf(x);
+#endif
+}
+
+__device__ __forceinline__ TerminalReal terminal_log_ratio(
+    float value, float anchor, float epsilon
+) {
+    const TerminalReal x = static_cast<TerminalReal>(fmaxf(value, epsilon));
+    const TerminalReal a = static_cast<TerminalReal>(fmaxf(anchor, epsilon));
+    const TerminalReal relative = (x-a)/a;
+    // 接近常量时避免分别取 log 再相减；相差很大时避免 relative 舍入到 -1。
+    if (fabs(relative) <= static_cast<TerminalReal>(0.5)) {
+#if RMTGP_MECH_TERMINAL_STATS == 2
+        return log1p(relative);
+#else
+        return log1pf(relative);
+#endif
+    }
+    return terminal_log(x)-terminal_log(a);
+}
+
+__device__ __forceinline__ float terminal_normalized(
+    TerminalReal shifted, const CenteredTerminal& stats, float epsilon=1.0e-8f
+) {
+    const TerminalReal z=(shifted-stats.mean)/(stats.deviation+static_cast<TerminalReal>(epsilon));
+#if RMTGP_MECH_TERMINAL_STATS == 2
+    return static_cast<float>(tanh(z));
+#else
+    return tanhf(z);
+#endif
+}
+
+__device__ __forceinline__ TerminalReal terminal_edge_eta(
+    int u, int v, int n, const float* log_eta, const float* node_mean
+) {
+    return static_cast<TerminalReal>(log_eta[u*n+v])
+        - static_cast<TerminalReal>(0.5)*(static_cast<TerminalReal>(node_mean[u])+node_mean[v]);
+}
+#endif
+
 __device__ __forceinline__ int mechanism_horizon(int original) {
 #if RMTGP_MECH_CONTROL && RMTGP_MECH_TERMINAL_H > 0
     return RMTGP_MECH_TERMINAL_H;
@@ -861,6 +925,7 @@ __device__ void prepare_source_deposits(
     const bool need_edge_tau = observing || (
         required_mask & (UINT64_C(1) << 1)
     ) != 0;
+#if !RMTGP_MECH_TERMINAL_STATS
     for (int edge = 0; edge < n; ++edge) {
         const int u = source_tour[edge];
         const int v = source_tour[edge + 1];
@@ -898,6 +963,34 @@ __device__ void prepare_source_deposits(
             edge_tau_sq * inverse_n - edge_tau_mean * edge_tau_mean
         ))
         : 0.0f;
+#else
+    // 平移后两遍计算：第一遍均值，第二遍中心化平方差。常量输入严格返回零。
+    const float edge_eta_mean=0, edge_eta_std=0, edge_tau_mean=0, edge_tau_std=0;
+    const int anchor_u=source_tour[0], anchor_v=source_tour[1];
+    const float tau_anchor=pheromone[anchor_u*n+anchor_v];
+    const TerminalReal eta_anchor=terminal_edge_eta(anchor_u,anchor_v,n,log_heuristic,node_log_eta_mean);
+    CenteredTerminal stable_eta{},stable_tau{};
+    for (int edge=0;edge<n;++edge) {
+        const int u=source_tour[edge],v=source_tour[edge+1];
+        if (need_edge_eta) stable_eta.mean+=terminal_edge_eta(u,v,n,log_heuristic,node_log_eta_mean)-eta_anchor;
+        if (need_edge_tau) stable_tau.mean+=terminal_log_ratio(pheromone[u*n+v],tau_anchor,epsilon_numeric);
+    }
+    stable_eta.mean/=static_cast<TerminalReal>(n);
+    stable_tau.mean/=static_cast<TerminalReal>(n);
+    for (int edge=0;edge<n;++edge) {
+        const int u=source_tour[edge],v=source_tour[edge+1];
+        if (need_edge_eta) {
+            const TerminalReal d=(terminal_edge_eta(u,v,n,log_heuristic,node_log_eta_mean)-eta_anchor)-stable_eta.mean;
+            stable_eta.deviation+=d*d;
+        }
+        if (need_edge_tau) {
+            const TerminalReal d=terminal_log_ratio(pheromone[u*n+v],tau_anchor,epsilon_numeric)-stable_tau.mean;
+            stable_tau.deviation+=d*d;
+        }
+    }
+    stable_eta.deviation=terminal_sqrt(stable_eta.deviation/static_cast<TerminalReal>(n));
+    stable_tau.deviation=terminal_sqrt(stable_tau.deviation/static_cast<TerminalReal>(n));
+#endif
 
     float colony_mean = 0.0f;
     const bool need_source_quality = observing || (
@@ -917,12 +1010,26 @@ __device__ void prepare_source_deposits(
         }
         colony_variance /= static_cast<float>(ants);
     }
-    const float source_quality = need_source_quality
+    float source_quality = need_source_quality
         ? tanhf(
             (colony_mean - source_length)
             / (sqrtf(colony_variance) + epsilon_numeric)
         )
         : 0.0f;
+#if RMTGP_MECH_TERMINAL_STATS
+    if (need_source_quality) {
+        const TerminalReal anchor=colony_lengths[0];
+        CenteredTerminal stats{};
+        for (int ant=0;ant<ants;++ant) stats.mean+=static_cast<TerminalReal>(colony_lengths[ant])-anchor;
+        stats.mean/=static_cast<TerminalReal>(ants);
+        for (int ant=0;ant<ants;++ant) {
+            const TerminalReal d=(static_cast<TerminalReal>(colony_lengths[ant])-anchor)-stats.mean;
+            stats.deviation+=d*d;
+        }
+        stats.deviation=terminal_sqrt(stats.deviation/static_cast<TerminalReal>(ants));
+        source_quality=-terminal_normalized(static_cast<TerminalReal>(source_length)-anchor,stats,epsilon_numeric);
+    }
+#endif
 
     const float budget = static_cast<float>(n) / source_length;
     float total = 0.0f;
@@ -965,6 +1072,12 @@ __device__ void prepare_source_deposits(
                 );
             }
         }
+#if RMTGP_MECH_TERMINAL_STATS
+        if (need_edge_eta) terminals[0]=terminal_normalized(
+            terminal_edge_eta(u,v,n,log_heuristic,node_log_eta_mean)-eta_anchor,stable_eta);
+        if (need_edge_tau) terminals[1]=terminal_normalized(
+            terminal_log_ratio(pheromone[u*n+v],tau_anchor,epsilon_numeric),stable_tau);
+#endif
 #if RMTGP_GENERATED_GP
         const float raw = program_active ? evaluate_pheromone_generated(
             program_index,

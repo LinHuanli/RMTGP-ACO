@@ -43,9 +43,13 @@ class MechanismConfig:
     terminal_normalization_horizon: int | None = None
     terminal_clip: bool = False
     tau_headroom_override: float | None = None
+    # 独立数值干预；默认保留历史实现，不能静默改变旧模型的输入环境。
+    terminal_statistics: str = "legacy"
 
     def __post_init__(self) -> None:
         import math
+        if self.terminal_statistics not in ("legacy", "centered_fp32", "centered_fp64"):
+            raise ValueError("未知 terminal_statistics")
         if self.restart_policy not in ("native", "off", "replay"):
             raise ValueError("未知 restart_policy")
         if self.source_policy not in SOURCE_POLICIES:
@@ -90,6 +94,7 @@ class MechanismConfig:
             "TERMINAL_CLIP": int(self.terminal_clip),
             "HEADROOM": f"{self.tau_headroom_override if self.tau_headroom_override is not None else -1:.17e}f",
             "TRACE_WIDTH": len(TRACE_FIELDS),
+            "TERMINAL_STATS": ("legacy", "centered_fp32", "centered_fp64").index(self.terminal_statistics),
         }
         return "\n".join(f"#define RMTGP_MECH_{k} {v}" for k, v in values.items()) + "\n"
 

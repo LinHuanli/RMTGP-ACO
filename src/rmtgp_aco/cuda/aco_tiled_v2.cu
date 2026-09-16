@@ -62,6 +62,12 @@ struct Stats {
     float tau_mean;
     float distance_mean;
     float entropy;
+#if RMTGP_MECH_TERMINAL_STATS
+    float tau_anchor;
+    TerminalReal eta_anchor;
+    CenteredTerminal stable_tau;
+    CenteredTerminal stable_eta;
+#endif
 };
 
 __device__ __forceinline__ float load_static(
@@ -263,20 +269,31 @@ __device__ __forceinline__ float transition_score_tiled(
 
     float terminals[16];
     if ((required_mask & (UINT64_C(1) << 0)) != 0) {
+#if RMTGP_MECH_TERMINAL_STATS
+        terminals[0]=terminal_normalized(
+            terminal_log_ratio(pheromone[edge],stats.tau_anchor,epsilon_numeric),stats.stable_tau);
+#else
         terminals[0] = tanhf(
             (
                 logf(fmaxf(pheromone[edge], epsilon_numeric))
                 - stats.log_tau_mean
             ) / (stats.log_tau_std + 1.0e-8f)
         );
+#endif
     }
     if ((required_mask & (UINT64_C(1) << 1)) != 0) {
+#if RMTGP_MECH_TERMINAL_STATS
+        terminals[1]=terminal_normalized(
+            static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+edge))-stats.eta_anchor,
+            stats.stable_eta);
+#else
         terminals[1] = tanhf(
             (
                 load_static(log_heuristic_all, instance_base + edge)
                 - stats.log_eta_mean
             ) / (stats.log_eta_std + 1.0e-8f)
         );
+#endif
     }
     if ((required_mask & (UINT64_C(1) << 2)) != 0) {
         const float probability = stats.base_total > epsilon_numeric
@@ -674,6 +691,7 @@ extern "C" __global__ void v2_construct(
                 continue;
             }
             const int edge = current * n + city;
+#if !RMTGP_MECH_TERMINAL_STATS
             if (need_log_tau) {
                 const float value = logf(fmaxf(
                     pheromone[edge],
@@ -690,6 +708,7 @@ extern "C" __global__ void v2_construct(
                 log_eta_sum += value;
                 log_eta_sq += value * value;
             }
+#endif
             if (need_tau_mean) {
                 tau_sum += pheromone[edge];
             }
@@ -722,6 +741,7 @@ extern "C" __global__ void v2_construct(
         tau_sum = group_sum(tau_sum);
         distance_sum = group_sum(distance_sum);
         const float inverse = 1.0f / static_cast<float>(stats.count);
+#if !RMTGP_MECH_TERMINAL_STATS
         if (need_log_tau) {
             stats.log_tau_mean = log_tau_sum * inverse;
             stats.log_tau_std = sqrtf(fmaxf(
@@ -738,6 +758,44 @@ extern "C" __global__ void v2_construct(
                     - stats.log_eta_mean * stats.log_eta_mean
             ));
         }
+#else
+        if (need_log_tau || need_log_eta) {
+            // 同一可行候选作平移基点；不依赖 lane 数、分块顺序或 GPU 编号。
+            int anchor_city=-1;
+            for (int position=0;position<limit;++position) {
+                const int city=fallback?position:static_cast<int>(current_nearest[position]);
+                if (!is_visited(ant_visited,city)) {anchor_city=city;break;}
+            }
+            stats.tau_anchor=pheromone[current*n+anchor_city];
+            stats.eta_anchor=static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+current*n+anchor_city));
+            TerminalReal tau_total=0,eta_total=0;
+            for (int position=lane;position<limit;position+=RMTGP_CANDIDATE_LANES) {
+                const int city=fallback?position:static_cast<int>(current_nearest[position]);
+                if (is_visited(ant_visited,city)) continue;
+                const int edge=current*n+city;
+                if (need_log_tau) tau_total+=terminal_log_ratio(pheromone[edge],stats.tau_anchor,epsilon_numeric);
+                if (need_log_eta) eta_total+=static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+edge))-stats.eta_anchor;
+            }
+            stats.stable_tau.mean=group_sum(tau_total)/static_cast<TerminalReal>(stats.count);
+            stats.stable_eta.mean=group_sum(eta_total)/static_cast<TerminalReal>(stats.count);
+            TerminalReal tau_variance=0,eta_variance=0;
+            for (int position=lane;position<limit;position+=RMTGP_CANDIDATE_LANES) {
+                const int city=fallback?position:static_cast<int>(current_nearest[position]);
+                if (is_visited(ant_visited,city)) continue;
+                const int edge=current*n+city;
+                if (need_log_tau) {
+                    const TerminalReal d=terminal_log_ratio(pheromone[edge],stats.tau_anchor,epsilon_numeric)-stats.stable_tau.mean;
+                    tau_variance+=d*d;
+                }
+                if (need_log_eta) {
+                    const TerminalReal d=(static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+edge))-stats.eta_anchor)-stats.stable_eta.mean;
+                    eta_variance+=d*d;
+                }
+            }
+            stats.stable_tau.deviation=terminal_sqrt(group_sum(tau_variance)/static_cast<TerminalReal>(stats.count));
+            stats.stable_eta.deviation=terminal_sqrt(group_sum(eta_variance)/static_cast<TerminalReal>(stats.count));
+        }
+#endif
         if (need_tau_mean) {
             stats.tau_mean = tau_sum * inverse;
         }
