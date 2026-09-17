@@ -131,6 +131,12 @@ def eligible(task,out,gpu_model=None):
 
 def affinity_path(task,out):
     """同实例块和随机重复的所有条件固定 GPU 型号；冠军仍在同任务内配对。"""
+    override=read_json(Path(out)/"protocol/resource_policy.json",{}).get("unrestricted_tasks",{}).get(task.get("id"))
+    if override is not None:
+        # 用户明确批准的调度变更只作用于指定任务，不修改冻结算法或其他任务。
+        if task.get("kind")!="numeric_pair" or override.get("task_sha256")!=digest(task):
+            raise ValueError("设备亲和性豁免与冻结任务不匹配")
+        return None
     if "indices" not in task or "replicate" not in task:return None
     key=digest({k:task[k] for k in ("split","replicate","indices")})
     return Path(out)/"affinity"/(key+".json")

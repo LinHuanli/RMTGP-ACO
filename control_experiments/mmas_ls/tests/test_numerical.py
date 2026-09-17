@@ -58,3 +58,24 @@ def test_paused_validation_preserves_artifacts_and_logs(tmp_path):
     atomic_json(folder/"status.json",{"status":"completed"})
     atomic_json(folder/"partial.json",{"saved":True})
     assert archive_paused_validation(task,tmp_path) is None
+
+
+def test_resource_migration_preserves_evidence_and_frozen_queue(tmp_path):
+    from control_experiments.mmas_ls.resource_migration import relax_pairs
+    from control_experiments.mmas_ls.campaign import affinity_path
+    from control_experiments.mmas_ls.common import read_json,file_hash
+    task={"id":"pair","kind":"numeric_pair","split":"dev","replicate":4,"indices":[8,9],
+          "numeric_order":list(NUMERIC_MODES)}
+    queue=tmp_path/"queue/pair.json";atomic_json(queue,{"task":task,"source_hash":"frozen"})
+    original_hash=file_hash(queue);affinity=affinity_path(task,tmp_path)
+    atomic_json(affinity,{"gpu_model":"NVIDIA RTX A4000"})
+    atomic_json(tmp_path/"jobs/pair/status.json",{"status":"resource_paused"})
+    atomic_json(tmp_path/"jobs/pair--legacy/evidence.json",{"keep":True})
+    policy=relax_pairs(tmp_path,["pair"]);record=policy["unrestricted_tasks"]["pair"]
+    from pathlib import Path
+    assert read_json(Path(record["archive"])/"pair--legacy/evidence.json")["keep"]
+    assert file_hash(queue)==original_hash and affinity.exists()
+    assert not (tmp_path/"jobs/pair").exists() and affinity_path(task,tmp_path) is None
+    with pytest.raises(ValueError):affinity_path({**task,"replicate":5},tmp_path)
+    assert affinity_path({**task,"id":"another"},tmp_path) is not None
+    with pytest.raises(ValueError):relax_pairs(tmp_path,["pair"])

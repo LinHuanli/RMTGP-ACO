@@ -110,3 +110,12 @@ PYTHONPATH=src CUDA_VISIBLE_DEVICES='' .venv/bin/python \
 后台扫描器持续更新 `reports/numerical_summary.json`。
 配对任务完成后更新 `numeric_quality.csv` 和 PNG/PDF 图。
 未配齐 32 实例 × 5 seeds 时只显示明确标注样本覆盖的描述统计，不生成完整样本 CI。
+
+### 剩余两组的资源策略修订（2026-09-17）
+
+用户批准 `numeric-pair-as-s4-b08` 和 `numeric-pair-mmas-s4-b08` 不再绑定 GPU 型号。
+两组可分别在任意已通过验收的获准空闲卡运行；单个任务的三种模式仍在同一卡配对。
+原 A4000 的未完成产物移至 `resource_pauses/model-migration` 保留，三种模式整体从头运行。
+任务参数、实例、随机 seed、冻结求解源码和其余 96 个已完成任务不变。
+修订记录位于 `protocol/resource_policy.json`，按任务内容 SHA256 限定生效范围。
+结果继续记录实际 GPU 型号和 UUID，不将型号变动隐去，也不据此声称跨卡逐位相等。
