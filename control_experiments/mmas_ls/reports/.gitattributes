@@ -1,2 +1,2 @@
 # 保留生成 CSV 的原始字节，避免换行转换使 report_manifest 的 SHA256 失效。
-*.csv -text
+*.csv -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
