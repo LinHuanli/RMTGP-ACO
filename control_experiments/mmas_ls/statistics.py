@@ -50,26 +50,27 @@ def classify(lower,upper,epsilon=.01):
 
 def load_factorial(out,split,expected_instances,expected_seeds):
     """缺一项就拒绝正式统计；不以可用结果替代冻结样本。"""
-    from .evaluate import factorial_tasks
+    from .report_inputs import frozen_factorial_tasks, checked_status, validate_manifest, validate_raw
     data=np.full((8,4,expected_instances,expected_seeds),np.nan)
     auc=np.full_like(data,np.nan); seen=set()
     expected=read_json(Path(out)/f"manifests/{split}.json")["records"]
-    for task in factorial_tasks(split,out):
+    for task in frozen_factorial_tasks(out,split):
         path=Path(out)/"jobs"/task["id"]
-        status=read_json(path/"status.json",{})
-        if status.get("status")!="completed": raise ValueError(f"缺少完成结果: {task['id']}")
-        for filename,expected_hash in status["files"].items():
-            if file_hash(path/filename)!=expected_hash:raise ValueError(f"缓存结果损坏: {task['id']}/{filename}")
+        status=checked_status(path,("raw.npz","manifest.json"))
         meta=read_json(path/"manifest.json")
-        if meta["task"]!=task: raise ValueError("任务规格与冻结全因子不一致")
+        source=read_json(Path(out)/"queue"/(task["id"]+".json")).get("source_hash")
+        validate_manifest(out,task,meta,source)
         with np.load(path/"raw.npz",allow_pickle=False) as arrays:
             ci=CONDITIONS.index(task["condition"]); rep=task["replicate"]
+            if not 0<=rep<expected_seeds: raise ValueError("随机重复越界")
+            if any(not 0<=i<expected_instances for i in task["indices"]): raise ValueError("实例索引越界")
+            validate_raw(arrays,task,expected)
             for j,i in enumerate(task["indices"]):
                 if str(arrays["instance_hashes"][j])!=expected[i]["coordinate_hash"]: raise ValueError("配对实例不一致")
                 key=(ci,i,rep)
                 if key in seen: raise ValueError("重复结果")
                 seen.add(key); data[ci,:,i,rep]=arrays["gap"][:,j]; auc[ci,:,i,rep]=arrays["auc"][:,j]
-    if not np.isfinite(data).all(): raise ValueError("存在缺失结果；禁止选择性删除")
+    if not np.isfinite(data).all() or not np.isfinite(auc).all(): raise ValueError("存在缺失结果；禁止选择性删除")
     return data,auc
 
 

@@ -5,7 +5,23 @@
 本目录对应 `../MMAS_LS_GPU_ablation_plan.md`。工作分支为
 `experiment/mmas-ls-mechanism-v1`。本轮实现针对固定冠军的 P0–P4；不启动 P5 重新训练。
 
-当前启动的是 **P0 验收**，不是已经得到确认性机制结论。
+截至 2026-09-17，`artifacts/numerical-v1/` 的 **98/98 个任务已完成**。
+本轮是固定冠军的开发集数值对照和历史实现机制分析，不是确认性结论，也不是整个 P0–P5 计划完成。
+
+统计报告入口为 [独立中文报告](reports/numerical-v1/report_zh.md)。
+表格、PDF/PNG、完整性校验和分析版本清单放在同一目录。
+只有 `report_manifest.json` 标为 complete 时，才表示报告所依赖的核验与生成步骤全部完成。
+
+| 本轮项目 | 规模与状态 |
+|---|---|
+| N0 数值验收 | 3 种 GPU × AS/MMAS × 3 种统计模式，18/18 完成；稳定模式通过输入 oracle；legacy 保留已知偏差 |
+| N1 数值质量对照 | 32 个 dev 实例 × 5 seeds × 2 框架 × baseline/3 冠军 × 3 模式；40/40 配对任务完成 |
+| P1 历史 R/F/H 八格 | 32 个 dev 实例 × 5 seeds × 8 条件 × baseline/3 冠军；40/40 完成 |
+| 统计单位 | 32 个实例；ACO seeds 和三个固定冠军不作为独立实例 |
+| 诊断记录 | schema 3 全量逐轮窗口和固定探针；原始记录不改写 |
+| 尚未完成的科学范围 | 独立确认、完整 P3 分叉/回放、P4 反向验证与稳健性、P5 重新训练；本次不追加运行 |
+
+以下为早期实现记录，不代表当前队列仍在等待或运行。
 
 后续完整诊断实现与验收记录见 [DIAGNOSTICS_V3.md](DIAGNOSTICS_V3.md)。
 旧 v2 的 42 个 GPU P0 工单现已完成。旧 light 的缺失项不作追溯填补。
@@ -26,7 +42,8 @@
 | OOD 数据 | 新 Cluster/Gaussian 各 128 个实例的独立 LKH reference 正在生成 |
 | P3/P4 | 已提供机制工单生成器；重型快照/分叉入口需完整验收后加入正式队列 |
 
-`artifacts/v2/` 是当前运行目录。`artifacts/v1/` 中的队列试运行已作废且保留。
+`artifacts/v2/` 是早期运行目录，当前完整分析批次是 `artifacts/numerical-v1/`。
+`artifacts/v1/` 中的队列试运行已作废且保留。
 原因是共享盘的 `flock` 未提供跨主机互斥。现在使用原子 `mkdir` 锁；
 cuda02 成功领取时，cuda03 的同时领取返回失败。没有复用 v1 的队列结果。
 独立完成的原生验收和数据准备未受影响，已保留其记录。
@@ -111,7 +128,11 @@ task matrix。蚂蚁及 2-opt 使用现有 CUDA 并行。不同任务分配到�
 才能移走锁。禁止仅因运行时间长而抢占锁。`STOP` 文件在任务检查点暂停当前 cohort。
 缓存或已完成结果若科学配置变化，不应覆盖；改用新的 cohort。
 
-## 6. 审计粒度与尚未完成的验收
+## 6. 历史 light 记录及后续修订
+
+本节保留早期 light 的限制，用于解释旧产物。当前 numerical-v1 的 schema 3 已记录下述
+窗口矩、PH 饱和、信息素分布和真实 TR 探针。字段定义见 DIAGNOSTICS_V3.md。
+数学正确性、完整性与因果识别是三个不同问题；补齐日志不自动证明机制。
 
 目前 light 保存每轮 26 个 GPU 标量和完整 anytime 曲线，压缩写入 NPZ。它包含来源、
 来源年龄、预算误差、下/上界计数、重启、branch factor、pre/post-LS 质量、deposit CV 和
@@ -133,7 +154,26 @@ P2 启动前仍须完成：历史现象审阅、FP64 组件效应审阅、强制
 已有旧 final-test NPZ 没有 tour，因此不能声称与旧文件逐路径复现；同环境旧源码对照
 另有 tour，可以逐路径比较。这两种验收不可混为一谈。
 
-## 7. 常用入口
+## 7. 当前报告与核验入口
+
+本轮报告只使用开发集，不访问确认集，不启动 GPU 求解。
+默认使用 4 个 CPU worker；共享盘校验较慢时可显式调整 `--workers`。
+
+```bash
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONPATH=src \
+  .venv/bin/python -m control_experiments.mmas_ls.research_report --workers 4
+
+CUDA_VISIBLE_DEVICES='' PYTHONPATH=src .venv/bin/python -m pytest -q \
+  control_experiments/mmas_ls/tests/test_research_report.py \
+  control_experiments/mmas_ls/tests/test_statistics.py
+```
+
+入口默认读取 `artifacts/numerical-v1`，输出到 `reports/numerical-v1`。
+`--phase quality` 仅生成质量统计与图，不宣告完整诊断报告完成。
+派生缓存绑定输入身份和分析代码；文件大小、mtime 或 ctime 变化时重新核验。
+原始冻结快照、队列、已完成结果和旧 gate 保持不变。
+
+### 早期队列操作入口（默认指向 v2）
 
 在仓库根目录使用当前 `.venv`：
 
