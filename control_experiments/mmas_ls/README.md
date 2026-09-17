@@ -1,5 +1,51 @@
 # MMAS + LS 机制实验：实现和运行记录
 
+## 当前入口：组件归因与作用过程
+
+2026-09-18 的新协议见 [组件解释执行协议](MECHANISM_EXPLANATION.md)。
+报告改为按“现象 → 实现差异 → 组件干预 → 中间过程 → 同状态与反向验证 → 结论”组织，
+正文和新图表使用完整组件名称，不要求读者解释内部实验编号。
+
+- [新版中文报告](reports/mechanism-explanation-v1/report_zh.md)：已有最终结果和全部 60 组中间日志分析已完成；包含组件效应、路径来源、实际规则作用、局部搜索、阶段变化与重启事件图表。
+- [旧发布版本归档](reports/numerical-v1-original/report_zh.md)：保留原有数据、图表与哈希清单。
+- 当前实验目录：`artifacts/mechanism-explanation-v2/`。首个补充批次保留失败验收记录并停止，不覆盖旧数据。
+- 共 546 个冻结任务：9 个逐型号验收、35 个来源对照、6 个完整状态采集、216 个同状态干预、280 个独立确认。
+- 开发对照为 32 实例 × 5 种子，六个固定表达式分别跨 AS/MMAS 执行；确认仍为 128 实例 × 10 种子，每框架三个原有表达式。
+- 不重新训练或选择模型。新增正式对照用中心化 FP32；原数值实现只用于历史行为解释。
+- 67 项 CPU 测试通过，覆盖统计符号、实验配对、控制变量、日志指标和空间检查；A5000 和 RTX 4000 Ada 的新批次各 13 项 GPU 控制与恢复测试通过。
+  跨框架正式规模验收发现来源边均值的 FP32 累加误差；已增加补偿求和和真实失败输入回归。
+  新批次重新验收，不沿用首轮通过状态，也不放宽核验阈值。A5000 的 AS/MMAS 完整输入、分块、记录、来源与恢复验收均通过，正式来源对照已启动。
+
+后台监控使用 `nohup`，每 60 秒扫描允许使用的空闲 A5000、RTX 4000 Ada 和 A4000。
+验收按型号分别放行；记录显卡和随机种子，跨主机用原子目录锁避免重复领取。
+`monitor/storage_budget.json` 按验收实测压缩体积估算未完成阶段，正式日志另加 25% 余量。
+当前空间可支持开发及同状态阶段，但按现有估计不足以容纳全部独立确认日志。确认前重新检查；不足时
+写入本实验 `STOP`，保留已完成结果和检查点，不删日志或降低采样。容量估计不是严格上界。
+
+存储决定（2026-09-18）：用户确认暂不安排额外共享存储，空间扩充需求先记录，待有空间后再处理。
+全部补充实验的完整日志曾按实测大小保守外推，额外空间缺口约为 1.5 TB；这不是实时精确需求，恢复前须重新估算。
+现有空间允许的开发集和同状态实验继续按原计划运行。因空间不足而暂停的实验保留队列、日志和检查点，
+等用户确认有可用空间后再恢复；不自动解除停止标记，不删减记录，也不擅自迁移到其他存储目录。
+
+观察实际进度：
+
+```bash
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONPATH=src \
+  .venv/bin/python -m control_experiments.mmas_ls.explanation_campaign status
+```
+
+完整中间日志的独立分析与报告生成入口：
+
+```bash
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONPATH=src \
+  .venv/bin/python -m control_experiments.mmas_ls.explanation_analysis --workers 16
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONPATH=src \
+  .venv/bin/python -m control_experiments.mmas_ls.explanation_report
+```
+
+已有队列不能重复 `prepare`。配置修改须另建批次。正式任务先通过来源、预算、终端输入、
+分块、记录及恢复验收；独立确认在来源对照和同状态干预全部完成后运行，不按显著性增减样本。
+
 ## 1. 范围与当前状态
 
 本目录对应 `../MMAS_LS_GPU_ablation_plan.md`。工作分支为
@@ -8,7 +54,7 @@
 截至 2026-09-17，`artifacts/numerical-v1/` 的 **98/98 个任务已完成**。
 本轮是固定冠军的开发集数值对照和历史实现机制分析，不是确认性结论，也不是整个 P0–P5 计划完成。
 
-统计报告入口为 [独立中文报告](reports/numerical-v1/report_zh.md)。
+以下记录描述前一批次。旧入口 [独立中文报告](reports/numerical-v1/report_zh.md) 已跳转新版。
 表格、PDF/PNG、完整性校验和分析版本清单放在同一目录。
 只有 `report_manifest.json` 标为 complete 时，才表示报告所依赖的核验与生成步骤全部完成。
 

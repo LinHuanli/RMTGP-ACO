@@ -12,6 +12,14 @@ from .campaign import ALLOWED_GPU_MODELS,devices,eligible,launch_device,lock,aff
 
 
 def runnable_tasks(out,gpu_model=None):
+    if (Path(out)/"protocol/explanation.json").exists():
+        from .explanation_campaign import readiness_batch
+        with readiness_batch():
+            return _runnable_tasks(out,gpu_model)
+    return _runnable_tasks(out,gpu_model)
+
+
+def _runnable_tasks(out,gpu_model=None):
     """排除已完成、正在领取、达到失败上限和未过验收的任务。"""
     tasks=[];out=Path(out)
     for path in (out/"queue").glob("*.json"):
@@ -22,8 +30,7 @@ def runnable_tasks(out,gpu_model=None):
         if read_json(folder/"status.json",{}).get("status")=="completed":continue
         if (out/"locks/tasks"/(task["id"]+".lock.d")).exists():continue
         if read_json(folder/"attempts.json",{"count":0})["count"]>=3:continue
-        allowed=(eligible(task,out,gpu_model) if task.get("kind") in
-                 ("numeric_validation","numeric_pair","historical_mechanism") else eligible(task,out))
+        allowed=eligible(task,out) if gpu_model is None else eligible(task,out,gpu_model)
         if allowed:tasks.append(task["id"])
     return tasks
 
@@ -75,11 +82,19 @@ def run(out=OUT,interval=60,cooldown=300,once=False):
             while not stopped and not (out/"WATCH_STOP").exists() and not (out/"STOP").exists():
                 started=time.monotonic()
                 try:
+                    if (out/"protocol/explanation.json").exists():
+                        from .storage_guard import enforce_capacity
+                        if not enforce_capacity(out):
+                            print("完整诊断日志预计空间不足，已写入本实验 STOP；保留结果和检查点。",flush=True)
+                            break
                     cycle=scan(out,last_launch,cooldown)
                     if (out/"protocol/numerical.json").exists():
                         # 独立 CPU 汇总，按结果签名缓存；不改变科学门禁或 GPU 任务。
                         from .numerical_report import summarize
                         summarize(out)
+                    if (out/"protocol/explanation.json").exists():
+                        from .explanation_campaign import update_progress
+                        update_progress(out)
                     atomic_json(out/"monitor/last_launch.json",last_launch)
                     payload={**base,"status":"watching","last_scan":cycle}
                 except Exception as error:

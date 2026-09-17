@@ -1,0 +1,19 @@
+task,gpu_model,variant,mode,validation,oracle,instances,iterations,off_seconds,audit_seconds,audit_wall_ratio
+numeric-check-a4000-as-centered_fp32,NVIDIA RTX A4000,as,centered_fp32,passed,passed,32,100,35.204851605929434,52.32282425556332,1.4862390229973519
+numeric-check-a4000-as-centered_fp64,NVIDIA RTX A4000,as,centered_fp64,passed,passed,32,100,31.239855161868036,47.855251680128276,1.5318653505968014
+numeric-check-a4000-as-legacy,NVIDIA RTX A4000,as,legacy,passed,mismatch,32,100,32.57060653157532,47.53771961014718,1.4595282272088517
+numeric-check-a4000-mmas-centered_fp32,NVIDIA RTX A4000,mmas,centered_fp32,passed,passed,32,100,7.230590904131532,15.765068404376507,2.180329189329244
+numeric-check-a4000-mmas-centered_fp64,NVIDIA RTX A4000,mmas,centered_fp64,passed,passed,32,100,7.41796251013875,16.333674058318138,2.201908412989893
+numeric-check-a4000-mmas-legacy,NVIDIA RTX A4000,mmas,legacy,passed,mismatch,32,100,7.321278806775808,15.964233128353953,2.180525226491734
+numeric-check-a5000-as-centered_fp32,NVIDIA RTX A5000,as,centered_fp32,passed,passed,32,100,34.16206879168749,49.4683801503852,1.4480498956908059
+numeric-check-a5000-as-centered_fp64,NVIDIA RTX A5000,as,centered_fp64,passed,passed,32,100,29.82980480324477,45.0107780219987,1.5089196298429217
+numeric-check-a5000-as-legacy,NVIDIA RTX A5000,as,legacy,passed,mismatch,32,100,30.97196298232302,42.415226604789495,1.3694716937701887
+numeric-check-a5000-mmas-centered_fp32,NVIDIA RTX A5000,mmas,centered_fp32,passed,passed,32,100,6.092320810072124,15.42728105513379,2.532250276385421
+numeric-check-a5000-mmas-centered_fp64,NVIDIA RTX A5000,mmas,centered_fp64,passed,passed,32,100,6.423351261764765,15.101965542882681,2.3511037972931184
+numeric-check-a5000-mmas-legacy,NVIDIA RTX A5000,mmas,legacy,passed,mismatch,32,100,6.292272845283151,16.25090659270063,2.582676719888701
+numeric-check-ada4000-as-centered_fp32,NVIDIA RTX 4000 Ada Generation,as,centered_fp32,passed,passed,32,100,27.874903693795204,44.72100576851517,1.6043465570239732
+numeric-check-ada4000-as-centered_fp64,NVIDIA RTX 4000 Ada Generation,as,centered_fp64,passed,passed,32,100,24.726845464669168,41.10045777074993,1.662179586533839
+numeric-check-ada4000-as-legacy,NVIDIA RTX 4000 Ada Generation,as,legacy,passed,mismatch,32,100,25.82222035806626,40.92179335374385,1.5847511478989
+numeric-check-ada4000-mmas-centered_fp32,NVIDIA RTX 4000 Ada Generation,mmas,centered_fp32,passed,passed,32,100,5.368313420563936,15.501208796165884,2.8875379624421216
+numeric-check-ada4000-mmas-centered_fp64,NVIDIA RTX 4000 Ada Generation,mmas,centered_fp64,passed,passed,32,100,5.479472846724093,15.682678551413119,2.86207797540032
+numeric-check-ada4000-mmas-legacy,NVIDIA RTX 4000 Ada Generation,mmas,legacy,passed,mismatch,32,100,5.418133057653904,14.405405138619244,2.6587396406349795

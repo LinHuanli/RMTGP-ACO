@@ -58,7 +58,9 @@ def file_hash(path):
 
 def source_manifest():
     files=sorted(list((CODE_ROOT/"src/rmtgp_aco").glob("*.py"))+list((CODE_ROOT/"src/rmtgp_aco/cuda").glob("*.cu"))
-                 +list(HERE.glob("*.py"))+list(HERE.glob("*.yaml")))
+                 +list(HERE.glob("*.py"))+list(HERE.glob("*.yaml"))
+                 +list((HERE/"tests").glob("*.py"))
+                 +([HERE/"MECHANISM_EXPLANATION.md"] if (HERE/"MECHANISM_EXPLANATION.md").exists() else []))
     hashes={str(p.relative_to(CODE_ROOT)):file_hash(p) for p in files}
     return {"source_hash":digest(hashes),"files":hashes,
             "commit":subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),

@@ -11,15 +11,22 @@ from .common import OUT,atomic_json,atomic_npz,digest,evaluation_seed,experiment
 from .prepare import batch
 
 
-def program_entries(variant,modes=("full",)):
+def program_entries(variant,modes=("full",),training_variants=None):
+    """执行框架与表达式训练框架分开；默认入口保持旧冻结任务的字段和顺序。"""
+    origins=(variant,) if training_variants is None else tuple(training_variants)
+    if not origins or len(set(origins))!=len(origins) or any(v not in ("as","mmas") for v in origins):
+        raise ValueError("训练框架必须是无重复的 AS/MMAS 列表")
     entries=[{"id":"baseline","mode":"baseline","seed":None,"hash":"baseline","program":(None,None)}]
-    for m in models(variant):
+    for m in (m for origin in origins for m in models(origin)):
         tr,ph=m["program"]
         for mode in modes:
             if mode not in ("full","tr_only","ph_only"): raise ValueError(mode)
             program=(None if mode=="ph_only" else tr,None if mode=="tr_only" else ph)
-            entries.append({"id":m["id"],"mode":mode,"seed":m["seed"],"hash":m["structural_hash"],
-                            "file_hash":m["file_hash"],"program":program})
+            entry={"id":m["id"],"mode":mode,"seed":m["seed"],"hash":m["structural_hash"],
+                   "file_hash":m["file_hash"],"program":program}
+            if training_variants is not None:
+                entry.update(training_variant=m["id"].split("-",1)[0],execution_variant=variant)
+            entries.append(entry)
     return entries
 
 
@@ -28,7 +35,10 @@ def run_task(task,out=OUT):
     from rmtgp_aco.aco_cuda import solve_population_cuda_anytime,_active_and_representative_programs
     out=Path(out); split=task["split"]; indices=task["indices"]
     horizon=task.get("iterations",5000); variant=task.get("variant","mmas")
-    entries=program_entries(variant,tuple(task.get("modes",["full"])))
+    entries=program_entries(variant,tuple(task.get("modes",["full"])),task.get("training_variants"))
+    stop=task.get("stop_iteration",horizon)
+    if stop!=horizon and task.get("kind")!="explanation_validation_run":
+        raise ValueError("短前缀只用于明确标记的验收任务，不得当作完整正式结果")
     mechanism=MechanismConfig(**task["mechanism"])
     audit_spec=task.get("instrumentation","light")
     instrumentation=(InstrumentationConfig(**audit_spec) if isinstance(audit_spec,dict)
@@ -60,7 +70,7 @@ def run_task(task,out=OUT):
     aco,runtime=experiment(variant,horizon,task.get("precision","fp32_fast"))
     runtime=replace(runtime,gpu_task_chunk_size=task.get("task_chunk_size",0))
     programs=[e["program"] for e in entries]
-    control=SolverControl(mechanism,instrumentation,collected=[])
+    control=SolverControl(mechanism,instrumentation,collected=[],stop_iteration=stop)
     recorder=None
     if instrumentation.detailed:
         from .diagnostics import DiagnosticRecorder
@@ -78,7 +88,7 @@ def run_task(task,out=OUT):
     started=time.perf_counter()
     try:
         result=solve_population_cuda_anytime(problem,aco,programs,seed=seed,runtime=runtime,control=control)
-        if recorder: recorder.finish(horizon)
+        if recorder: recorder.finish(stop)
     finally:
         if recorder: recorder.close()
     elapsed=time.perf_counter()-started
@@ -90,13 +100,13 @@ def run_task(task,out=OUT):
     for shard in control.collected:
         if shard["trace"] is not None: trace[shard["flat_indices"]]=shard["trace"]
         diagnostics[shard["flat_indices"]]=shard["diagnostics"]
-    trace=trace.reshape(p,b,horizon,-1)[inverse]
+    trace=trace.reshape(p,b,horizon,-1)[inverse,:,:stop]
     diagnostics=diagnostics.reshape(p,b,8)[inverse]
     if instrumentation.level!="off" and np.max(trace[...,20])>1e-5:
         raise ArithmeticError(f"deposit budget error={np.max(trace[...,20])}")
     lengths=result.best_length.numpy(); reference=problem.reference_length.numpy()
     gaps=100*(lengths/reference[None,:]-1)
-    curve=result.anytime_best.numpy()
+    curve=result.anytime_best.numpy()[:,:,:stop]
     if not np.isfinite(gaps).all() or not np.isfinite(curve).all(): raise ArithmeticError("非有限质量值")
     atomic_npz(target/"raw.npz",length=lengths,reference=reference,gap=gaps,
         tour=result.best_tour.numpy(),best_iteration=result.best_iteration.numpy(),

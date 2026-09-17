@@ -107,6 +107,9 @@ def gpu_info(device):
 
 def eligible(task,out,gpu_model=None):
     stage=task["stage"]
+    if task.get("kind", "").startswith("explanation_"):
+        from .explanation_campaign import ready
+        return ready(task,out,gpu_model)
     if task.get("kind") in ("numeric_validation","numeric_pair","historical_mechanism"):
         if read_json(Path(out)/"validation/data_provenance.json",{}).get("status")!="passed":return False
         # 完整日志的空间保护。资源不足不是放宽采样规则的理由。
@@ -148,7 +151,7 @@ def archive_paused_validation(task,out):
     验收规格包含设备 UUID 和环境，不能把另一张卡的前缀拼入同一记录。
     只移动本任务的派生产物，保留重试日志；完整科学求解仍走检查点恢复。
     """
-    if task.get("kind")!="numeric_validation":return None
+    if task.get("kind") not in ("numeric_validation","explanation_validation","explanation_kernel_validation"):return None
     out=Path(out);folder=out/"jobs"/task["id"]
     if read_json(folder/"status.json",{}).get("status")!="resource_paused":return None
     records=[p for p in folder.iterdir() if p.name not in ("status.json","attempts.json")
@@ -278,7 +281,10 @@ def main():
         from .evaluate import run_task
         try:
             task=read_json(a.task)["task"]
-            if task.get("kind")=="numeric_validation":
+            if task.get("kind", "").startswith("explanation_"):
+                from .explanation_campaign import execute
+                execute(task,a.output)
+            elif task.get("kind")=="numeric_validation":
                 from .numerical_validation import validate
                 validate(task,a.output)
             elif task.get("kind")=="numeric_pair":

@@ -38,6 +38,20 @@ struct CenteredTerminal {
     TerminalReal deviation;
 };
 
+__device__ __forceinline__ void terminal_accumulate(
+    TerminalReal value, TerminalReal& total, TerminalReal& correction
+) {
+#if RMTGP_MECH_TERMINAL_STATS == 2
+    total += value;
+#else
+    // 补偿长向量求和误差。显式舍入指令防止 fast-math 将补偿项重排消去。
+    const float adjusted = __fsub_rn(value, correction);
+    const float updated = __fadd_rn(total, adjusted);
+    correction = __fsub_rn(__fsub_rn(updated, total), adjusted);
+    total = updated;
+#endif
+}
+
 __device__ __forceinline__ TerminalReal terminal_log(TerminalReal x) {
 #if RMTGP_MECH_TERMINAL_STATS == 2
     return log(x);
@@ -970,22 +984,26 @@ __device__ void prepare_source_deposits(
     const float tau_anchor=pheromone[anchor_u*n+anchor_v];
     const TerminalReal eta_anchor=terminal_edge_eta(anchor_u,anchor_v,n,log_heuristic,node_log_eta_mean);
     CenteredTerminal stable_eta{},stable_tau{};
+    TerminalReal eta_mean_correction=0,tau_mean_correction=0;
     for (int edge=0;edge<n;++edge) {
         const int u=source_tour[edge],v=source_tour[edge+1];
-        if (need_edge_eta) stable_eta.mean+=terminal_edge_eta(u,v,n,log_heuristic,node_log_eta_mean)-eta_anchor;
-        if (need_edge_tau) stable_tau.mean+=terminal_log_ratio(pheromone[u*n+v],tau_anchor,epsilon_numeric);
+        if (need_edge_eta) terminal_accumulate(terminal_edge_eta(u,v,n,log_heuristic,node_log_eta_mean)-eta_anchor,
+                                             stable_eta.mean,eta_mean_correction);
+        if (need_edge_tau) terminal_accumulate(terminal_log_ratio(pheromone[u*n+v],tau_anchor,epsilon_numeric),
+                                             stable_tau.mean,tau_mean_correction);
     }
     stable_eta.mean/=static_cast<TerminalReal>(n);
     stable_tau.mean/=static_cast<TerminalReal>(n);
+    TerminalReal eta_variance_correction=0,tau_variance_correction=0;
     for (int edge=0;edge<n;++edge) {
         const int u=source_tour[edge],v=source_tour[edge+1];
         if (need_edge_eta) {
             const TerminalReal d=(terminal_edge_eta(u,v,n,log_heuristic,node_log_eta_mean)-eta_anchor)-stable_eta.mean;
-            stable_eta.deviation+=d*d;
+            terminal_accumulate(d*d,stable_eta.deviation,eta_variance_correction);
         }
         if (need_edge_tau) {
             const TerminalReal d=terminal_log_ratio(pheromone[u*n+v],tau_anchor,epsilon_numeric)-stable_tau.mean;
-            stable_tau.deviation+=d*d;
+            terminal_accumulate(d*d,stable_tau.deviation,tau_variance_correction);
         }
     }
     stable_eta.deviation=terminal_sqrt(stable_eta.deviation/static_cast<TerminalReal>(n));
@@ -1020,11 +1038,13 @@ __device__ void prepare_source_deposits(
     if (need_source_quality) {
         const TerminalReal anchor=colony_lengths[0];
         CenteredTerminal stats{};
-        for (int ant=0;ant<ants;++ant) stats.mean+=static_cast<TerminalReal>(colony_lengths[ant])-anchor;
+        TerminalReal mean_correction=0,variance_correction=0;
+        for (int ant=0;ant<ants;++ant) terminal_accumulate(static_cast<TerminalReal>(colony_lengths[ant])-anchor,
+                                                       stats.mean,mean_correction);
         stats.mean/=static_cast<TerminalReal>(ants);
         for (int ant=0;ant<ants;++ant) {
             const TerminalReal d=(static_cast<TerminalReal>(colony_lengths[ant])-anchor)-stats.mean;
-            stats.deviation+=d*d;
+            terminal_accumulate(d*d,stats.deviation,variance_correction);
         }
         stats.deviation=terminal_sqrt(stats.deviation/static_cast<TerminalReal>(ants));
         source_quality=-terminal_normalized(static_cast<TerminalReal>(source_length)-anchor,stats,epsilon_numeric);

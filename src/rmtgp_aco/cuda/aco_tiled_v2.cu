@@ -768,28 +768,30 @@ extern "C" __global__ void v2_construct(
             }
             stats.tau_anchor=pheromone[current*n+anchor_city];
             stats.eta_anchor=static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+current*n+anchor_city));
-            TerminalReal tau_total=0,eta_total=0;
+            TerminalReal tau_total=0,eta_total=0,tau_mean_correction=0,eta_mean_correction=0;
             for (int position=lane;position<limit;position+=RMTGP_CANDIDATE_LANES) {
                 const int city=fallback?position:static_cast<int>(current_nearest[position]);
                 if (is_visited(ant_visited,city)) continue;
                 const int edge=current*n+city;
-                if (need_log_tau) tau_total+=terminal_log_ratio(pheromone[edge],stats.tau_anchor,epsilon_numeric);
-                if (need_log_eta) eta_total+=static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+edge))-stats.eta_anchor;
+                if (need_log_tau) terminal_accumulate(terminal_log_ratio(pheromone[edge],stats.tau_anchor,epsilon_numeric),
+                                                     tau_total,tau_mean_correction);
+                if (need_log_eta) terminal_accumulate(static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+edge))-stats.eta_anchor,
+                                                     eta_total,eta_mean_correction);
             }
             stats.stable_tau.mean=group_sum(tau_total)/static_cast<TerminalReal>(stats.count);
             stats.stable_eta.mean=group_sum(eta_total)/static_cast<TerminalReal>(stats.count);
-            TerminalReal tau_variance=0,eta_variance=0;
+            TerminalReal tau_variance=0,eta_variance=0,tau_variance_correction=0,eta_variance_correction=0;
             for (int position=lane;position<limit;position+=RMTGP_CANDIDATE_LANES) {
                 const int city=fallback?position:static_cast<int>(current_nearest[position]);
                 if (is_visited(ant_visited,city)) continue;
                 const int edge=current*n+city;
                 if (need_log_tau) {
                     const TerminalReal d=terminal_log_ratio(pheromone[edge],stats.tau_anchor,epsilon_numeric)-stats.stable_tau.mean;
-                    tau_variance+=d*d;
+                    terminal_accumulate(d*d,tau_variance,tau_variance_correction);
                 }
                 if (need_log_eta) {
                     const TerminalReal d=(static_cast<TerminalReal>(load_static(log_heuristic_all,instance_base+edge))-stats.eta_anchor)-stats.stable_eta.mean;
-                    eta_variance+=d*d;
+                    terminal_accumulate(d*d,eta_variance,eta_variance_correction);
                 }
             }
             stats.stable_tau.deviation=terminal_sqrt(group_sum(tau_variance)/static_cast<TerminalReal>(stats.count));

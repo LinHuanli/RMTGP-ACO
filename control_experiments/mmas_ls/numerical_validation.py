@@ -34,7 +34,7 @@ def resume_probe(mode,variant,problem,aco,runtime,programs):
             "instances":problem.batch_size,"mode":mode,"variant":variant}
 
 
-def operator_probe(mode,directory):
+def operator_probe(mode,directory,regression_rows=None):
     """直接调用生产 CUDA 的稳定统计 helper，覆盖常量、近常量和大动态范围。"""
     import cupy as cp
     from rmtgp_aco.aco_cuda import _CUDA_SOURCE
@@ -43,11 +43,12 @@ def operator_probe(mode,directory):
 extern "C" __global__ void numeric_probe(const float* input,float* output,int n,int logarithmic) {
     const float* row=input+blockIdx.x*n;
     CenteredTerminal s{};
-    for(int j=0;j<n;++j) s.mean+=logarithmic?terminal_log_ratio(row[j],row[0],1e-12f):static_cast<TerminalReal>(row[j])-row[0];
+    TerminalReal mean_correction=0,variance_correction=0;
+    for(int j=0;j<n;++j) terminal_accumulate(logarithmic?terminal_log_ratio(row[j],row[0],1e-12f):static_cast<TerminalReal>(row[j])-row[0],s.mean,mean_correction);
     s.mean/=static_cast<TerminalReal>(n);
     for(int j=0;j<n;++j) {
         const TerminalReal x=logarithmic?terminal_log_ratio(row[j],row[0],1e-12f):static_cast<TerminalReal>(row[j])-row[0];
-        const TerminalReal d=x-s.mean;s.deviation+=d*d;
+        const TerminalReal d=x-s.mean;terminal_accumulate(d*d,s.deviation,variance_correction);
     }
     s.deviation=terminal_sqrt(s.deviation/static_cast<TerminalReal>(n));
     for(int j=0;j<n;++j) {
@@ -62,8 +63,14 @@ extern "C" __global__ void numeric_probe(const float* input,float* output,int n,
         x=np.stack([np.full(n,.281851381,dtype=np.float32),
                     np.linspace(.281851381,.281851381+1e-6,n,dtype=np.float32),
                     np.geomspace(1e-12,1e12,n,dtype=np.float32)])
+        if n==500:
+            # 一个远离均值的锚点与大量相近值，覆盖长向量顺序累加的偏斜分布。
+            skew=np.full(500,np.float32(.3045898));skew[0]=np.float32(.00029916377)
+            x=np.concatenate((x,skew[None,:]),axis=0)
+            if regression_rows is not None:
+                x=np.concatenate((x,np.asarray(regression_rows,dtype=np.float32).reshape(-1,500)),axis=0)
         for logarithmic in (0,1):
-            actual=cp.empty_like(cp.asarray(x));kernel((3,),(1,),(cp.asarray(x),actual,np.int32(n),np.int32(logarithmic)))
+            actual=cp.empty_like(cp.asarray(x));kernel((len(x),),(1,),(cp.asarray(x),actual,np.int32(n),np.int32(logarithmic)))
             actual=cp.asnumpy(actual)
             expected=normalized(np.log(x.astype(float)) if logarithmic else x.astype(float))
             error=float(np.max(abs(actual-expected)))

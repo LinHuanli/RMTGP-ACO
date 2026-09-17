@@ -40,7 +40,7 @@
     "per_champion.csv": "c541585de4d712a604888b15af4454da70cc45263a7cc4f944d6addf3914646a",
     "provenance.json": "ca055484f42d62f9a2b47fe81dbd7d31d039b535469a5659044358879e459e57",
     "quality_per_solve.csv": "ad5839a439b1f8f25cea28beb3b9084638634c0f8446dfa5992261941254f796",
-    "report_zh.md": "4bfbfa23fd5e14187041b79ef56b7e0141812369a558f9e077cbadfcc6077c41",
+    "report_zh.md": "859bdc20508e24810cfc1b6893fe9a11c57889c137da4c12d74d7137535ca165",
     "restart_events.csv": "1de54170ad7770d2ffaf8156007dbca92ba09d69433d1f13f10dda6dae045a29",
     "restart_summary.csv": "02745c7c5ef33d9ffde5a1ce495173ad14948c5b5c6e17fa74f8ccb90e3d91bc",
     "statistics.json": "4f57b23bd6a825e0959555fe888e8e9af5c2b6857a95b80f33bc87d0c308894c",
@@ -48,5 +48,6 @@
     "timing.csv": "a7523035d7db2c5fbcb4d4aac3c8e1e756f59fdce19a29e59229973f19ef5377",
     "timing_per_task.csv": "31d32d9ab7f246c73eb707eb397629bf854dbf330bf9131634644c03fbd8bd94",
     "validation_integrity.json": "a0ce5b52c73c83f3377845459c75fc8bd9358576be01601685a7445cdba0354d"
-  }
+  },
+  "report_redirect": "../mechanism-explanation-v1/report_zh.md"
 }

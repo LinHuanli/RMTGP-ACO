@@ -11,14 +11,15 @@ from .prepare import batch
 from .probes import tour_edges
 
 
-def transition_distribution(tau,problem,instance,context,visited,program,aco,iteration,stagnation):
+def transition_distribution(tau,problem,instance,context,visited,program,aco,iteration,stagnation,geometry=None):
     """固定可行集合的 CPU FP64 参考核；包含完整 TR，明确区别于 GPU 实际概率日志。"""
     n=problem.n; city=int(context[3]); previous=int(context[4]); step=int(context[2])
     available=np.array([not (int(visited[i//64])>>(i%64)&1) for i in range(n)])
-    nearest=problem.nn_indices.numpy()[instance,city,:aco.candidate_size].astype(int)
+    nearest=(problem.nn_indices.numpy() if geometry is None else geometry["nearest"])[instance,city,:aco.candidate_size].astype(int)
     candidates=nearest[available[nearest]];fallback=not len(candidates)
     if fallback: candidates=np.flatnonzero(available)
-    distance=problem.distances.numpy()[instance];coords=problem.coords.numpy()[instance]
+    distance=(problem.distances.numpy() if geometry is None else geometry["distances"])[instance]
+    coords=(problem.coords.numpy() if geometry is None else geometry["coords"])[instance]
     values=np.asarray(tau[city,candidates],float);length=distance[city,candidates]
     eta=1/np.maximum(length,aco.epsilon_distance)
     baseline=values**aco.alpha*eta**aco.beta
@@ -28,8 +29,10 @@ def transition_distribution(tau,problem,instance,context,visited,program,aco,ite
     entropy=-np.sum(basep*np.log(np.maximum(basep,aco.epsilon_numeric)))
     horizon=aco.iterations
     # 全局 nearest-neighbour rank 按距离、城市编号稳定排序，与数据准备语义对应。
-    order=np.argsort(distance,axis=-1,kind="stable"); ranks=np.empty_like(order)
-    np.put_along_axis(ranks,order,np.arange(n)[None,:],axis=-1)
+    if geometry is None:
+        order=np.argsort(distance,axis=-1,kind="stable"); ranks=np.empty_like(order)
+        np.put_along_axis(ranks,order,np.arange(n)[None,:],axis=-1)
+    else:ranks=geometry["ranks"][instance]
     mutual=1-(ranks[city,candidates]+ranks[candidates,city]-2)/(2*max(n-2,1))
     if previous<0:turn=np.zeros(count)
     else:
