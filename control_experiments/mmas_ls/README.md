@@ -2,6 +2,12 @@
 
 ## 当前入口：组件归因与作用过程
 
+历史路径强化的信息素作用链和离线动画见
+[机制可视化协议](MECHANISM_VISUALIZATION.md)。实现入口是
+`python -m control_experiments.mmas_ls.mechanism_visualization`。新产物写入
+`artifacts/mechanism-visualization-v1` 和 `reports/mechanism-explanation-v2`；不覆盖已审计的 v1 报告，
+也不恢复因空间不足暂停的独立确认队列。
+
 2026-09-18 的新协议见 [组件解释执行协议](MECHANISM_EXPLANATION.md)。
 报告改为按“现象 → 实现差异 → 组件干预 → 中间过程 → 同状态与反向验证 → 结论”组织，
 正文和新图表使用完整组件名称，不要求读者解释内部实验编号。

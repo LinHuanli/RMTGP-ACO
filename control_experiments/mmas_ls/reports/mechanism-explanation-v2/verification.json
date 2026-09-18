@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "checked_at": "2026-09-18T04:34:00.073421+00:00",
+  "completed_counts": {
+    "matched_interventions": 216,
+    "development": 35,
+    "matched_states": 6,
+    "validation": 6,
+    "confirmation": 0
+  },
+  "errors": [],
+  "confirmation_scope": "280 项独立确认仍因共享盘空间暂停；未选择性使用其子集",
+  "analysis_identity": "5b3623cc77e599510f9402530d874d1b41206339d05467f22aa41e11f0894c04"
+}

@@ -1,0 +1,147 @@
+{
+  "status": "analysis_complete",
+  "generated_at": "2026-09-18T04:29:06.782818+00:00",
+  "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/control_experiments/mmas_ls/artifacts/mechanism-explanation-v2",
+  "output": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/control_experiments/mmas_ls/artifacts/mechanism-visualization-v1",
+  "report": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/control_experiments/mmas_ls/reports/mechanism-explanation-v2",
+  "development_tasks": 35,
+  "matched_state_parents": 6,
+  "matched_interventions": 216,
+  "confirmation_tasks_completed": 0,
+  "confirmation_tasks_pending": 280,
+  "source_performance_rows": 14,
+  "same_state_summary_rows": {
+    "source_support": 3840,
+    "probability": 70,
+    "update_tree": 432
+  },
+  "trajectory_summary_rows": {
+    "trajectory": 5224,
+    "events": 24
+  },
+  "continuation_summary_rows": {
+    "quality": 240,
+    "quality_across_snapshots": 40,
+    "two_opt": 192,
+    "two_opt_across_snapshots": 32
+  },
+  "expression_rows": 3,
+  "replay": {
+    "status": "complete",
+    "rows": 1608,
+    "selection": {
+      "status": "selected",
+      "created_at": "2026-09-18T03:49:38.911285+00:00",
+      "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/control_experiments/mmas_ls/artifacts/mechanism-explanation-v2",
+      "source_manifest_sha256": "d27595294bb83435eb68ccbf8365da075076bd04ff52f4e07c97336e85507767",
+      "instance": 25,
+      "replicate": 2,
+      "aco_seed": 3182880162161180279,
+      "instance_record": {
+        "id": "sha256:98571daf08e6aef1926760f7d6401bba7190b12cbbf837bde9d7578b5ea288c6",
+        "coordinate_hash": "98571daf08e6aef1926760f7d6401bba7190b12cbbf837bde9d7578b5ea288c6",
+        "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/Datasets/TSP/train_dataset/tsp/tsp_500/tsp500_uniform_16k_1.txt",
+        "line": 15479,
+        "source_sha256": "c4f4fef9fc7feed55d679669dab7b2868eeb459a5d1b9b4c87512e7ff7b58795",
+        "reference_hash": "de5271020fcb52d7e3386b2c0a89300068b612034393163df207ebbf6745bd78",
+        "reference_length": 16.80025808438385,
+        "reference_status": "feasible_reference_continuous_fp64",
+        "distance": "continuous_euclidean"
+      },
+      "selection_features": [
+        "最终 reference gap（%）",
+        "平均来源年龄（轮）",
+        "历史来源不同于本轮最优的比例",
+        "2-opt 后不同路径数",
+        "构造选择归一化熵"
+      ],
+      "selected_instance_values": [
+        0.07227654833324326,
+        426.86776,
+        0.18308457711442788,
+        21.967164179104476,
+        0.07716086189968377
+      ],
+      "selected_seed_values": [
+        0.03671332511849812,
+        456.197,
+        0.208955223880597,
+        22.27363184079602,
+        0.07653417107024317
+      ],
+      "componentwise_instance_median": [
+        0.07679192582686234,
+        433.81052,
+        0.17960199004975125,
+        21.320895522388064,
+        0.07715066558889014
+      ],
+      "robust_feature_scale": [
+        0.05228777037291854,
+        59.10203999999999,
+        0.008457711442786064,
+        0.7203980099502427,
+        0.002053839949721685
+      ],
+      "instance_distance_to_median": 0.9978071050974852,
+      "seed_distance_to_instance_mean": 3.215484656414721,
+      "all_instance_distances": [
+        3.09024740333751,
+        2.492404289574794,
+        2.7305318335856934,
+        1.67071554657892,
+        5.437233464118719,
+        2.6472383468344503,
+        4.972178449289103,
+        4.493157287179432,
+        6.49943257106477,
+        2.0804195799455965,
+        3.913170320472458,
+        6.86502836333529,
+        1.738381946374595,
+        5.717798564847663,
+        1.1764953513698424,
+        3.5867744493636695,
+        5.20908557422115,
+        2.327876255808929,
+        6.125693782735877,
+        2.2719035479336545,
+        2.0907276848134932,
+        1.5478009839873932,
+        1.1219588216487062,
+        4.729383611499603,
+        3.2080005442369885,
+        0.9978071050974852,
+        3.2370033357308974,
+        2.987857225385662,
+        2.439897898473757,
+        1.9159194386021652,
+        3.726873459152309,
+        3.019449998936501
+      ],
+      "all_seed_distances_for_selected_instance": [
+        4.310959802330427,
+        6.916900041989975,
+        3.215484656414721,
+        5.564886157899884,
+        4.139392711838259
+      ],
+      "selection_rule": "仅使用不使用 GP 的预处理特征；先选离五维分量中位数最近的实例，再选离该实例五种子均值最近的种子；平局取较小编号。未读取 GP 质量或处理效应。",
+      "forbidden_selection_fields": [
+        "GP gap",
+        "GP 增益",
+        "处理效应",
+        "冠军间差异"
+      ]
+    },
+    "storage_bytes": 531918461
+  },
+  "inference_unit": "实例；先平均同实例的 ACO 种子和固定表达式",
+  "evidence_hierarchy": [
+    "最终质量来源对照",
+    "同状态即时与续跑干预",
+    "自然轨迹描述",
+    "单实例说明性重放"
+  ],
+  "analysis_sha256": "062e83172d002d6350c4f086d0ec0d1e39e760c2c95fed84c3202cfabc0ae027"
+}

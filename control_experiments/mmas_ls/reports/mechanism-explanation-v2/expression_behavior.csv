@@ -1,0 +1,4 @@
+seed,transition_tree_active,pheromone_tree_active,selected_for_animation,selection_passed_noninferiority,final_deployed,transition_expression,pheromone_expression,aggregate_global_history_source_edge_change
+81001,False,True,False,False,False,ZERO_TR,"ADD(PDIV(SourceQuality, PostFreq), MUL(ADD(ColonyFreq, PostFreq), SourceQuality))",0.06712081920447979
+81002,True,True,True,False,False,"ADD(MAX(ZERO_TR, ADD(ADD(ADD(BaseConf, BaseConf), BaseConf), ADD(Stagnation, BaseConf))), MIN(ADD(ADD(ZERO_TR, BaseConf), MIN(ZERO_TR, Stagnation)), BaseConf))","NEG(NEG(SUB(ADD(PreFreq, MAX(ADD(EdgeTau, Origin), MAX(ZERO_PH, Stagnation))), SUB(SUB(NEG(PreFreq), EdgeTau), MAX(Stagnation, NNRank)))))",0.044654767733637114
+81003,False,True,False,False,False,ZERO_TR,"MIN(PDIV(NNRank, PostFreq), SUB(POS_ONE, PDIV(NEG(MAX(TauHeadroom, ADD(ZERO_PH, Origin))), TauHeadroom)))",0.06203705810519493
