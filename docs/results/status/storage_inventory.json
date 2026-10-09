@@ -1,8 +1,72 @@
 {
-  "observed_at_utc": "2026-10-09T14:59:08.634200+00:00",
+  "observed_at_utc": "2026-10-09T17:48:47.957058+00:00",
   "scope": "非原子只读文件盘点；存活实验仍可新增文件；不是进程存活或实验完成证明",
-  "registry_sha256": "03113677459f3188a94bd131ee0b02fc91770506dc3974bfbcd4ccbf26c482cb",
+  "registry_sha256": "a25a6ba631b82c12e35ac3f7dd6e38bb31e5c9df558030129b98fb06e8eef56b",
   "entries": [
+    {
+      "id": "E09-p01-formal-gpu-existing",
+      "tier": "formal",
+      "experiments": [
+        "E09"
+      ],
+      "protocol": "p01",
+      "purpose": "独立根种子2001–2010，两规模AS各10次GPU-Existing固定预算正式基线；不是完整方法对比",
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing",
+      "migration": "new_only",
+      "report": "docs/results/formal/E09/p01",
+      "actual_path": "artifacts/runs/formal/E09/p01/gpu-existing",
+      "storage_status": "canonical",
+      "files": 1840,
+      "logical_bytes": 259141538
+    },
+    {
+      "id": "shared-formal-training-inputs-p01",
+      "tier": "input",
+      "experiments": [
+        "E09"
+      ],
+      "protocol": "p01",
+      "purpose": "每次正式训练的固定日程、初始种群、FP32几何、初始化和预生成ZERO对照",
+      "path": "artifacts/inputs/formal-training/p01",
+      "migration": "new_only",
+      "actual_path": "artifacts/inputs/formal-training/p01",
+      "storage_status": "canonical",
+      "files": 7029,
+      "logical_bytes": 30005706790
+    },
+    {
+      "id": "E07-p01-fixed-mapping",
+      "tier": "pilot",
+      "experiments": [
+        "E07",
+        "E08"
+      ],
+      "protocol": "p01",
+      "purpose": "固定AS真实cohort，4种lanes与3种活跃任务上限的同卡随机顺序配对；不是完整GPU-Opt",
+      "path": "artifacts/runs/pilot/E07/p01/fixed-mapping",
+      "migration": "new_only",
+      "report": "docs/results/pilot/E07/p01",
+      "actual_path": null,
+      "storage_status": "not_created",
+      "files": 0,
+      "logical_bytes": 0
+    },
+    {
+      "id": "shared-research-dispatch-p01",
+      "tier": "operations",
+      "experiments": [
+        "E07",
+        "E09"
+      ],
+      "protocol": "p01",
+      "purpose": "正式基线与映射补充的有限优先级队列；不自动扩大重复数或打开测试集",
+      "path": "artifacts/operations/research-dispatch/p01",
+      "migration": "new_only",
+      "actual_path": "artifacts/operations/research-dispatch/p01",
+      "storage_status": "canonical",
+      "files": 31,
+      "logical_bytes": 109951
+    },
     {
       "id": "E00-p01-initial-validation",
       "tier": "smoke",
@@ -68,8 +132,8 @@
       "report": "docs/results/pilot/E01/p01",
       "actual_path": "artifacts/runs/pilot/E01/p01/gpu-baselines",
       "storage_status": "canonical_with_legacy_alias",
-      "files": 1497,
-      "logical_bytes": 749381651
+      "files": 1973,
+      "logical_bytes": 980371258
     },
     {
       "id": "E01-p01-cpu-baselines",
@@ -102,8 +166,8 @@
       "report": "docs/results/diagnostic/E01/p01",
       "actual_path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics",
       "storage_status": "canonical",
-      "files": 202,
-      "logical_bytes": 23034298
+      "files": 726,
+      "logical_bytes": 242485914
     },
     {
       "id": "E09-p01-training",
@@ -119,8 +183,8 @@
       "reason": "TSP500训练未结束，已完成TSP100的cohort也仍被其他队列引用",
       "actual_path": "artifacts/pilot-v1",
       "storage_status": "legacy_deferred",
-      "files": 65,
-      "logical_bytes": 2721742
+      "files": 68,
+      "logical_bytes": 3469579
     },
     {
       "id": "E12-p01-cross-gpu",
@@ -138,8 +202,8 @@
       "reason": "各卡仍在执行TSP500任务及后续训练和审计",
       "actual_path": "artifacts/hardware-pilot-v1",
       "storage_status": "legacy_deferred",
-      "files": 1243,
-      "logical_bytes": 2940449800
+      "files": 1397,
+      "logical_bytes": 3228464799
     },
     {
       "id": "shared-frozen-population-p01",
@@ -174,8 +238,8 @@
       "reason": "正在运行的不可变源码继续读写旧路径",
       "actual_path": "artifacts/baselines",
       "storage_status": "legacy_deferred",
-      "files": 235,
-      "logical_bytes": 8976938
+      "files": 294,
+      "logical_bytes": 12798132
     },
     {
       "id": "shared-source-snapshots",
@@ -202,8 +266,8 @@
       "migration": "new_only",
       "actual_path": "artifacts/provenance/source-snapshots/managed",
       "storage_status": "canonical",
-      "files": 69,
-      "logical_bytes": 460911
+      "files": 147,
+      "logical_bytes": 971731
     },
     {
       "id": "shared-diagnostic-dispatch",
@@ -218,8 +282,8 @@
       "migration": "new_only",
       "actual_path": "artifacts/operations/diagnostic-dispatch/p01",
       "storage_status": "canonical",
-      "files": 23,
-      "logical_bytes": 81373
+      "files": 188,
+      "logical_bytes": 1751566
     },
     {
       "id": "shared-diagnostic-cohorts-p01",
@@ -231,10 +295,10 @@
       "purpose": "后期真实cohort就绪后显式导出独立输入包；不修改已冻结p01输入",
       "path": "artifacts/inputs/diagnostic-cohorts/p01",
       "migration": "new_only",
-      "actual_path": null,
-      "storage_status": "not_created",
-      "files": 0,
-      "logical_bytes": 0
+      "actual_path": "artifacts/inputs/diagnostic-cohorts/p01",
+      "storage_status": "canonical",
+      "files": 81,
+      "logical_bytes": 338811472
     },
     {
       "id": "shared-bootstrap-records",
@@ -280,7 +344,7 @@
       "actual_path": "artifacts/launches",
       "storage_status": "legacy_deferred",
       "files": 42,
-      "logical_bytes": 1273259
+      "logical_bytes": 1957306
     },
     {
       "id": "shared-device-locks",
@@ -294,7 +358,7 @@
       "reason": "新旧worker必须继续共用同一锁文件；迁移需要所有旧worker退出",
       "actual_path": "artifacts/locks",
       "storage_status": "legacy_deferred",
-      "files": 20,
+      "files": 25,
       "logical_bytes": 0
     },
     {

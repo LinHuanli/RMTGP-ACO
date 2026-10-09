@@ -17,6 +17,8 @@
 ## 运行中任务的位置
 
 - E09／p01：AS两规模×3根种子×50代。原始运行仍在 `artifacts/pilot-v1`。
+- E09／p01 正式固定对照：AS两规模×10根种子×50代，在 `artifacts/runs/formal/E09/p01/gpu-existing`；仅GPU-Existing控制组，不含未实现的优化方法。
+- E07／p01 固定映射先导：18个同卡配对block，在 `artifacts/runs/pilot/E07/p01/fixed-mapping`；与正式训练共用有限优先级调度 `artifacts/operations/research-dispatch/p01`。
 - E12／p01：五类GPU的调优、留出与短训练。原始运行仍在 `artifacts/hardware-pilot-v1`。
 - E01／p01：A5000冻结cohort基线队列。原始运行已迁至 `artifacts/runs/pilot/E01/p01/gpu-baselines`；`artifacts/a5000-main-v1`只是兼容旧manifest的软链接，不是第二份数据。
 - E01／p01：完整预算的工作量诊断队列。原始记录在 `artifacts/runs/diagnostic/E01/p01/work-diagnostics`，调度状态在 `artifacts/operations/diagnostic-dispatch/p01`。矩阵和解释边界见 [诊断队列协议](../design/09_diagnostic_campaign.md)。
