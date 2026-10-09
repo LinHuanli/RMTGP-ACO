@@ -1,0 +1,27 @@
+# 自动利用空闲 A5000，推进当前已实现且通过基础验证的主实验部分。
+name: a5000-main-v1
+scan_interval_s: 60
+scan_timeout_s: 45
+gpu_free_command: /home/linbocheng/bin/gpu-free
+gpu_model: NVIDIA RTX A5000
+scales: [100, 500]
+variants: [as, acs, mmas]
+cohort_source_seed: 1002
+cohort_generations: [1, 25, 50]
+cohort_source_campaign: pilot-v1
+population: 100
+batch: 32
+paired_blocks: 5
+search:
+  ants: 32
+  iterations: 500
+  candidate_size: 20
+plan:
+  candidate_lanes: 8
+  active_tasks: 3200
+# 比较的是现有后端的解释/树JIT路径，不冒充尚未实现的 GPU-Opt。
+paired_modes: [generated, interpreted]
+profile_mode: generated
+max_startup_rejections_per_gpu: 3
+automatic_test: false
+automatic_formal_training: false

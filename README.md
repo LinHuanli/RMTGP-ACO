@@ -88,3 +88,7 @@ python scripts/report_hardware_pilot.py           # 从已完成记录增量汇�
 配置位于 `configs/hardware/cross_gpu_pilot.yaml`。A5000、A40、L40S、L4、RTX PRO 5000 Blackwell各使用一张物理卡；先进行基础E00，再筛选执行计划、完成5个独立随机流的留出配对block，随后进行每规模3个seed、各3代的短训练。每卡每规模的最终选定计划只由tuning数据决定。独立A5000规范参考库和冠军复评用于隔离输入与浮点差异。
 
 产物位于 `artifacts/hardware-pilot-v1/`，汇总在其 `summary/` 下；包括CSV/JSON、曲线、能耗图和原始测量。旧50代训练继续使用原快照，标准测试集不打开。进一步的进度记录见 [异构先导状态](docs/results/hardware_pilot_status.md)。
+
+### 持续利用空闲 A5000
+
+`scripts/a5000_pool.py --execute` 启动项目内nohup调度器，每60秒使用 `gpu-free` 扫描并复查空闲RTX A5000。队列包含两个规模、三阶段真实种群和三ACO宿主的GPU基线配对与独立诊断；缺失cohort自动等待依赖，不占卡空等。已有50代训练及跨卡先导保持原样。详见[持续队列协议](docs/design/06_a5000_continuous_queue.md)，实时进度与图表位于 `artifacts/a5000-main-v1/summary/`。
