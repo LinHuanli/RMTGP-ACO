@@ -1,0 +1,268 @@
+/* clang-format off */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/* clang-format on */
+
+#include "../linear_programming/utilities/pdlp_test_utilities.cuh"
+#include "mip_utils.cuh"
+
+#include <cuopt/mathematical_optimization/io/parser.hpp>
+#include <cuopt/mathematical_optimization/solve.hpp>
+#include <cuopt/mathematical_optimization/utilities/internals.hpp>
+#include <utilities/common_utils.hpp>
+#include <utilities/error.hpp>
+
+#include <raft/sparse/detail/cusparse_wrappers.h>
+#include <raft/core/handle.hpp>
+#include <raft/util/cudart_utils.hpp>
+
+#include <gtest/gtest.h>
+
+#include <thrust/count.h>
+#include <thrust/iterator/zip_iterator.h>
+#include <thrust/sequence.h>
+
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace cuopt::mathematical_optimization::test {
+
+class scoped_env_restore_t {
+ public:
+  scoped_env_restore_t(const char* env_name, const char* new_value) : name_(env_name)
+  {
+    if (const char* prev = std::getenv(env_name)) { prev_value_ = prev; }
+    ::setenv(env_name, new_value, 1);
+  }
+  ~scoped_env_restore_t() { ::setenv(name_, prev_value_.c_str(), 1); }
+  scoped_env_restore_t(const scoped_env_restore_t&)            = delete;
+  scoped_env_restore_t& operator=(const scoped_env_restore_t&) = delete;
+
+ private:
+  const char* name_;
+  std::string prev_value_;
+};
+
+class test_set_solution_callback_t : public cuopt::internals::set_solution_callback_t {
+ public:
+  test_set_solution_callback_t(std::vector<std::pair<std::vector<double>, double>>& solutions_,
+                               void* expected_user_data_)
+    : solutions(solutions_), expected_user_data(expected_user_data_), n_calls(0)
+  {
+  }
+  // This will check that the we are able to recompute our own solution
+  void set_solution(void* data, void* cost, void* solution_bound, void* user_data) override
+  {
+    EXPECT_EQ(user_data, expected_user_data);
+    n_calls++;
+    auto bound_ptr = static_cast<double*>(solution_bound);
+    EXPECT_FALSE(std::isnan(bound_ptr[0]));
+    auto assignment = static_cast<double*>(data);
+    auto cost_ptr   = static_cast<double*>(cost);
+    if (solutions.empty()) { return; }
+
+    auto const& [last_assignment, last_cost] = solutions.back();
+    std::copy(last_assignment.begin(), last_assignment.end(), assignment);
+    *cost_ptr = last_cost;
+  }
+  std::vector<std::pair<std::vector<double>, double>>& solutions;
+  void* expected_user_data;
+  int n_calls;
+};
+
+class test_get_solution_callback_t : public cuopt::internals::get_solution_callback_t {
+ public:
+  test_get_solution_callback_t(std::vector<std::pair<std::vector<double>, double>>& solutions_in,
+                               int n_variables_,
+                               void* expected_user_data_)
+    : solutions(solutions_in),
+      expected_user_data(expected_user_data_),
+      n_calls(0),
+      n_variables(n_variables_)
+  {
+  }
+  void get_solution(void* data, void* cost, void* solution_bound, void* user_data) override
+  {
+    EXPECT_EQ(user_data, expected_user_data);
+    n_calls++;
+    auto bound_ptr = static_cast<double*>(solution_bound);
+    EXPECT_FALSE(std::isnan(bound_ptr[0]));
+    auto assignment_ptr = static_cast<double*>(data);
+    auto cost_ptr       = static_cast<double*>(cost);
+    std::vector<double> assignment(assignment_ptr, assignment_ptr + n_variables);
+    solutions.push_back(std::make_pair(std::move(assignment), *cost_ptr));
+  }
+  std::vector<std::pair<std::vector<double>, double>>& solutions;
+  void* expected_user_data;
+  int n_calls;
+  int n_variables;
+};
+
+void check_solutions(
+  const test_get_solution_callback_t& get_solution_callback,
+  const cuopt::mathematical_optimization::io::mps_data_model_t<int, double>& op_problem,
+  const cuopt::mathematical_optimization::mip_solver_settings_t<int, double>& settings)
+{
+  for (const auto& solution : get_solution_callback.solutions) {
+    EXPECT_EQ(solution.first.size(), op_problem.get_variable_lower_bounds().size());
+    test_variable_bounds(op_problem, solution.first, settings);
+    const double unscaled_acceptable_tol = 0.1;
+    test_constraint_sanity_per_row(
+      op_problem,
+      solution.first,
+      // because of scaling the values are not as accurate, so add more relative tolerance
+      unscaled_acceptable_tol,
+      settings.tolerances.relative_tolerance);
+    test_objective_sanity(op_problem, solution.first, solution.second, 1e-4);
+  }
+}
+
+void test_incumbent_callback(std::string test_instance, bool include_set_callback)
+{
+  const raft::handle_t handle_{};
+  std::cout << "Running: " << test_instance << std::endl;
+  auto path = make_path_absolute(test_instance);
+  cuopt::mathematical_optimization::io::mps_data_model_t<int, double> mps_problem =
+    cuopt::mathematical_optimization::io::read_mps<int, double>(path, false);
+  handle_.sync_stream();
+  auto op_problem = mps_data_model_to_optimization_problem(&handle_, mps_problem);
+
+  auto settings       = mip_solver_settings_t<int, double>{};
+  settings.time_limit = 30.;
+  settings.presolver  = presolver_t::Papilo;
+  int user_data       = 42;
+  std::vector<std::pair<std::vector<double>, double>> solutions;
+  test_get_solution_callback_t get_solution_callback(
+    solutions, op_problem.get_n_variables(), &user_data);
+  settings.set_mip_callback(&get_solution_callback, &user_data);
+  std::unique_ptr<test_set_solution_callback_t> set_solution_callback;
+  if (include_set_callback) {
+    set_solution_callback = std::make_unique<test_set_solution_callback_t>(solutions, &user_data);
+    settings.set_mip_callback(set_solution_callback.get(), &user_data);
+  }
+  auto solution = solve_mip(op_problem, settings);
+  EXPECT_GE(get_solution_callback.n_calls, 1);
+  if (include_set_callback) { EXPECT_GE(set_solution_callback->n_calls, 1); }
+  check_solutions(get_solution_callback, mps_problem, settings);
+}
+
+TEST(mip_solve, incumbent_get_callback_test)
+{
+  std::vector<std::string> test_instances = {
+    "mip/50v-10.mps", "mip/neos5-free-bound.mps", "mip/swath1.mps"};
+  for (const auto& test_instance : test_instances) {
+    test_incumbent_callback(test_instance, false);
+  }
+}
+
+TEST(mip_solve, incumbent_get_set_callback_test)
+{
+  std::vector<std::string> test_instances = {
+    "mip/50v-10.mps", "mip/neos5-free-bound.mps", "mip/swath1.mps"};
+  for (const auto& test_instance : test_instances) {
+    test_incumbent_callback(test_instance, true);
+  }
+}
+
+// Verify that when only early heuristics find a feasible incumbent but the solver-space
+// pipeline (B&B + GPU heuristics) does not, the solver still returns that incumbent.
+// B&B runs but exits immediately (node_limit=0); GPU heuristics are disabled so the
+// population stays empty. The fallback in solver.cu must use the OG-space incumbent.
+TEST(mip_solve, early_heuristic_incumbent_fallback)
+{
+  scoped_env_restore_t disable_gpu_heuristics_env("CUOPT_DISABLE_GPU_HEURISTICS", "1");
+
+  const raft::handle_t handle_{};
+  auto path = make_path_absolute("mip/pk1.mps");
+  cuopt::mathematical_optimization::io::mps_data_model_t<int, double> mps_problem =
+    cuopt::mathematical_optimization::io::read_mps<int, double>(path, false);
+  handle_.sync_stream();
+  auto op_problem = mps_data_model_to_optimization_problem(&handle_, mps_problem);
+
+  auto settings       = mip_solver_settings_t<int, double>{};
+  settings.time_limit = 10.;
+  settings.presolver  = presolver_t::Papilo;
+  settings.node_limit = 0;
+
+  int user_data = 0;
+  std::vector<std::pair<std::vector<double>, double>> callback_solutions;
+  test_get_solution_callback_t get_cb(callback_solutions, op_problem.get_n_variables(), &user_data);
+  settings.set_mip_callback(&get_cb, &user_data);
+
+  auto solution = solve_mip(op_problem, settings);
+
+  EXPECT_GE(get_cb.n_calls, 1) << "Early heuristics should have emitted at least one incumbent";
+  auto status = solution.get_termination_status();
+  EXPECT_TRUE(status == mip_termination_status_t::FeasibleFound ||
+              status == mip_termination_status_t::Optimal)
+    << "Expected feasible result, got "
+    << mip_solution_t<int, double>::get_termination_status_string(status);
+  EXPECT_TRUE(std::isfinite(solution.get_objective_value()));
+
+  if (!callback_solutions.empty()) { check_solutions(get_cb, mps_problem, settings); }
+}
+
+// Verify that a user-provided MIP start in original space is correctly crushed
+// through PaPILO presolve and accepted into the heuristic population.
+TEST(mip_solve, initial_solution_survives_papilo_crush)
+{
+  scoped_env_restore_t disable_gpu_heuristics_env("CUOPT_DISABLE_GPU_HEURISTICS", "1");
+
+  const raft::handle_t handle_{};
+  auto path = make_path_absolute("mip/pk1.mps");
+  cuopt::mathematical_optimization::io::mps_data_model_t<int, double> mps_problem =
+    cuopt::mathematical_optimization::io::read_mps<int, double>(path, false);
+  handle_.sync_stream();
+  auto op_problem = mps_data_model_to_optimization_problem(&handle_, mps_problem);
+  auto stream     = op_problem.get_handle_ptr()->get_stream();
+
+  // Step 1: solve to get a reference feasible solution. Pkl is easily solved to optimality
+  auto settings1       = mip_solver_settings_t<int, double>{};
+  settings1.time_limit = 5.;
+  settings1.presolver  = presolver_t::Papilo;
+  auto result1         = solve_mip(op_problem, settings1);
+  auto status1         = result1.get_termination_status();
+  ASSERT_TRUE(status1 == mip_termination_status_t::FeasibleFound ||
+              status1 == mip_termination_status_t::Optimal)
+    << "Reference solve must find a feasible solution";
+  auto reference_obj      = result1.get_objective_value();
+  auto reference_solution = cuopt::host_copy(result1.get_solution(), stream);
+  ASSERT_EQ((int)reference_solution.size(), op_problem.get_n_variables());
+
+  // Step 2: feed the reference solution as a MIP start with presolve ON
+  // and GPU heuristics disabled. B&B runs with node_limit=0 so it exits
+  // immediately. The only way we get a good objective is if the MIP start
+  // was crushed through PaPILO and accepted by add_user_given_solutions.
+  // Early FJ is not strong enough to find the 11 optimal in the given time frame.
+  auto settings2       = mip_solver_settings_t<int, double>{};
+  settings2.time_limit = 5.;
+  settings2.presolver  = presolver_t::Papilo;
+  settings2.node_limit = 0;
+  settings2.add_initial_solution(reference_solution.data(), reference_solution.size(), stream);
+
+  int user_data = 0;
+  std::vector<std::pair<std::vector<double>, double>> callback_solutions;
+  test_get_solution_callback_t get_cb(callback_solutions, op_problem.get_n_variables(), &user_data);
+  settings2.set_mip_callback(&get_cb, &user_data);
+
+  auto result2 = solve_mip(op_problem, settings2);
+
+  auto status2 = result2.get_termination_status();
+  EXPECT_TRUE(status2 == mip_termination_status_t::FeasibleFound ||
+              status2 == mip_termination_status_t::Optimal)
+    << "Crushed MIP start should yield a feasible result, got "
+    << mip_solution_t<int, double>::get_termination_status_string(status2);
+  EXPECT_TRUE(std::isfinite(result2.get_objective_value()));
+  EXPECT_NEAR(result2.get_objective_value(), reference_obj, 1e-4);
+
+  if (!callback_solutions.empty()) { check_solutions(get_cb, mps_problem, settings2); }
+}
+
+}  // namespace cuopt::mathematical_optimization::test

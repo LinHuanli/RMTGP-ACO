@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-09T18:52:33+13:00",
+  "source_directory": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/references",
+  "source_git_commit": "6fa8fe704d76198a6274803a059e753558751c39",
+  "source_git_branch": "experiment/mmas-ls-mechanism-v1",
+  "copy_method": "rsync -a；独立文件副本；不使用指向旧工作目录的链接或硬链接",
+  "verification": "逐文件 SHA256；原文件元数据未变时使用此前已验证归档的内容哈希，否则重算原文件哈希",
+  "file_count": 2280,
+  "source_bytes": 196517604,
+  "symlinks": [
+    {
+      "path": "references/cuopt/.agents/AGENTS.md",
+      "kind": "symlink",
+      "target": "../AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/.agents/skills",
+      "kind": "symlink",
+      "target": "../skills"
+    },
+    {
+      "path": "references/cuopt/.claude/AGENTS.md",
+      "kind": "symlink",
+      "target": "../AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/.claude/CLAUDE.md",
+      "kind": "symlink",
+      "target": "../AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/.claude/skills",
+      "kind": "symlink",
+      "target": "../skills"
+    },
+    {
+      "path": "references/cuopt/.clinerules",
+      "kind": "symlink",
+      "target": "AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/.github/copilot-instructions.md",
+      "kind": "symlink",
+      "target": "../AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/.opencode/AGENTS.md",
+      "kind": "symlink",
+      "target": "../AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/.opencode/skills",
+      "kind": "symlink",
+      "target": "../skills"
+    },
+    {
+      "path": "references/cuopt/.windsurf/rules/AGENTS.md",
+      "kind": "symlink",
+      "target": "../../AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/.windsurfrules",
+      "kind": "symlink",
+      "target": "AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/CONVENTIONS.md",
+      "kind": "symlink",
+      "target": "AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/JULES.md",
+      "kind": "symlink",
+      "target": "AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/agents/AGENTS.md",
+      "kind": "symlink",
+      "target": "../AGENTS.md"
+    },
+    {
+      "path": "references/cuopt/docs/cuopt/source/release-notes.md",
+      "kind": "symlink",
+      "target": "../../../RELEASE-NOTES.md"
+    },
+    {
+      "path": "references/cuopt/python/cuopt/LICENSE",
+      "kind": "symlink",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "references/cuopt/python/cuopt/cuopt/VERSION",
+      "kind": "symlink",
+      "target": "../../../VERSION"
+    },
+    {
+      "path": "references/cuopt/python/cuopt_self_hosted/LICENSE",
+      "kind": "symlink",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "references/cuopt/python/cuopt_self_hosted/cuopt_sh_client/VERSION",
+      "kind": "symlink",
+      "target": "../../../VERSION"
+    },
+    {
+      "path": "references/cuopt/python/cuopt_server/LICENSE",
+      "kind": "symlink",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "references/cuopt/python/cuopt_server/cuopt_server/VERSION",
+      "kind": "symlink",
+      "target": "../../../VERSION"
+    },
+    {
+      "path": "references/cuopt/python/libcuopt/LICENSE",
+      "kind": "symlink",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "references/cuopt/python/libcuopt/README.md",
+      "kind": "symlink",
+      "target": "../../README.md"
+    },
+    {
+      "path": "references/cuopt/python/libcuopt/libcuopt/VERSION",
+      "kind": "symlink",
+      "target": "../../../VERSION"
+    }
+  ],
+  "excluded": [
+    ".git",
+    "__pycache__",
+    ".cache",
+    ".venv",
+    ".venv-*",
+    "*.pyc",
+    "*.pyo",
+    "*.nbc",
+    "*.nbi",
+    "*.o",
+    "references/ACOTSP-1.03/acotsp",
+    "references/ACOTSP-1.03/best.*",
+    "references/ACOTSP-1.03/cmp.*",
+    "references/ACOTSP-1.03/stat.*"
+  ],
+  "new_research_protocol_defined": false,
+  "manifest_note": "第三方源码和许可证按现有副本保留；内容哈希不等于已核实上游提交或最新版本"
+}

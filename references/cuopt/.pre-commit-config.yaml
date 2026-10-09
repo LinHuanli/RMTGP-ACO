@@ -1,0 +1,152 @@
+# SPDX-FileCopyrightText: Copyright (c) 2019-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+exclude: |
+  (?x)^(
+    skills/.*/skill\.oms\.sig|
+    skills/.*/skill-card\.md|
+    skills/.*/BENCHMARK\.md
+  )$
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 'v6.0.0'
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^(datasets|helmchart)/.*\.(mps|json|yaml|yml|txt)$
+      - id: trailing-whitespace
+        exclude: ^datasets/.*\.(mps|json|yaml|yml|txt)$
+      - id: check-builtin-literals
+      - id: check-executables-have-shebangs
+      - id: check-json
+      - id: check-yaml
+        files: \.(yaml)$
+        exclude: ^(helmchart)/.*\.(yaml)$
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.3
+    hooks:
+      - id: ruff-check
+        args: [--fix, --config, pyproject.toml]
+      - id: ruff-format
+  - repo: https://github.com/PyCQA/pydocstyle
+    rev: 6.1.1
+    hooks:
+      - id: pydocstyle
+        # https://github.com/PyCQA/pydocstyle/issues/603
+        additional_dependencies: [toml]
+        args: ["--config=pyproject.toml"]
+        exclude: |
+          (?x)^(
+            ci|
+            cpp|
+            conda|
+            docs|
+            notebooks
+          )
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v20.1.8
+    hooks:
+      - id: clang-format
+        files: \.(cu|cuh|h|hpp|cpp|inl)$
+        types_or: [file]
+        args: ['-fallback-style=none', '-style=file', '-i']
+  - repo: https://github.com/rapidsai/dependency-file-generator
+    rev: v1.20.0
+    hooks:
+      - id: rapids-dependency-file-generator
+        args: ["--clean", "--warn-all", "--strict"]
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: ["--severity=warning"]
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        additional_dependencies: [pyyaml]
+        exclude: |
+          (?x)^(
+            [.]clang-format$|
+            conda/environments/.*|
+            ^helmchart/cuopt-server/templates
+          )
+  - repo: https://github.com/rapidsai/pre-commit-hooks
+    rev: v1.6.0
+    hooks:
+      - id: verify-copyright
+        args: [--fix, --spdx]
+        files: |
+          (?x)
+            [.](cmake|c|cpp|cu|cuh|h|hpp|sh|pxd|py|pyx|pdx|hpp[.]in|bat)$|
+            CMakeLists[.]txt$|
+            recipe[.]yaml$|
+            ^[.]github/workflows/|
+            ^[.]coderabbit[.]yaml$|
+            ^[.]pre-commit-config[.]yaml$|
+            Dockerfile$|
+            dependencies[.]yaml$|
+            Makefile$|
+            setup[.]cfg$|
+            pyproject[.]toml$
+        exclude: |
+          (?x)^(
+            ^cpp/tests/utilities/cxxopts.hpp
+          )
+      - id: verify-pyproject-license
+        # ignore the top-level pyproject.toml, which doesn't
+        # have or need a [project] table
+        exclude: |
+          (?x)
+            ^pyproject[.]toml$
+      - id: verify-hardcoded-version
+        exclude: |
+          (?x)
+            (^|/)devcontainer[.]json$|
+            (^|/)dependencies[.]yaml$|
+            ^[.]github/(workflows|ISSUE_TEMPLATE)/|
+            (^|/)pom[.]xml$|
+            ^[.]pre-commit-config[.]yaml$|
+            ^conda/environments/|
+            ^docs/cuopt/source/cuopt-server/nim-operator/guide/|
+            (^|/)VERSION$|
+            (^|/)RAPIDS_BRANCH$|
+            [.](md|rst|avro|parquet|png|orc|gz|pkl|sas7bdat|msgpack|pickle|jpg|bz2|zlib)$|
+            ^docs/cuopt/source/cuopt-python/routing/routing-example[.]ipynb$|
+            ^docs/cuopt/source/versions1[.]json$|
+            ^helmchart/cuopt-server/(Chart[.]yaml|values[.]yaml)$|
+            ^[.]cursor-plugin/plugin[.]json$|
+            ^[.]claude-plugin/marketplace[.]json$|
+            ^gemini-extension[.]json$
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.24.1
+    hooks:
+      - id: zizmor
+  - repo: local
+    hooks:
+      - id: update-versions
+        name: Update versions1.json
+        entry: python ci/utils/update_doc_versions.py
+        language: system
+        files: docs/cuopt/source/versions1.json
+      - id: sync-skills-version
+        name: Sync skills version from VERSION
+        entry: ci/utils/sync_skills_version.sh
+        language: system
+        pass_filenames: false
+        files: ^(VERSION|\.claude-plugin/marketplace\.json|\.cursor-plugin/plugin\.json|gemini-extension\.json)$
+      - id: vale
+        name: Vale docs prose lint
+        entry: vale
+        language: system
+        files: ^docs/cuopt/source/.*\.(rst|md)$
+      - id: validate-skills
+        name: Validate agent skills
+        entry: ci/utils/validate_skills.sh
+        language: system
+        pass_filenames: false
+        files: ^(VERSION|skills/|\.claude-plugin/|\.cursor-plugin/|agents/|ci/utils/validate_skills\.sh|ci/utils/sync_skills_version\.sh|gemini-extension\.json)$
+
+
+default_language_version:
+  python: python3

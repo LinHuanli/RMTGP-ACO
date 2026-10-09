@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-09T18:52:33+13:00",
+  "source_directory": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO/Datasets",
+  "source_git_commit": "6fa8fe704d76198a6274803a059e753558751c39",
+  "source_git_branch": "experiment/mmas-ls-mechanism-v1",
+  "copy_method": "rsync -a；独立文件副本；不使用指向旧工作目录的链接或硬链接",
+  "verification": "逐文件 SHA256；原文件元数据未变时使用此前已验证归档的内容哈希，否则重算原文件哈希",
+  "file_count": 134,
+  "source_bytes": 15981549075,
+  "symlinks": [],
+  "excluded": [
+    ".git",
+    "__pycache__",
+    ".cache",
+    ".venv",
+    ".venv-*",
+    "*.pyc",
+    "*.pyo",
+    "*.nbc",
+    "*.nbi",
+    "*.o",
+    "references/ACOTSP-1.03/acotsp",
+    "references/ACOTSP-1.03/best.*",
+    "references/ACOTSP-1.03/cmp.*",
+    "references/ACOTSP-1.03/stat.*"
+  ],
+  "new_research_protocol_defined": false,
+  "manifest_note": "旧 manifest 仅作历史资源清单，不构成本轮数据划分；此前已使用的数据不能自动认定为独立确认集"
+}

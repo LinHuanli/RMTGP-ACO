@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[tool.black]
+line-length = 79
+target-version = ["py39"]
+include = '\.py?$'
+exclude = '''
+/(
+    thirdparty |
+    \.eggs |
+    \.git |
+    \.hg |
+    \.mypy_cache |
+    \.tox |
+    \.venv |
+    _build |
+    buck-out |
+    build |
+    dist
+)/
+'''
+
+[tool.ruff]
+line-length = 79
+extend-exclude = [
+    "thirdparty",
+    "__init__.py",
+]
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle (errors)
+    "E",
+    # pyflakes
+    "F",
+    # pycodestyle (warnings)
+    "W"
+]
+ignore = [
+    # (pycodestyle) line too long
+    "E501"
+]
+
+[tool.ruff.lint.per-file-ignores]
+"*.ipynb" = [
+    # (pyflakes) unused imports
+    "F401",
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+order-by-type = true
+default-section = "third-party"
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "rapids",
+    "first-party",
+    "local-folder",
+]
+
+[tool.pydocstyle]
+# Due to https://github.com/PyCQA/pydocstyle/issues/363, we must exclude rather
+# than include using match-dir. Note that as discussed in
+# https://stackoverflow.com/questions/65478393/how-to-filter-directories-using-the-match-dir-flag-for-pydocstyle,
+# unlike the match option above this match-dir will have no effect when
+# pydocstyle is invoked from pre-commit. Therefore this exclusion list must
+# also be maintained in the pre-commit config file.
+match-dir = "^(?!(ci|cpp|conda|docs|java|notebooks)).*$"
+# Allow missing docstrings for docutils
+ignore-decorators = ".*(docutils|doc_apply|copy_docstring).*"
+select = "D201, D204, D206, D207, D208, D209, D210, D211, D214, D215, D300, D301, D302, D403, D405, D406, D407, D408, D409, D410, D411, D412, D414, D418"
+    # Would like to enable the following rules in the future:
+    # D200, D202, D205, D400

@@ -1,0 +1,367 @@
+# SPDX-FileCopyrightText: Copyright (c) 2021-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: build
+
+on:
+  push:
+    branches:
+      - "main"
+      - "release/*"
+    tags:
+      - v[0-9][0-9].[0-9][0-9].[0-9][0-9]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: |
+          branch: git branch the workflow run targets.
+          Required even when 'sha' is provided because it is also used for organizing artifacts.
+        required: true
+        type: string
+      date:
+        description: "date: Date (YYYY-MM-DD) this run is for. Used to organize artifacts produced by nightly builds"
+        required: true
+        type: string
+      sha:
+        description: "sha: full git commit SHA to check out"
+        required: true
+        type: string
+      build_type:
+        description: "build_type: one of [branch, nightly, pull-request]"
+        type: string
+        default: nightly
+      # Triggering 'test.yaml' from inside 'build.yaml' allows the use of the 'needs:' mechanism
+      # to ensure tests only start runniing once the builds they need are complete.
+      trigger-tests:
+        description: |
+          If 'true', trigger the test workflow after all builds complete.
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.build_type || 'branch' }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  build-details:
+    uses: rapidsai/shared-workflows/.github/workflows/compute-build-details.yaml@main
+  cpp-build:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    needs: [build-details]
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/conda-cpp-build.yaml@main
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      build-datetime: ${{ needs.build-details.outputs.build-datetime }}
+      branch: ${{ inputs.branch }}
+      date: ${{ inputs.date }}
+      sha: ${{ inputs.sha }}
+      script: ci/build_cpp.sh
+  python-build:
+    needs: [build-details, cpp-build]
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/conda-python-build.yaml@main
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      build-datetime: ${{ needs.build-details.outputs.build-datetime }}
+      branch: ${{ inputs.branch }}
+      date: ${{ inputs.date }}
+      sha: ${{ inputs.sha }}
+      script: ci/build_python.sh
+  upload-conda:
+    needs: [cpp-build, python-build]
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    uses: rapidsai/shared-workflows/.github/workflows/conda-upload-packages.yaml@main
+    secrets:
+      CONDA_RAPIDSAI_NIGHTLY_TOKEN: ${{ secrets.CONDA_RAPIDSAI_NIGHTLY_TOKEN }}
+      CONDA_RAPIDSAI_TOKEN: ${{ secrets.CONDA_RAPIDSAI_TOKEN }}
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      branch: ${{ inputs.branch }}
+      date: ${{ inputs.date }}
+      sha: ${{ inputs.sha }}
+  wheel-build-libcuopt:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    needs: [build-details]
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-build.yaml@main
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      build-datetime: ${{ needs.build-details.outputs.build-datetime }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      script: ci/build_wheel_libcuopt.sh
+      package-name: libcuopt
+      package-type: cpp
+      matrix_filter: group_by([.ARCH, (.CUDA_VER|split(".")|map(tonumber)|.[0])]) | map(max_by(.PY_VER|split(".")|map(tonumber)))
+  wheel-publish-libcuopt:
+    needs: wheel-build-libcuopt
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-publish.yaml@main
+    secrets:
+      CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN: ${{ secrets.CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN }}
+      RAPIDSAI_PYPI_TOKEN: ${{ secrets.RAPIDSAI_PYPI_TOKEN }}
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      package-name: libcuopt
+      package-type: cpp
+      publish-wheel-search-key: cuopt_wheel_cpp_libcuopt
+  wheel-build-cuopt:
+    needs: [build-details, wheel-build-libcuopt]
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-build.yaml@main
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      build-datetime: ${{ needs.build-details.outputs.build-datetime }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      script: ci/build_wheel_cuopt.sh
+      package-name: cuopt
+      package-type: python
+  wheel-publish-cuopt:
+    needs: wheel-build-cuopt
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-publish.yaml@main
+    secrets:
+      CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN: ${{ secrets.CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN }}
+      RAPIDSAI_PYPI_TOKEN: ${{ secrets.RAPIDSAI_PYPI_TOKEN }}
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      package-name: cuopt
+      package-type: python
+      publish-wheel-search-key: cuopt_wheel_python_cuopt_
+  wheel-build-cuopt-server:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    needs: [build-details]
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-build.yaml@main
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      build-datetime: ${{ needs.build-details.outputs.build-datetime }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      script: ci/build_wheel_cuopt_server.sh
+      package-name: cuopt_server
+      package-type: python
+      pure-wheel: true
+      # Only need 1 package per CUDA major version. This selects "ARCH=amd64 + the latest supported Python, 1 job per major CUDA version".
+      matrix_filter: map(select(.ARCH == "amd64")) | group_by(.CUDA_VER|split(".")|map(tonumber)|.[0]) | map(max_by([(.PY_VER|split(".")|map(tonumber)), (.CUDA_VER|split(".")|map(tonumber))]))
+  wheel-publish-cuopt-server:
+    needs: wheel-build-cuopt-server
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-publish.yaml@main
+    secrets:
+      CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN: ${{ secrets.CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN }}
+      RAPIDSAI_PYPI_TOKEN: ${{ secrets.RAPIDSAI_PYPI_TOKEN }}
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      package-name: cuopt_server
+      package-type: python
+      publish-wheel-search-key: cuopt_wheel_python_cuopt-server
+  docs-build:
+    needs: [python-build]
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/custom-job.yaml@main
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      node_type: "gpu-l4-latest-1"
+      sha: ${{ inputs.sha }}
+      branch: ${{ inputs.branch }}
+      date: ${{ inputs.date }}
+      arch: "amd64"
+      file_to_upload: "docs/cuopt/build/html/"
+      artifact-name: "cuopt_docs"
+      container_image: "rapidsai/ci-conda:26.10-latest"
+      script: "ci/build_docs.sh"
+  wheel-build-cuopt-sh-client:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    needs: [build-details]
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-build.yaml@main
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      build-datetime: ${{ needs.build-details.outputs.build-datetime }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      script: ci/build_wheel_cuopt_sh_client.sh
+      package-name: cuopt_sh_client
+      package-type: python
+      append-cuda-suffix: false
+      pure-wheel: true
+      # only need 1 build (noarch package): this selects amd64, oldest-supported Python, latest-supported CUDA
+      matrix_filter: '[map(select(.ARCH == "amd64")) | min_by((.PY_VER | split(".") | map(tonumber)), (.CUDA_VER | split(".") | map(-tonumber)))]'
+  wheel-publish-cuopt-sh-client:
+    needs: wheel-build-cuopt-sh-client
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    uses: rapidsai/shared-workflows/.github/workflows/wheels-publish.yaml@main
+    secrets:
+      CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN: ${{ secrets.CONDA_RAPIDSAI_WHEELS_NIGHTLY_TOKEN }}
+      RAPIDSAI_PYPI_TOKEN: ${{ secrets.RAPIDSAI_PYPI_TOKEN }}
+    with:
+      build_type: ${{ inputs.build_type || 'branch' }}
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      package-name: cuopt_sh_client
+      package-type: python
+      publish-wheel-search-key: cuopt_wheel_python_cuopt-sh-client
+  tests:
+    # Docker image build / tests aren't necessary for the 'test.yaml' workflow,
+    # so 'test.yaml' can be triggered without waiting for those.
+    needs:
+      - upload-conda
+      - wheel-publish-cuopt
+      - wheel-publish-cuopt-server
+      - wheel-publish-cuopt-sh-client
+      - wheel-publish-libcuopt
+    if: inputs.trigger-tests
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-latest
+    # ref: https://docs.github.com/en/actions/reference/security/secure-use#use-an-intermediate-environment-variable
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_BRANCH: "${{ inputs.branch }}"
+      INPUT_BUILD_TYPE: "${{ inputs.build_type }}"
+      INPUT_DATE: "${{ inputs.date }}"
+      INPUT_SHA: "${{ inputs.sha }}"
+    steps:
+      - name: trigger-test-workflow
+        run: |
+          # NOTE: '--ref' is the branch to pull the workflow file from, 'branch' input is the branch
+          #       to pull the actual cuOpt source code from
+          gh workflow run                       \
+            --repo NVIDIA/cuopt                 \
+            --ref "$GITHUB_REF"                 \
+            'test.yaml'                         \
+            -f branch="${INPUT_BRANCH}"         \
+            -f build_type="${INPUT_BUILD_TYPE}" \
+            -f date="${INPUT_DATE}"             \
+            -f sha="${INPUT_SHA}"
+
+  build-summary:
+    if: ${{ always() && (inputs.build_type == 'nightly') }}
+    needs:
+      - tests
+      - build-images
+      - docs-build
+    permissions:
+      contents: read
+    runs-on: linux-amd64-cpu4
+    container:
+      image: python:3.14-slim
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - name: Install dependencies
+        run: apt-get update && apt-get install -y --no-install-recommends curl
+      - name: Send build summary
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RAPIDS_BRANCH: ${{ inputs.branch }}
+          SLACK_BOT_TOKEN: ${{ secrets.CUOPT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CUOPT_SLACK_CHANNEL_ID }}
+        run: bash ci/build_summary.sh
+
+  build-images:
+    needs:
+      - wheel-publish-cuopt
+      - wheel-publish-cuopt-server
+      - wheel-publish-cuopt-sh-client
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    uses: ./.github/workflows/build_test_publish_images.yaml
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    with:
+      branch: ${{ inputs.branch }}
+      sha: ${{ inputs.sha }}
+      date: ${{ inputs.date }}
+      build_type: ${{ inputs.build_type || 'branch' }}

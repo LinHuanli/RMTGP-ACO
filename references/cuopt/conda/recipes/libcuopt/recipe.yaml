@@ -1,0 +1,218 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+
+context:
+  version: ${{ env.get("RAPIDS_PACKAGE_VERSION") }}
+  minor_version: ${{ (version | split("."))[:2] | join(".") }}
+  cuda_version: ${{ (env.get("RAPIDS_CUDA_VERSION") | split("."))[:2] | join(".") }}
+  cuda_major: '${{ (env.get("RAPIDS_CUDA_VERSION") | split("."))[0] }}'
+  datetime_string: '${{ env.get("RAPIDS_DATETIME_STRING") }}'
+  head_rev: '${{ git.head_rev(".")[:8] }}'
+  build_type: '${{ env.get("RAPIDS_BUILD_TYPE") }}'
+
+recipe:
+  name: libcuopt-split
+
+cache:
+  source:
+    path: ../../..
+
+  build:
+    script:
+      content: |
+        # Remove `-fdebug-prefix-map` line from CFLAGS and CXXFLAGS so the
+        # incrementing version number in the compile line doesn't break the
+        # cache
+        set -x
+        export CFLAGS=$(echo $CFLAGS | sed -E 's@\-fdebug\-prefix\-map[^ ]*@@g')
+        export CXXFLAGS=$(echo $CXXFLAGS | sed -E 's@\-fdebug\-prefix\-map[^ ]*@@g')
+        set +x
+
+        ./build.sh -v ${BUILD_EXTRA_FLAGS} libcuopt deb --allgpuarch --cmake-args=\"-DCMAKE_INSTALL_LIBDIR=lib -DBUILD_LP_BENCHMARKS=ON -DBUILD_MIP_BENCHMARKS=ON\"
+      secrets:
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+        - AWS_SESSION_TOKEN
+        - SCCACHE_DIST_AUTH_TOKEN
+      env:
+        # Enable assertions (-a flag) for PR builds, but not for nightly or release builds
+        BUILD_EXTRA_FLAGS: '${{ "-a --host-lineinfo" if build_type == "pull-request" else "" }}'
+        CMAKE_C_COMPILER_LAUNCHER: ${{ env.get("CMAKE_C_COMPILER_LAUNCHER") }}
+        CMAKE_CUDA_COMPILER_LAUNCHER: ${{ env.get("CMAKE_CUDA_COMPILER_LAUNCHER") }}
+        CMAKE_CXX_COMPILER_LAUNCHER: ${{ env.get("CMAKE_CXX_COMPILER_LAUNCHER") }}
+        CMAKE_GENERATOR: ${{ env.get("CMAKE_GENERATOR") }}
+        NVCC_APPEND_FLAGS: ${{ env.get("NVCC_APPEND_FLAGS", default="") }}
+        PARALLEL_LEVEL: ${{ env.get("PARALLEL_LEVEL", default="8") }}
+        SCCACHE_BUCKET: ${{ env.get("SCCACHE_BUCKET", default="") }}
+        SCCACHE_DIST_AUTH_TYPE: ${{ env.get("SCCACHE_DIST_AUTH_TYPE", default="token") }}
+        SCCACHE_DIST_FALLBACK_TO_LOCAL_COMPILE: ${{ env.get("SCCACHE_DIST_FALLBACK_TO_LOCAL_COMPILE", default="false") }}
+        SCCACHE_DIST_MAX_RETRIES: ${{ env.get("SCCACHE_DIST_MAX_RETRIES", default="inf") }}
+        SCCACHE_DIST_REQUEST_TIMEOUT: ${{ env.get("SCCACHE_DIST_REQUEST_TIMEOUT", default="7140") }}
+        SCCACHE_DIST_SCHEDULER_URL: ${{ env.get("SCCACHE_DIST_SCHEDULER_URL", default="") }}
+        SCCACHE_ERROR_LOG: ${{ env.get("SCCACHE_ERROR_LOG", default="/tmp/sccache.log") }}
+        SCCACHE_IDLE_TIMEOUT: ${{ env.get("SCCACHE_IDLE_TIMEOUT", default="0") }}
+        SCCACHE_NO_CACHE: ${{ env.get("SCCACHE_NO_CACHE", default="") }}
+        SCCACHE_RECACHE: ${{ env.get("SCCACHE_RECACHE", default="") }}
+        SCCACHE_REGION: ${{ env.get("SCCACHE_REGION", default="") }}
+        SCCACHE_S3_KEY_PREFIX: libcuopt/${{ env.get("RAPIDS_CONDA_ARCH") }}/cuda${{ cuda_major }}
+        SCCACHE_S3_NO_CREDENTIALS: ${{ env.get("SCCACHE_S3_NO_CREDENTIALS", default="false") }}
+        SCCACHE_S3_PREPROCESSOR_CACHE_KEY_PREFIX: libcuopt/${{ env.get("RAPIDS_CONDA_ARCH") }}/cuda${{ cuda_major }}/conda/preprocessor-cache
+        SCCACHE_S3_USE_PREPROCESSOR_CACHE_MODE: ${{ env.get("SCCACHE_S3_USE_PREPROCESSOR_CACHE_MODE", default="true") }}
+        SCCACHE_S3_USE_SSL: ${{ env.get("SCCACHE_S3_USE_SSL", default="true") }}
+        SCCACHE_SERVER_LOG: ${{ env.get("SCCACHE_SERVER_LOG", default="sccache=debug") }}
+
+  requirements:
+    build:
+      - libboost-devel
+      - ${{ compiler("c") }}
+      - ${{ compiler("cxx") }}
+      - ${{ compiler("cuda") }} =${{ cuda_version }}
+      - ${{ stdlib("c") }}
+      - cuda-version =${{ cuda_version }}
+      - cmake ${{ cmake_version }}
+      - make
+      - ninja
+      - git
+      - tbb-devel
+      - zlib
+      - bzip2
+    host:
+      - cpp-argparse
+      - cuda-version =${{ cuda_version }}
+      - libraft-headers =${{ minor_version }}
+      - librmm =${{ minor_version }}
+      - rapids-logger =0.2
+      - cuda-nvtx-dev
+      - libcudss-dev >=0.7,<0.8
+      - libcurand-dev
+      - libcusparse-dev
+      - libnvjitlink-dev
+      - libboost-devel
+      - nccl >=2.19
+      - tbb-devel
+      - zlib
+      - bzip2
+      - openssl
+      - c-ares
+      - libgrpc >=1.78.0,<1.80.0a0
+      - libprotobuf
+      - libabseil
+      - re2
+
+outputs:
+  - package:
+      name: libcuopt
+      version: ${{ version }}
+    build:
+      script:
+        content: |
+          cmake --install cpp/build
+          ./ci/check_symbols.sh cpp/build/libcuopt.so
+      dynamic_linking:
+        overlinking_behavior: "error"
+      prefix_detection:
+        ignore:
+          # See https://github.com/rapidsai/build-planning/issues/160
+          - lib/libcuopt.so
+      string: cuda${{ cuda_major }}_${{ datetime_string }}_${{ head_rev }}
+    requirements:
+      build:
+        - cmake ${{ cmake_version }}
+        - ${{ stdlib("c") }}
+        - binutils
+      host:
+        - libboost-devel
+        - cuda-version =${{ cuda_version }}
+        - rapids-logger =0.2
+        - librmm =${{ minor_version }}
+        - libcublas
+        - libcudss-dev >=0.7,<0.8
+        - libcusparse-dev
+        - libnvjitlink-dev
+        - nccl >=2.19
+        - openssl
+        - c-ares
+        - libuuid
+        - libgrpc >=1.78.0,<1.80.0a0
+        - libprotobuf
+        - libabseil
+        - re2
+        - tbb-devel
+      run:
+        - ${{ pin_compatible("cuda-version", upper_bound="x", lower_bound="x") }}
+        - libboost-devel
+        - librmm =${{ minor_version }}
+        - cuda-nvrtc
+        - libcudss >=0.7,<0.8
+        - nccl >=2.19
+        - openssl
+        - c-ares
+        - libuuid
+        - libgrpc >=1.78.0,<1.80.0a0
+        - libprotobuf
+        - libabseil
+        - tbb
+      ignore_run_exports:
+        by_name:
+          - cuda-nvtx
+          - cuda-version
+          - libcudss
+          - libcurand
+          - libcusparse
+          - librmm
+          - libboost
+          - libboost_iostreams
+    tests:
+      - package_contents:
+          files:
+            - lib/libcuopt.so
+            - bin/cuopt_cli
+            - bin/cuopt_grpc_server
+    about:
+      homepage: ${{ load_from_file("python/cuopt/pyproject.toml").project.urls.Homepage }}
+      license: ${{ load_from_file("python/cuopt/pyproject.toml").project.license }}
+      summary: ${{ load_from_file("python/cuopt/pyproject.toml").project.description }}
+
+  - package:
+      name: libcuopt-tests
+      version: ${{ version }}
+    build:
+      script:
+        content: |
+          cmake --install cpp/build --component testing
+      dynamic_linking:
+        overlinking_behavior: "error"
+      string: cuda${{ cuda_major }}_${{ datetime_string }}_${{ head_rev }}
+    requirements:
+      build:
+        - cmake ${{ cmake_version }}
+        - ${{ stdlib("c") }}
+      host:
+        - ${{ pin_subpackage("libcuopt", exact=True) }}
+        - libboost-devel
+        - libcublas
+        - libcudss-dev >=0.7,<0.8
+        - libcusparse-dev
+        - nccl >=2.19
+        - openssl
+        - c-ares
+        - libgrpc >=1.78.0,<1.80.0a0
+        - libprotobuf
+        - libabseil
+      run:
+        - ${{ pin_subpackage("libcuopt", exact=True) }}
+      ignore_run_exports:
+        by_name:
+          - cuda-nvtx
+          - cuda-version
+          - libcurand
+          - libcusparse
+          - libcudss
+          - librmm
+          - libboost
+          - libboost_iostreams
+    about:
+      homepage: ${{ load_from_file("python/cuopt/pyproject.toml").project.urls.Homepage }}
+      license: ${{ load_from_file("python/cuopt/pyproject.toml").project.license }}
+      summary: libcuopt test & benchmark executables

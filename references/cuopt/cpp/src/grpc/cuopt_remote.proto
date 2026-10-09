@@ -1,0 +1,90 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package cuopt.remote;
+
+// Data type definitions (enums, messages for problem/solution/settings) are
+// auto-generated from field_registry.yaml.  Using "import public" so that any
+// file importing cuopt_remote.proto also sees the data types.
+import public "cuopt_remote_data.proto";
+
+// Protocol version and metadata
+message RequestHeader {
+  uint32 version = 1;           // Protocol version (currently 1)
+  ProblemCategory problem_category = 2; // LP or MIP
+}
+
+// LP solve request
+message SolveLPRequest {
+  RequestHeader header = 1;
+  OptimizationProblem problem = 2;
+  PDLPSolverSettings settings = 3;
+}
+
+// MIP solve request
+message SolveMIPRequest {
+  RequestHeader header = 1;
+  OptimizationProblem problem = 2;
+  MIPSolverSettings settings = 3;
+  optional bool enable_incumbents = 4;
+}
+
+// Job status for async operations
+enum JobStatus {
+  QUEUED = 0;           // Job submitted, waiting in queue
+  PROCESSING = 1;       // Job currently being solved
+  COMPLETED = 2;        // Job completed successfully
+  FAILED = 3;           // Job failed with error
+  NOT_FOUND = 4;        // Job ID not found
+  CANCELLED = 5;        // Job was cancelled by user
+}
+
+// Response for job submission
+message SubmitResponse {
+  ResponseStatus status = 1;
+  bytes job_id = 2;           // Unique job identifier (bytes to avoid UTF-8 validation warnings)
+  string message = 3;         // Success/error message
+}
+
+// Response for status check
+message StatusResponse {
+  JobStatus job_status = 1;
+  string message = 2;
+  double progress = 3;        // 0.0-1.0 (future enhancement)
+  int64 result_size_bytes = 4;    // Size of result payload when COMPLETED (0 if unknown)
+  int64 max_message_bytes = 5;    // Server gRPC max message size (-1 = unlimited)
+}
+
+// Response for get result
+message ResultResponse {
+  ResponseStatus status = 1;
+  string error_message = 2;
+
+  oneof solution {
+    LPSolution lp_solution = 10;
+    MIPSolution mip_solution = 11;
+  }
+}
+
+// Response for delete
+message DeleteResponse {
+  ResponseStatus status = 1;
+  string message = 2;
+}
+
+// Response for cancel job
+message CancelResponse {
+  ResponseStatus status = 1;
+  string message = 2;
+  JobStatus job_status = 3;       // Status of job after cancel attempt
+}
+
+enum ResponseStatus {
+  SUCCESS = 0;
+  ERROR_INVALID_REQUEST = 1;
+  ERROR_SOLVE_FAILED = 2;
+  ERROR_INTERNAL = 3;
+  ERROR_NOT_FOUND = 4;
+}

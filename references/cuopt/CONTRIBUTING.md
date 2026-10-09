@@ -1,0 +1,402 @@
+# Contributing to cuOpt
+
+Contributions to NVIDIA cuOpt fall into the following categories:
+
+1. To report a bug, request a new feature, or report a problem with documentation, please file an
+   [issue](https://github.com/NVIDIA/cuopt/issues/new/choose) describing the problem or new feature
+   in detail. The NVIDIA cuOpt team evaluates and triages issues, and schedules them for a release. If you
+   believe the issue needs priority attention, please comment on the issue to notify the team.
+2. To propose and implement a new feature, please file a new feature request
+   [issue](https://github.com/NVIDIA/cuopt/issues/new/choose). Describe the intended feature and
+   discuss the design and implementation with the team and community. Once the team agrees that the
+   plan looks good, go ahead and implement it, using the [code contributions](#code-contributions)
+   guide below.
+3. To implement a feature or bug fix for an existing issue, please follow the [code
+   contributions](#code-contributions) guide below. If you need more context on a particular issue,
+   please ask in a comment or create a question in issues.
+
+
+## Code contributions
+
+### Branching Strategy
+
+Starting with RAPIDS v25.12, cuOpt follows the new RAPIDS branching strategy. The `main` branch represents the latest development state and is the default target for all pull requests during the development phase. During release preparation, a release branch (`release/YY.MM`) is created from `main` and serves as the release branch.
+
+Key points:
+- **Default branch**: Always `main` (latest and greatest)
+- **During development phase**: All PRs target `main`
+- **During burn down**: A release branch `release/YY.MM` is created from `main`
+  - PRs intended for the current release must be **re-targeted to the release branch**
+  - PRs intended for the next release should continue targeting `main`
+- **Forward merging**: PRs merged into the release branch are automatically forward-merged to `main`
+- **After release**: The release branch is used only for hotfixes; all new development targets `main`
+
+For more details, see the [RAPIDS Branching Strategy Notice (RSN 47)](https://docs.rapids.ai/notices/rsn0047/).
+
+### Release Timeline
+
+cuOpt follows the RAPIDS release schedule and is part of the **"others"** category in the release timeline. The release cycle consists of:
+
+- **Development**: Active feature development and bug fixes targeting `main`
+- **Burn Down**: Focus shifts to stabilization; new features should target the next release
+- **Code Freeze**: Only critical bug fixes allowed; PRs require admin approval
+- **Release**: Final testing, tagging, and official release
+
+For current release timelines and dates, refer to the [RAPIDS Maintainers Docs](https://docs.rapids.ai/maintainers/).
+
+### Your first issue
+
+1. Follow the guide at the bottom of this page for
+   [Setting up your build environment](#setting-up-your-build-environment).
+2. Find an issue to work on. The best way is to look for the
+   [good first issue](https://github.com/NVIDIA/cuopt/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+   or [help wanted](https://github.com/NVIDIA/cuopt/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+   labels.
+3. Comment on the issue stating that you are going to work on it.
+4. Fork and set up your local repository:
+   ```bash
+   # Clone the main repo
+   git clone https://github.com/NVIDIA/cuopt.git
+   cd cuopt
+
+   # Add your fork as a remote
+   git remote add fork https://github.com/<your-username>/cuopt.git
+
+   # Create a branch from main
+   git checkout -b fix-documentation main
+   ```
+5. Write code to address the issue or implement the feature.
+6. Add unit tests. Please refer to `cpp/src/tests` for examples of unit tests on C and C++ using gtest and `python/cuopt/cuopt/tests` for examples of unit tests on Python using pytest.
+7. Install pre-commit hooks, commit, push to your fork, and create a pull request:
+   ```bash
+   # Install pre-commit hooks (once per clone)
+   pre-commit install
+
+   # Commit with DCO sign-off (hooks run automatically)
+   git commit -s -m "Your commit message"
+
+   # Push to your fork (never push directly to the main repo)
+   git push fork fix-documentation
+   ```
+   Then [create your pull request](https://github.com/NVIDIA/cuopt/compare) from your fork to the upstream `main` branch. To run continuous integration (CI) tests without requesting review, open a draft pull request.
+8. Check if CI is running, if not please request one of the NVIDIA cuOpt developers to trigger it. This might happen in case you have non-verified (non-sign-off) commits or don't have enough permissions to trigger CI.
+9. Verify that CI passes all [status checks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/about-status-checks).
+   Fix if needed.
+10. Github will automatically assign a reviewer to your pull request. Please wait for the reviewer to review your code. If the reviewer has any comments, address them in the pull request.
+11. If your PR is not getting reviewed, please ping the reviewers in the PR.
+12. Once reviewed and approved, a NVIDIA cuOpt developer will merge your pull request.
+
+
+Remember, if you are unsure about anything, don't hesitate to comment on issues
+and ask for clarifications! Please use the Github issues for any questions or for discussion, this would help community find all the answers in one place.
+
+### Seasoned developers
+
+Once you have gotten your feet wet and are more comfortable with the code, you
+can look at the prioritized issues of our next release in our [project boards](https://github.com/NVIDIA/cuopt/projects).
+
+> **Pro Tip:** Always look at the release board with the highest number for
+issues to work on. This is where NVIDIA cuOpt developers also focus their efforts.
+
+Look at the unassigned issues, and find an issue you are comfortable with
+contributing to. Start with _Step 3_ from above, commenting on the issue to let
+others know you are working on it. If you have any questions related to the
+implementation of the issue, ask them in the issue instead of the PR.
+
+### NVSkills CI for skill changes
+
+PRs that change content under `skills/` must be validated by NVSkills CI before merge. A maintainer or admin comments `/nvskills-ci` on the PR; the `nv-nvskill-ci[bot]` pushes a signature commit (`Attach NVSkills validation signatures`) that must remain in the PR. Re-comment `/nvskills-ci` after any further pushes to re-sign.
+
+NVSkills CI requires the PR to originate from a branch in `NVIDIA/cuopt`; fork-based PRs are not supported.
+
+## Setting up your build environment
+
+The following instructions are for developers and contributors to NVIDIA cuOpt development. These
+instructions are tested on Ubuntu Linux LTS releases. Use these instructions to build NVIDIA cuOpt from
+source and contribute to its development. Other operating systems may be compatible, but are not
+currently tested.
+
+Building NVIDIA cuOpt with the provided conda environment is recommended for users who wish to enable all
+library features. The following instructions are for building with a conda environment.
+
+### General requirements
+
+CUDA/GPU Runtime:
+
+* CUDA 12.0 or higher
+* Volta architecture or better ([Compute Capability](https://docs.nvidia.com/deploy/cuda-compatibility/) >=7.0)
+
+Python:
+
+* Python >=3.11.x, <= 3.14.x
+
+OS:
+
+* Only Linux is supported
+
+Architecture:
+
+* x86_64 (64-bit)
+* aarch64 (64-bit)
+
+### Build NVIDIA cuOpt from source
+
+- Clone the repository:
+
+```bash
+export CUOPT_HOME=$(pwd)/cuopt
+git clone https://github.com/NVIDIA/cuopt.git $CUOPT_HOME
+cd $CUOPT_HOME
+```
+
+#### Building with a conda environment
+
+**Note:** Building from source without conda is very difficult. We highly recommend that users build cuOpt inside a conda environment
+
+- Create the conda development environment:
+
+Please install conda if you don't have it already. You can install [miniforge](https://conda-forge.org/download/) or [miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install#linux)
+
+**Note:** We recommend using [mamba](https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html) as the package manager for the conda environment. Mamba is faster and more efficient than conda. And it's the default package manager for miniforge. If you are using mamba just replace `conda` with `mamba` in the following commands.
+
+```bash
+# create the conda environment (assuming in base `cuopt` directory)
+# note: cuOpt currently doesn't support `channel_priority: strict`;
+# use `channel_priority: flexible` instead
+conda env create -p ./.cuopt_env --file conda/environments/all_cuda-133_arch-$(uname -m).yaml
+# activate the environment
+conda activate ./.cuopt_env
+```
+
+- **Note**: the conda environment files are updated frequently, so the
+  development environment may also need to be updated if dependency versions or
+  pinnings are changed.
+
+- A `build.sh` script is provided in `$CUOPT_HOME`. Running the script with no additional arguments
+  will build the `libcuopt`, `cuopt`, `cuopt-server`, and `cuopt-sh-client` libraries without
+  installing them into the conda environment. Pass `--install` to also install `libcuopt` into the
+  active conda environment (`$CONDA_PREFIX`, or a custom location via `$PREFIX`). Note that
+  the script depends on the `nvcc` executable being on your path, or defined in `$CUDACXX`.
+
+```bash
+cd $CUOPT_HOME
+
+# Choose one of the following commands, depending on whether
+# you want to build and install the libcuopt C++ library only,
+# or include the cuopt Python libraries:
+
+./build.sh           # All the libraries
+./build.sh libcuopt  # libcuopt C++ only
+```
+
+- For the complete list of libraries as well as details about the script usage, run the `help` command:
+
+```bash
+./build.sh --help
+```
+
+**Note**: when building the Python components, Python will by default look in ~/.local/lib/pythonX.Y/site-packages for any dependencies before looking in the site-packages directory in the conda environment. If you have cuOpt direct or indirect dependencies installed under ~/.local/lib, these may conflict with packages in the conda environment and cause build errors. If you have persistent build errors that do not seem to be related to local code changes, check the contents of ~/.local/lib. To work around this issue you can set the environment variable PYTHONNOUSERSITE=1 which will skip ~/.local/lib, or remove select packages from ~/.local/lib if they are not needed, or modify your $PYTHONPATH to look at the conda env first.
+
+#### Deb package
+
+`libcuopt.so` can be packaged as a deb package with option deb. This is a beta-feature and dependecies of libcuopt needs to be installed manually while installing it using deb package.
+This is only available to be built through source code and libcuopt is not being released as deb package in any official space.
+
+```bash
+./build.sh libcuopt deb
+```
+
+#### Building for development
+
+To build all libraries and tests, simply run
+
+```bash
+./build.sh
+```
+
+- **Note**: if Cython files (`*.pyx` or `*.pxd`) have changed, the Python build must be rerun.
+
+To run the C++ tests, run
+
+```bash
+cd $CUOPT_HOME/datasets && ./get_test_data.sh
+cd $CUOPT_HOME && datasets/linear_programming/download_pdlp_test_dataset.sh
+datasets/mip/download_miplib_test_dataset.sh
+datasets/quadratic_programming/download_qplib_test_dataset.sh
+export RAPIDS_DATASET_ROOT_DIR=$CUOPT_HOME/datasets/
+ctest --test-dir ${CUOPT_HOME}/cpp/build  # libcuopt
+```
+
+To run python tests, run
+
+- To run `cuopt` tests:
+```bash
+
+cd $CUOPT_HOME/datasets && ./get_test_data.sh
+cd $CUOPT_HOME && datasets/linear_programming/download_pdlp_test_dataset.sh
+datasets/mip/download_miplib_test_dataset.sh
+datasets/quadratic_programming/download_qplib_test_dataset.sh
+export RAPIDS_DATASET_ROOT_DIR=$CUOPT_HOME/datasets/
+cd $CUOPT_HOME/python
+pytest -v ${CUOPT_HOME}/python/cuopt/cuopt/tests
+```
+## gRPC Remote Execution
+
+NVIDIA cuOpt includes a gRPC-based remote execution system for running solves on a
+GPU server from a program using the API locally. User documentation lives under `docs/cuopt/source/cuopt-grpc/` (Sphinx **gRPC remote execution** section):
+
+- `quick-start.rst` — Install/Docker/selector, how remote execution works, minimal LP and CLI examples (default C bundle).
+- `advanced.rst` — TLS, tuning, limitations, troubleshooting.
+- `examples.rst`, `api.rst` — Sample patterns and RPC overview.
+- `docs/cuopt/source/cuopt-grpc/grpc-server-architecture.md` — Short **gRPC server behavior** page in user docs.
+- `cpp/docs/grpc-server-architecture.md` — Full contributor reference (IPC, C++ source map, streaming).
+
+## Debugging cuOpt
+
+### Building in debug mode from source
+
+Follow the instructions to [build from source](#build-cudf-from-source) and add `-g` to the
+`./build.sh` command.
+
+For example:
+
+```bash
+./build.sh libcuopt -g
+```
+
+This builds `libcuopt` in debug mode which enables some `assert` safety checks and includes symbols
+in the library for debugging.
+
+All other steps for installing `libcuopt` into your environment are the same.
+
+### Debugging with `cuda-gdb` and `cuda-memcheck`
+
+When you have a debug build of `libcuopt` installed, debugging with the `cuda-gdb` and
+`cuda-memcheck` is easy.
+
+If you are debugging a Python script, run the following:
+
+```bash
+cuda-gdb -ex r --args python <program_name>.py <program_arguments>
+```
+
+```bash
+compute-sanitizer --tool memcheck python <program_name>.py <program_arguments>
+```
+
+### Device debug symbols
+
+The device debug symbols are not automatically added with the cmake `Debug` build type because it
+causes a runtime delay of several minutes when loading the libcuopt.so library.
+
+Therefore, it is recommended to add device debug symbols only to specific files by setting the `-G`
+compile option locally in your `cpp/CMakeLists.txt` for that file. Here is an example of adding the
+`-G` option to the compile command for `cpp/src/routing/data_model_view.cu` source file:
+
+```cmake
+set_source_files_properties(src/routing/data_model_view.cu PROPERTIES COMPILE_OPTIONS "-G")
+```
+
+This will add the device debug symbols for this object file in `libcuopt.so`.  You can then use
+`cuda-dbg` to debug into the kernels in that source file.
+
+## Adding dependencies
+
+Please refer to the [dependencies.yaml](dependencies.yaml) file for details on how to add new dependencies.
+Add any new dependencies in the `dependencies.yaml` file. It takes care of conda, requirements (pip based dependencies) and pyproject.
+Please don't try to add dependencies directly to environment.yaml files under `conda/environments` directory and pyproject.toml files under `python` directories.
+
+## Third-Party Code
+
+When copying or adapting files from external projects into the repository:
+
+1. **Keep the original license/copyright header** in the copied file
+2. **Add an entry to the `THIRDPARTY` file** at the repo root with: the source project, its license type, the URL where the original code was found, and which files were copied or derived from it
+3. **Verify license compatibility** — the included code must be compatible with Apache-2.0
+
+Do not copy third-party code without proper attribution. **Always ask before including external code** — flag it in your PR description so reviewers can verify the license and attribution.
+
+## Code Formatting
+
+### Using pre-commit hooks
+
+cuOpt uses [pre-commit](https://pre-commit.com/) to execute all code linters and formatters. These
+tools ensure a consistent code format throughout the project. Using pre-commit ensures that linter
+versions and options are aligned for all developers. Additionally, there is a CI check in place to
+enforce that committed code follows our standards.
+
+To use `pre-commit`, install via `conda` or `pip`:
+
+```bash
+conda install -c conda-forge pre-commit
+```
+
+```bash
+pip install pre-commit
+```
+
+Then run pre-commit hooks before committing code:
+
+```bash
+pre-commit run --all-files --show-diff-on-failure
+```
+
+By default, pre-commit runs on staged files (only changes and additions that will be committed).
+To run pre-commit checks on all files, execute:
+
+```bash
+pre-commit run --all-files
+```
+
+We recommend setting up the pre-commit hooks to run automatically when you make a git commit. This catches formatting and style issues before they reach CI:
+
+```bash
+pre-commit install
+```
+
+Now code linters and formatters will be run each time you commit changes.
+
+You can skip these checks with `git commit --no-verify` or with the short version `git commit -n`.
+
+#### Signing Your Work
+
+* We require that all contributors "sign-off" on their commits. This certifies that the contribution is your original work, or you have rights to submit it under the same license, or a compatible license.
+
+  * Any contribution which contains commits that are not Signed-Off will not be accepted.
+
+* To sign off on a commit you simply use the `--signoff` (or `-s`) option when committing your changes:
+  ```bash
+  $ git commit -s -m "Add cool feature."
+  ```
+  This will append the following to your commit message:
+  ```
+  Signed-off-by: Your Name <your@email.com>
+  ```
+
+* Full text of the DCO:
+
+  ```
+    Developer Certificate of Origin
+    Version 1.1
+
+    Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+    1 Letterman Drive
+    Suite D4700
+    San Francisco, CA, 94129
+
+    Everyone is permitted to copy and distribute verbatim copies of this license document, but changing it is not allowed.
+  ```
+
+  ```
+    Developer's Certificate of Origin 1.1
+
+    By making a contribution to this project, I certify that:
+
+    (a) The contribution was created in whole or in part by me and I have the right to submit it under the open source license indicated in the file; or
+
+    (b) The contribution is based upon previous work that, to the best of my knowledge, is covered under an appropriate open source license and I have the right under that license to submit that work with modifications, whether created in whole or in part by me, under the same open source license (unless I am permitted to submit under a different license), as indicated in the file; or
+
+    (c) The contribution was provided directly to me by some other person who certified (a), (b) or (c) and I have not modified it.
+
+    (d) I understand and agree that this project and the contribution are public and that a record of the contribution (including all personal information I submit with it, including my sign-off) is maintained indefinitely and may be redistributed consistent with this project or the open source license(s) involved.
+  ```

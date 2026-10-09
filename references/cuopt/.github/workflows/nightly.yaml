@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Trigger Nightly cuOpt Pipeline
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * *" # 5am UTC / 1am EST
+
+
+permissions: {}
+
+jobs:
+  trigger-nightly-builds-and-tests:
+    permissions:
+      actions: write
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        cuopt_branch:
+          - "main"
+          - "release/26.08"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Trigger Pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUOPT_BRANCH: ${{ matrix.cuopt_branch }}
+        run: |
+          export DATE=$(date +%F)
+          export SHA=$(gh api -q '.commit.sha' "repos/nvidia/cuopt/branches/${CUOPT_BRANCH}")
+
+          # NOTE: '--ref' is the branch to pull the workflow file from, 'branch' input is the branch
+          #       to pull the actual cuOpt source code from
+          gh workflow run build.yaml    \
+            --repo NVIDIA/cuopt         \
+            --ref "${CUOPT_BRANCH}"     \
+            -f branch="${CUOPT_BRANCH}" \
+            -f build_type=nightly       \
+            -f date="${DATE}"           \
+            -f sha="${SHA}"             \
+            -f trigger-tests="true"

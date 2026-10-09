@@ -1,0 +1,19 @@
+# 原始数据保留在本地；说明、来源和校验清单进入版本管理。
+/Datasets/**
+!/Datasets/README.md
+!/Datasets/manifest.json
+!/Datasets/SHA256SUMS
+!/Datasets/provenance.json
+
+# 不继承旧实现、环境或编译缓存。
+.venv/
+.venv-*/
+__pycache__/
+.cache/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.nbc
+*.nbi
+*.o
+.DS_Store

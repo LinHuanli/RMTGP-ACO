@@ -1,0 +1,84 @@
+## A common gitignore file
+## The private files that shouldn't be tracked can be put in:
+## .git/info/exclude
+
+## Common
+__pycache__
+*.py[cod]
+*$py.class
+*.a
+*.o
+*.so
+*.dylib
+.cache
+.vscode
+.cursor/
+*.swp
+*.pytest_cache
+*.manifest
+*.spec
+.nfs*
+.clangd
+build
+dist
+html
+*.egg-info
+
+# Ignore _skbuild directory
+_skbuild/
+
+## Python build directories & artifacts
+python/**/*.cpp
+
+# profiler reports
+*.qdrep
+*.ncu-rep
+*.nsys-rep
+
+# datasets
+datasets/**
+!datasets/ref
+!datasets/get_test_data.sh
+!datasets/distance_engine
+!datasets/sat/get_test_data.sh
+
+## Doxygen
+cpp/doxygen/html
+cpp/doxygen/xml
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Managed Service Cache
+token_cache.json
+version_cache.json
+
+# Clang compilation database
+compile_commands.json
+
+# Local Server Error Log
+error_log.txt
+
+# docs
+docs/cuopt/source/cuopt-c/lp-milp/cuopt-cli-help.txt
+docs/cuopt/source/cuopt-server/client-api/sh-cli-help.txt
+docs/cuopt/source/cuopt-server/server-api/server-cli-help.txt
+docs/cuopt/source/cuopt-cli/cuopt-cli-help.txt
+docs/cuopt/source/cuopt_spec.yaml
+python/cuopt_self_hosted/cuopt_sh_client/tests/utils/certs/*.key
+docs/cuopt/build
+
+# generated version file
+cpp/include/cuopt/semantic_version.hpp
+!datasets/quadratic_programming
+!datasets/quadratic_programming/**
+# downloaded QPLIB instances (see download_qplib_test_dataset.sh)
+datasets/quadratic_programming/qplib/
+!datasets/solomon/
+!datasets/solomon/In/
+!datasets/solomon/In/r107.txt
+!datasets/mip/
+!datasets/mip/swath1.mps
+
+# conda env (recommended name)
+.cuopt_env

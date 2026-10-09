@@ -1,0 +1,1571 @@
+/* clang-format off */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/* clang-format on */
+
+#include <cuopt/mathematical_optimization/cuopt_c.h>
+
+#include <cuopt/mathematical_optimization/cpu_optimization_problem_solution.hpp>
+#include <cuopt/mathematical_optimization/optimization_problem_interface.hpp>
+#include <cuopt/mathematical_optimization/optimization_problem_solution.hpp>
+#include <cuopt/mathematical_optimization/optimization_problem_utils.hpp>
+#include <cuopt/mathematical_optimization/solve.hpp>
+#include <cuopt/mathematical_optimization/solver_settings.hpp>
+#include <cuopt/utilities/timestamp_utils.hpp>
+#include <linear_algebra/sparse_matrix.hpp>
+#include <pdlp/cuopt_c_internal.hpp>
+#include <utilities/logger.hpp>
+
+#include <cuopt/mathematical_optimization/io/parser.hpp>
+
+#include <cuopt/version_config.hpp>
+
+#include <algorithm>
+#include <cstdlib>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+
+using cuopt::mathematical_optimization::char_to_var_type;
+using cuopt::mathematical_optimization::csc_matrix_t;
+using cuopt::mathematical_optimization::csr_matrix_t;
+using cuopt::mathematical_optimization::get_memory_backend_type;
+using cuopt::mathematical_optimization::is_valid_public_var_type_code;
+using cuopt::mathematical_optimization::optimization_problem_interface_t;
+using cuopt::mathematical_optimization::problem_and_stream_view_t;
+using cuopt::mathematical_optimization::problem_category_t;
+using cuopt::mathematical_optimization::solution_and_stream_view_t;
+using cuopt::mathematical_optimization::solver_settings_t;
+using cuopt::mathematical_optimization::var_t;
+using cuopt::mathematical_optimization::var_type_to_char;
+using cuopt::mathematical_optimization::io::mps_data_model_t;
+
+class c_get_solution_callback_t : public cuopt::internals::get_solution_callback_t {
+ public:
+  explicit c_get_solution_callback_t(cuOptMIPGetSolutionCallback callback) : callback_(callback) {}
+
+  void get_solution(void* data,
+                    void* objective_value,
+                    void* solution_bound,
+                    void* user_data) override
+  {
+    if (callback_ == nullptr) { return; }
+    callback_(static_cast<const cuopt_float_t*>(data),
+              static_cast<const cuopt_float_t*>(objective_value),
+              static_cast<const cuopt_float_t*>(solution_bound),
+              user_data);
+  }
+
+ private:
+  cuOptMIPGetSolutionCallback callback_;
+};
+
+class c_set_solution_callback_t : public cuopt::internals::set_solution_callback_t {
+ public:
+  explicit c_set_solution_callback_t(cuOptMIPSetSolutionCallback callback) : callback_(callback) {}
+
+  void set_solution(void* data,
+                    void* objective_value,
+                    void* solution_bound,
+                    void* user_data) override
+  {
+    if (callback_ == nullptr) { return; }
+    callback_(static_cast<cuopt_float_t*>(data),
+              static_cast<cuopt_float_t*>(objective_value),
+              static_cast<const cuopt_float_t*>(solution_bound),
+              user_data);
+  }
+
+ private:
+  cuOptMIPSetSolutionCallback callback_;
+};
+
+// Owns solver settings and C callback wrappers for C API lifetime.
+struct solver_settings_handle_t {
+  solver_settings_handle_t() : settings(new solver_settings_t<cuopt_int_t, cuopt_float_t>()) {}
+  ~solver_settings_handle_t() { delete settings; }
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* settings;
+  std::vector<std::unique_ptr<cuopt::internals::base_solution_callback_t>> callbacks;
+};
+
+solver_settings_handle_t* get_settings_handle(cuOptSolverSettings settings)
+{
+  return static_cast<solver_settings_handle_t*>(settings);
+}
+
+namespace {
+
+// ---- Generic problem-attribute helpers (used by cuOptGetProblem*Attribute below) ----
+
+problem_and_stream_view_t* as_problem(cuOptOptimizationProblem problem)
+{
+  return static_cast<problem_and_stream_view_t*>(problem);
+}
+
+optimization_problem_interface_t<cuopt_int_t, cuopt_float_t>* get_iface(
+  cuOptOptimizationProblem problem)
+{
+  return as_problem(problem)->get_problem();
+}
+
+bool is_int_attribute(cuopt_int_t attribute)
+{
+  switch (attribute) {
+    case CUOPT_ATTR_NUM_VARIABLES:
+    case CUOPT_ATTR_NUM_CONSTRAINTS:
+    case CUOPT_ATTR_NUM_NONZEROS:
+    case CUOPT_ATTR_NUM_INTEGERS:
+    case CUOPT_ATTR_OBJECTIVE_SENSE:
+    case CUOPT_ATTR_PROBLEM_CATEGORY:
+    case CUOPT_ATTR_IS_MIP:
+    case CUOPT_ATTR_HAS_QUADRATIC_OBJECTIVE:
+    case CUOPT_ATTR_HAS_QUADRATIC_CONSTRAINTS: return true;
+    default: return false;
+  }
+}
+
+bool is_float_attribute(cuopt_int_t attribute)
+{
+  return attribute == CUOPT_ATTR_OBJECTIVE_OFFSET ||
+         attribute == CUOPT_ATTR_OBJECTIVE_SCALING_FACTOR;
+}
+
+bool is_float_array_attribute(cuopt_int_t attribute)
+{
+  switch (attribute) {
+    case CUOPT_ARRAY_ATTR_OBJECTIVE_COEFFICIENTS:
+    case CUOPT_ARRAY_ATTR_VARIABLE_LOWER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_VARIABLE_UPPER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_LOWER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_UPPER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_RHS: return true;
+    default: return false;
+  }
+}
+
+bool is_char_array_attribute(cuopt_int_t attribute)
+{
+  return attribute == CUOPT_ARRAY_ATTR_CONSTRAINT_SENSE ||
+         attribute == CUOPT_ARRAY_ATTR_VARIABLE_TYPES;
+}
+
+cuopt_int_t get_array_size(optimization_problem_interface_t<cuopt_int_t, cuopt_float_t>* problem,
+                           cuopt_int_t attribute)
+{
+  switch (attribute) {
+    case CUOPT_ARRAY_ATTR_OBJECTIVE_COEFFICIENTS:
+    case CUOPT_ARRAY_ATTR_VARIABLE_LOWER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_VARIABLE_UPPER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_VARIABLE_TYPES: return problem->get_n_variables();
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_LOWER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_UPPER_BOUNDS:
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_RHS:
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_SENSE: return problem->get_n_constraints();
+    default: return -1;
+  }
+}
+
+void coo_to_csr(cuopt_int_t num_entries,
+                const cuopt_int_t* row_index,
+                const cuopt_int_t* col_index,
+                const cuopt_float_t* coeff,
+                cuopt_int_t num_rows,
+                cuopt_int_t num_cols,
+                std::vector<cuopt_int_t>& offsets,
+                std::vector<cuopt_int_t>& indices,
+                std::vector<cuopt_float_t>& values)
+{
+  offsets.assign(num_rows + 1, 0);
+  indices.clear();
+  values.clear();
+  if (num_entries <= 0) { return; }
+
+  for (cuopt_int_t k = 0; k < num_entries; ++k) {
+    const cuopt_int_t row = row_index[k];
+    if (row < 0 || row >= num_rows) { throw raft::exception("Matrix row index out of range"); }
+    if (col_index[k] < 0 || col_index[k] >= num_cols) {
+      throw raft::exception("Matrix column index out of range");
+    }
+    ++offsets[row + 1];
+  }
+
+  for (cuopt_int_t row = 0; row < num_rows; ++row) {
+    offsets[row + 1] += offsets[row];
+  }
+
+  // Group triplet indices by row (counting/bucket sort on row): O(nnz + num_rows).
+  std::vector<cuopt_int_t> perm(static_cast<size_t>(num_entries));
+  std::vector<cuopt_int_t> row_cursor(offsets.begin(), offsets.begin() + num_rows);
+  for (cuopt_int_t k = 0; k < num_entries; ++k) {
+    const cuopt_int_t row   = row_index[k];
+    perm[row_cursor[row]++] = k;
+  }
+
+  // Per row: merge duplicate columns in one pass. col_mark[col] stores the index into
+  // values for the current row's entry; entries from prior rows have index < row_out_start.
+  indices.reserve(static_cast<size_t>(num_entries));
+  values.reserve(static_cast<size_t>(num_entries));
+  std::vector<cuopt_int_t> col_mark(static_cast<size_t>(num_cols), -1);
+
+  cuopt_int_t out_nnz = 0;
+  for (cuopt_int_t row = 0; row < num_rows; ++row) {
+    const cuopt_int_t start         = offsets[row];
+    const cuopt_int_t end           = offsets[row + 1];
+    const cuopt_int_t row_out_start = out_nnz;
+    offsets[row]                    = out_nnz;
+    if (start >= end) { continue; }
+
+    for (cuopt_int_t p = start; p < end; ++p) {
+      const cuopt_int_t k   = perm[p];
+      const cuopt_int_t col = col_index[k];
+      const size_t col_u    = static_cast<size_t>(col);
+      if (col_mark[col_u] < row_out_start) {
+        col_mark[col_u] = out_nnz;
+        indices.push_back(col);
+        values.push_back(coeff[k]);
+        ++out_nnz;
+      } else {
+        values[col_mark[col_u]] += coeff[k];
+      }
+    }
+  }
+  offsets[num_rows] = out_nnz;
+}
+
+constexpr char k_deprecated_quadratic_problem_msg[] =
+  "cuOptCreateQuadraticProblem is deprecated. Use cuOptCreateProblem to set up the linear "
+  "problem, then cuOptSetQuadraticObjective to specify the quadratic objective terms. "
+  "For ranged constraints, use cuOptCreateRangedProblem instead of cuOptCreateProblem.";
+
+constexpr char k_deprecated_quadratic_ranged_problem_msg[] =
+  "cuOptCreateQuadraticRangedProblem is deprecated. Use cuOptCreateRangedProblem to set up the "
+  "linear problem, then cuOptSetQuadraticObjective to specify the quadratic objective terms. "
+  "For QCQP models, call cuOptAddQuadraticConstraint for each quadratic constraint.";
+
+constexpr char k_deprecated_get_constraint_matrix_msg[] =
+  "cuOptGetConstraintMatrix is deprecated. Use cuOptGetConstraintMatrixCSR for identical CSR "
+  "output, or cuOptGetConstraintMatrixCSC for compressed sparse column format.";
+
+}  // namespace
+
+int8_t cuOptGetFloatSize() { return sizeof(cuopt_float_t); }
+
+int8_t cuOptGetIntSize() { return sizeof(cuopt_int_t); }
+
+cuopt_int_t cuOptGetVersion(cuopt_int_t* version_major,
+                            cuopt_int_t* version_minor,
+                            cuopt_int_t* version_patch)
+{
+  if (version_major == nullptr || version_minor == nullptr || version_patch == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  *version_major = CUOPT_VERSION_MAJOR;
+  *version_minor = CUOPT_VERSION_MINOR;
+  *version_patch = CUOPT_VERSION_PATCH;
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptReadProblem(const char* filename, cuOptOptimizationProblem* problem_ptr)
+{
+  // Validate C-API inputs before any allocation. A null/empty filename or a
+  // null out-pointer cannot succeed and must not leave the user with a
+  // partially-constructed problem_and_stream_view_t.
+  if (filename == nullptr || filename[0] == '\0' || problem_ptr == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+
+  problem_and_stream_view_t* problem_and_stream =
+    new problem_and_stream_view_t(get_memory_backend_type());
+  std::string filename_str(filename);
+  std::unique_ptr<mps_data_model_t<cuopt_int_t, cuopt_float_t>> mps_data_model_ptr;
+  try {
+    // Dispatches on file extension; see read for the enumerated rules.
+    mps_data_model_ptr = std::make_unique<mps_data_model_t<cuopt_int_t, cuopt_float_t>>(
+      cuopt::mathematical_optimization::io::read<cuopt_int_t, cuopt_float_t>(filename_str));
+  } catch (const std::exception& e) {
+    CUOPT_LOG_INFO("Error parsing input file: %s", e.what());
+    delete problem_and_stream;
+    *problem_ptr        = nullptr;
+    std::string err_msg = e.what();
+    if (err_msg.find("Error opening input file") != std::string::npos) {
+      return CUOPT_MPS_FILE_ERROR;
+    } else {
+      return CUOPT_MPS_PARSE_ERROR;
+    }
+  }
+
+  cuopt::mathematical_optimization::adopt_from_mps_data_model(problem_and_stream->get_problem(),
+                                                              std::move(*mps_data_model_ptr));
+
+  *problem_ptr = static_cast<cuOptOptimizationProblem>(problem_and_stream);
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptWriteProblem(cuOptOptimizationProblem problem,
+                              const char* filename,
+                              cuopt_int_t format)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (filename == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (strlen(filename) == 0) { return CUOPT_INVALID_ARGUMENT; }
+  if (format != CUOPT_FILE_FORMAT_MPS) { return CUOPT_INVALID_ARGUMENT; }
+
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+  try {
+    // Use the write_to_mps method from the interface (works for both CPU and GPU)
+    problem_and_stream_view->get_problem()->write_to_mps(std::string(filename));
+  } catch (const std::exception& e) {
+    CUOPT_LOG_INFO("Error writing MPS file: %s", e.what());
+    return CUOPT_MPS_FILE_ERROR;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptCreateProblem(cuopt_int_t num_constraints,
+                               cuopt_int_t num_variables,
+                               cuopt_int_t objective_sense,
+                               cuopt_float_t objective_offset,
+                               const cuopt_float_t* objective_coefficients,
+                               const cuopt_int_t* constraint_matrix_row_offsets,
+                               const cuopt_int_t* constraint_matrix_column_indices,
+                               const cuopt_float_t* constraint_matrix_coefficent_values,
+                               const char* constraint_sense,
+                               const cuopt_float_t* rhs,
+                               const cuopt_float_t* lower_bounds,
+                               const cuopt_float_t* upper_bounds,
+                               const char* variable_types,
+                               cuOptOptimizationProblem* problem_ptr)
+{
+  cuopt::utilities::printTimestamp("CUOPT_CREATE_PROBLEM");
+
+  if (problem_ptr == nullptr || objective_coefficients == nullptr ||
+      constraint_matrix_row_offsets == nullptr || constraint_matrix_column_indices == nullptr ||
+      constraint_matrix_coefficent_values == nullptr || constraint_sense == nullptr ||
+      rhs == nullptr || lower_bounds == nullptr || upper_bounds == nullptr ||
+      variable_types == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  for (int j = 0; j < num_variables; j++) {
+    if (!is_valid_public_var_type_code(variable_types[j])) { return CUOPT_INVALID_ARGUMENT; }
+  }
+
+  problem_and_stream_view_t* problem_and_stream =
+    new problem_and_stream_view_t(get_memory_backend_type());
+  try {
+    auto* problem = problem_and_stream->get_problem();
+    problem->set_maximize(objective_sense == CUOPT_MAXIMIZE);
+    problem->set_objective_offset(objective_offset);
+    problem->set_objective_coefficients(objective_coefficients, num_variables);
+    cuopt_int_t nnz = constraint_matrix_row_offsets[num_constraints];
+    problem->set_csr_constraint_matrix(constraint_matrix_coefficent_values,
+                                       nnz,
+                                       constraint_matrix_column_indices,
+                                       nnz,
+                                       constraint_matrix_row_offsets,
+                                       num_constraints + 1);
+    problem->set_row_types(constraint_sense, num_constraints);
+    problem->set_constraint_bounds(rhs, num_constraints);
+    problem->set_variable_lower_bounds(lower_bounds, num_variables);
+    problem->set_variable_upper_bounds(upper_bounds, num_variables);
+
+    // Set variable types (problem category is auto-detected)
+    std::vector<var_t> variable_types_host(num_variables);
+    for (int j = 0; j < num_variables; j++) {
+      variable_types_host[j] = char_to_var_type(variable_types[j]);
+    }
+    problem->set_variable_types(variable_types_host.data(), num_variables);
+
+    *problem_ptr = static_cast<cuOptOptimizationProblem>(problem_and_stream);
+  } catch (const raft::exception& e) {
+    delete problem_and_stream;
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptCreateRangedProblem(cuopt_int_t num_constraints,
+                                     cuopt_int_t num_variables,
+                                     cuopt_int_t objective_sense,
+                                     cuopt_float_t objective_offset,
+                                     const cuopt_float_t* objective_coefficients,
+                                     const cuopt_int_t* constraint_matrix_row_offsets,
+                                     const cuopt_int_t* constraint_matrix_column_indices,
+                                     const cuopt_float_t* constraint_matrix_coefficent_values,
+                                     const cuopt_float_t* constraint_lower_bounds,
+                                     const cuopt_float_t* constraint_upper_bounds,
+                                     const cuopt_float_t* variable_lower_bounds,
+                                     const cuopt_float_t* variable_upper_bounds,
+                                     const char* variable_types,
+                                     cuOptOptimizationProblem* problem_ptr)
+{
+  cuopt::utilities::printTimestamp("CUOPT_CREATE_PROBLEM");
+
+  if (problem_ptr == nullptr || objective_coefficients == nullptr ||
+      constraint_matrix_row_offsets == nullptr || constraint_matrix_column_indices == nullptr ||
+      constraint_matrix_coefficent_values == nullptr || constraint_lower_bounds == nullptr ||
+      constraint_upper_bounds == nullptr || variable_lower_bounds == nullptr ||
+      variable_upper_bounds == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  if (variable_types != nullptr) {
+    for (int j = 0; j < num_variables; j++) {
+      if (!is_valid_public_var_type_code(variable_types[j])) { return CUOPT_INVALID_ARGUMENT; }
+    }
+  }
+
+  problem_and_stream_view_t* problem_and_stream =
+    new problem_and_stream_view_t(get_memory_backend_type());
+  try {
+    auto* problem = problem_and_stream->get_problem();
+    problem->set_maximize(objective_sense == CUOPT_MAXIMIZE);
+    problem->set_objective_offset(objective_offset);
+    problem->set_objective_coefficients(objective_coefficients, num_variables);
+    cuopt_int_t nnz = constraint_matrix_row_offsets[num_constraints];
+    problem->set_csr_constraint_matrix(constraint_matrix_coefficent_values,
+                                       nnz,
+                                       constraint_matrix_column_indices,
+                                       nnz,
+                                       constraint_matrix_row_offsets,
+                                       num_constraints + 1);
+    problem->set_constraint_lower_bounds(constraint_lower_bounds, num_constraints);
+    problem->set_constraint_upper_bounds(constraint_upper_bounds, num_constraints);
+    problem->set_variable_lower_bounds(variable_lower_bounds, num_variables);
+    problem->set_variable_upper_bounds(variable_upper_bounds, num_variables);
+
+    // Set variable types (NULL means all continuous)
+    // Problem category (LP/MIP/IP) is auto-detected by set_variable_types
+    std::vector<var_t> variable_types_host(num_variables);
+    if (variable_types != nullptr) {
+      for (cuopt_int_t j = 0; j < num_variables; ++j) {
+        variable_types_host[j] = char_to_var_type(variable_types[j]);
+      }
+    } else {
+      // Default to all continuous
+      for (cuopt_int_t j = 0; j < num_variables; ++j) {
+        variable_types_host[j] = var_t::CONTINUOUS;
+      }
+    }
+    problem->set_variable_types(variable_types_host.data(), num_variables);
+
+    *problem_ptr = static_cast<cuOptOptimizationProblem>(problem_and_stream);
+  } catch (const raft::exception& e) {
+    delete problem_and_stream;
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptCreateQuadraticProblem(
+  cuopt_int_t num_constraints,
+  cuopt_int_t num_variables,
+  cuopt_int_t objective_sense,
+  cuopt_float_t objective_offset,
+  const cuopt_float_t* objective_coefficients,
+  const cuopt_int_t* quadratic_objective_matrix_row_offsets,
+  const cuopt_int_t* quadratic_objective_matrix_column_indices,
+  const cuopt_float_t* quadratic_objective_matrix_coefficent_values,
+  const cuopt_int_t* constraint_matrix_row_offsets,
+  const cuopt_int_t* constraint_matrix_column_indices,
+  const cuopt_float_t* constraint_matrix_coefficent_values,
+  const char* constraint_sense,
+  const cuopt_float_t* rhs,
+  const cuopt_float_t* lower_bounds,
+  const cuopt_float_t* upper_bounds,
+  cuOptOptimizationProblem* problem_ptr)
+{
+  cuopt::utilities::printTimestamp("CUOPT_CREATE_PROBLEM");
+
+  if (problem_ptr == nullptr || objective_coefficients == nullptr ||
+      quadratic_objective_matrix_row_offsets == nullptr ||
+      quadratic_objective_matrix_column_indices == nullptr ||
+      quadratic_objective_matrix_coefficent_values == nullptr ||
+      constraint_matrix_row_offsets == nullptr || constraint_matrix_column_indices == nullptr ||
+      constraint_matrix_coefficent_values == nullptr || constraint_sense == nullptr ||
+      rhs == nullptr || lower_bounds == nullptr || upper_bounds == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+
+  CUOPT_LOG_WARN("%s", k_deprecated_quadratic_problem_msg);
+
+  problem_and_stream_view_t* problem_and_stream =
+    new problem_and_stream_view_t(get_memory_backend_type());
+  try {
+    auto* problem = problem_and_stream->get_problem();
+    problem->set_maximize(objective_sense == CUOPT_MAXIMIZE);
+    problem->set_objective_offset(objective_offset);
+    problem->set_objective_coefficients(objective_coefficients, num_variables);
+    cuopt_int_t Q_nnz = quadratic_objective_matrix_row_offsets[num_variables];
+    problem->set_quadratic_objective_matrix(quadratic_objective_matrix_coefficent_values,
+                                            Q_nnz,
+                                            quadratic_objective_matrix_column_indices,
+                                            Q_nnz,
+                                            quadratic_objective_matrix_row_offsets,
+                                            num_variables + 1);
+    cuopt_int_t nnz = constraint_matrix_row_offsets[num_constraints];
+    problem->set_csr_constraint_matrix(constraint_matrix_coefficent_values,
+                                       nnz,
+                                       constraint_matrix_column_indices,
+                                       nnz,
+                                       constraint_matrix_row_offsets,
+                                       num_constraints + 1);
+    problem->set_row_types(constraint_sense, num_constraints);
+    problem->set_constraint_bounds(rhs, num_constraints);
+    problem->set_variable_lower_bounds(lower_bounds, num_variables);
+    problem->set_variable_upper_bounds(upper_bounds, num_variables);
+
+    // Quadratic problems default to LP category (no variable types set, so no MIP detection)
+
+    *problem_ptr = static_cast<cuOptOptimizationProblem>(problem_and_stream);
+  } catch (const raft::exception& e) {
+    delete problem_and_stream;
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptCreateQuadraticRangedProblem(
+  cuopt_int_t num_constraints,
+  cuopt_int_t num_variables,
+  cuopt_int_t objective_sense,
+  cuopt_float_t objective_offset,
+  const cuopt_float_t* objective_coefficients,
+  const cuopt_int_t* quadratic_objective_matrix_row_offsets,
+  const cuopt_int_t* quadratic_objective_matrix_column_indices,
+  const cuopt_float_t* quadratic_objective_matrix_coefficent_values,
+  const cuopt_int_t* constraint_matrix_row_offsets,
+  const cuopt_int_t* constraint_matrix_column_indices,
+  const cuopt_float_t* constraint_matrix_coefficent_values,
+  const cuopt_float_t* constraint_lower_bounds,
+  const cuopt_float_t* constraint_upper_bounds,
+  const cuopt_float_t* variable_lower_bounds,
+  const cuopt_float_t* variable_upper_bounds,
+  cuOptOptimizationProblem* problem_ptr)
+{
+  cuopt::utilities::printTimestamp("CUOPT_CREATE_QUADRATIC_RANGED_PROBLEM");
+
+  if (problem_ptr == nullptr || objective_coefficients == nullptr ||
+      quadratic_objective_matrix_row_offsets == nullptr ||
+      quadratic_objective_matrix_column_indices == nullptr ||
+      quadratic_objective_matrix_coefficent_values == nullptr ||
+      constraint_matrix_row_offsets == nullptr || constraint_matrix_column_indices == nullptr ||
+      constraint_matrix_coefficent_values == nullptr || constraint_lower_bounds == nullptr ||
+      constraint_upper_bounds == nullptr || variable_lower_bounds == nullptr ||
+      variable_upper_bounds == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+
+  CUOPT_LOG_WARN("%s", k_deprecated_quadratic_ranged_problem_msg);
+
+  problem_and_stream_view_t* problem_and_stream =
+    new problem_and_stream_view_t(get_memory_backend_type());
+  try {
+    auto* problem = problem_and_stream->get_problem();
+    problem->set_maximize(objective_sense == CUOPT_MAXIMIZE);
+    problem->set_objective_offset(objective_offset);
+    problem->set_objective_coefficients(objective_coefficients, num_variables);
+    cuopt_int_t Q_nnz = quadratic_objective_matrix_row_offsets[num_variables];
+    problem->set_quadratic_objective_matrix(quadratic_objective_matrix_coefficent_values,
+                                            Q_nnz,
+                                            quadratic_objective_matrix_column_indices,
+                                            Q_nnz,
+                                            quadratic_objective_matrix_row_offsets,
+                                            num_variables + 1);
+    cuopt_int_t nnz = constraint_matrix_row_offsets[num_constraints];
+    problem->set_csr_constraint_matrix(constraint_matrix_coefficent_values,
+                                       nnz,
+                                       constraint_matrix_column_indices,
+                                       nnz,
+                                       constraint_matrix_row_offsets,
+                                       num_constraints + 1);
+    problem->set_constraint_lower_bounds(constraint_lower_bounds, num_constraints);
+    problem->set_constraint_upper_bounds(constraint_upper_bounds, num_constraints);
+    problem->set_variable_lower_bounds(variable_lower_bounds, num_variables);
+    problem->set_variable_upper_bounds(variable_upper_bounds, num_variables);
+
+    // Quadratic problems default to LP category (no variable types set, so no MIP detection)
+
+    *problem_ptr = static_cast<cuOptOptimizationProblem>(problem_and_stream);
+  } catch (const raft::exception& e) {
+    delete problem_and_stream;
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSetQuadraticObjective(cuOptOptimizationProblem problem,
+                                       cuopt_int_t num_entries,
+                                       const cuopt_int_t* row_index,
+                                       const cuopt_int_t* col_index,
+                                       const cuopt_float_t* coeff)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_entries <= 0) { return CUOPT_INVALID_ARGUMENT; }
+  if (row_index == nullptr || col_index == nullptr || coeff == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+
+  problem_and_stream_view_t* problem_and_stream = static_cast<problem_and_stream_view_t*>(problem);
+  auto* op_problem                              = problem_and_stream->get_problem();
+  const cuopt_int_t num_variables               = op_problem->get_n_variables();
+  if (num_variables <= 0) { return CUOPT_INVALID_ARGUMENT; }
+
+  for (cuopt_int_t k = 0; k < num_entries; ++k) {
+    if (row_index[k] < 0 || row_index[k] >= num_variables || col_index[k] < 0 ||
+        col_index[k] >= num_variables) {
+      return CUOPT_INVALID_ARGUMENT;
+    }
+  }
+
+  try {
+    std::vector<cuopt_int_t> Q_offsets;
+    std::vector<cuopt_int_t> Q_indices;
+    std::vector<cuopt_float_t> Q_values;
+    coo_to_csr(num_entries,
+               row_index,
+               col_index,
+               coeff,
+               num_variables,
+               num_variables,
+               Q_offsets,
+               Q_indices,
+               Q_values);
+    if (Q_values.empty()) { return CUOPT_INVALID_ARGUMENT; }
+
+    op_problem->set_quadratic_objective_matrix(Q_values.data(),
+                                               static_cast<cuopt_int_t>(Q_values.size()),
+                                               Q_indices.data(),
+                                               static_cast<cuopt_int_t>(Q_indices.size()),
+                                               Q_offsets.data(),
+                                               static_cast<cuopt_int_t>(Q_offsets.size()));
+  } catch (const raft::exception&) {
+    return CUOPT_INVALID_ARGUMENT;
+  } catch (const std::exception&) {
+    return CUOPT_RUNTIME_ERROR;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptAddQuadraticConstraint(cuOptOptimizationProblem problem,
+                                        cuopt_int_t quad_num_entries,
+                                        const cuopt_int_t* row_index,
+                                        const cuopt_int_t* col_index,
+                                        const cuopt_float_t* coeff,
+                                        cuopt_int_t num_lin_entries,
+                                        const cuopt_int_t* linear_index,
+                                        const cuopt_float_t* linear_coeff,
+                                        char sense,
+                                        cuopt_float_t rhs)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (quad_num_entries <= 0) { return CUOPT_INVALID_ARGUMENT; }
+  if (row_index == nullptr || col_index == nullptr || coeff == nullptr) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  if (num_lin_entries < 0) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_lin_entries > 0 && (linear_index == nullptr || linear_coeff == nullptr)) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  if (sense != CUOPT_LESS_THAN && sense != CUOPT_GREATER_THAN) { return CUOPT_INVALID_ARGUMENT; }
+
+  problem_and_stream_view_t* problem_and_stream = static_cast<problem_and_stream_view_t*>(problem);
+  auto* op_problem                              = problem_and_stream->get_problem();
+  const cuopt_int_t num_variables               = op_problem->get_n_variables();
+  if (num_variables <= 0) { return CUOPT_INVALID_ARGUMENT; }
+
+  for (cuopt_int_t k = 0; k < quad_num_entries; ++k) {
+    if (row_index[k] < 0 || row_index[k] >= num_variables || col_index[k] < 0 ||
+        col_index[k] >= num_variables) {
+      return CUOPT_INVALID_ARGUMENT;
+    }
+  }
+  for (cuopt_int_t k = 0; k < num_lin_entries; ++k) {
+    if (linear_index[k] < 0 || linear_index[k] >= num_variables) { return CUOPT_INVALID_ARGUMENT; }
+  }
+
+  try {
+    const auto row_index_span =
+      std::span<const cuopt_int_t>(row_index, static_cast<std::size_t>(quad_num_entries));
+    const auto col_index_span =
+      std::span<const cuopt_int_t>(col_index, static_cast<std::size_t>(quad_num_entries));
+    const auto coeff_span =
+      std::span<const cuopt_float_t>(coeff, static_cast<std::size_t>(quad_num_entries));
+    const auto linear_coeff_span =
+      num_lin_entries == 0
+        ? std::span<const cuopt_float_t>{}
+        : std::span<const cuopt_float_t>(linear_coeff, static_cast<std::size_t>(num_lin_entries));
+    const auto linear_index_span =
+      num_lin_entries == 0
+        ? std::span<const cuopt_int_t>{}
+        : std::span<const cuopt_int_t>(linear_index, static_cast<std::size_t>(num_lin_entries));
+
+    op_problem->add_quadratic_constraint(
+      sense, rhs, row_index_span, col_index_span, coeff_span, linear_coeff_span, linear_index_span);
+  } catch (const raft::exception&) {
+    return CUOPT_INVALID_ARGUMENT;
+  } catch (const std::exception&) {
+    return CUOPT_RUNTIME_ERROR;
+  }
+  return CUOPT_SUCCESS;
+}
+
+void cuOptDestroyProblem(cuOptOptimizationProblem* problem_ptr)
+{
+  if (problem_ptr == nullptr) { return; }
+  if (*problem_ptr == nullptr) { return; }
+  delete static_cast<problem_and_stream_view_t*>(*problem_ptr);
+  *problem_ptr = nullptr;
+}
+
+cuopt_int_t cuOptGetNumConstraints(cuOptOptimizationProblem problem,
+                                   cuopt_int_t* num_constraints_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_constraints_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+  *num_constraints_ptr = problem_and_stream_view->get_problem()->get_n_constraints();
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetNumVariables(cuOptOptimizationProblem problem, cuopt_int_t* num_variables_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_variables_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+  *num_variables_ptr = problem_and_stream_view->get_problem()->get_n_variables();
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetObjectiveSense(cuOptOptimizationProblem problem,
+                                   cuopt_int_t* objective_sense_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (objective_sense_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+  *objective_sense_ptr =
+    problem_and_stream_view->get_problem()->get_sense() ? CUOPT_MAXIMIZE : CUOPT_MINIMIZE;
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetObjectiveOffset(cuOptOptimizationProblem problem,
+                                    cuopt_float_t* objective_offset_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (objective_offset_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+  *objective_offset_ptr = problem_and_stream_view->get_problem()->get_objective_offset();
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetObjectiveCoefficients(cuOptOptimizationProblem problem,
+                                          cuopt_float_t* objective_coefficients_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (objective_coefficients_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_variables();
+  problem_and_stream_view->get_problem()->copy_objective_coefficients_to_host(
+    objective_coefficients_ptr, size);
+
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetNumNonZeros(cuOptOptimizationProblem problem,
+                                cuopt_int_t* num_non_zero_elements_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_non_zero_elements_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+  *num_non_zero_elements_ptr = problem_and_stream_view->get_problem()->get_nnz();
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetConstraintMatrix(cuOptOptimizationProblem problem,
+                                     cuopt_int_t* constraint_matrix_row_offsets_ptr,
+                                     cuopt_int_t* constraint_matrix_column_indices_ptr,
+                                     cuopt_float_t* constraint_matrix_coefficients_ptr)
+{
+  CUOPT_LOG_ONCE(WARN, "%s", k_deprecated_get_constraint_matrix_msg);
+  return cuOptGetConstraintMatrixCSR(problem,
+                                     constraint_matrix_row_offsets_ptr,
+                                     constraint_matrix_column_indices_ptr,
+                                     constraint_matrix_coefficients_ptr);
+}
+
+cuopt_int_t cuOptGetConstraintSense(cuOptOptimizationProblem problem, char* constraint_sense_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (constraint_sense_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_constraints();
+  problem_and_stream_view->get_problem()->copy_row_types_to_host(constraint_sense_ptr, size);
+
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetConstraintRightHandSide(cuOptOptimizationProblem problem,
+                                            cuopt_float_t* rhs_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (rhs_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_constraints();
+  problem_and_stream_view->get_problem()->copy_constraint_bounds_to_host(rhs_ptr, size);
+
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetConstraintLowerBounds(cuOptOptimizationProblem problem,
+                                          cuopt_float_t* lower_bounds_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (lower_bounds_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_constraints();
+  problem_and_stream_view->get_problem()->copy_constraint_lower_bounds_to_host(lower_bounds_ptr,
+                                                                               size);
+
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetConstraintUpperBounds(cuOptOptimizationProblem problem,
+                                          cuopt_float_t* upper_bounds_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (upper_bounds_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_constraints();
+  problem_and_stream_view->get_problem()->copy_constraint_upper_bounds_to_host(upper_bounds_ptr,
+                                                                               size);
+
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetVariableLowerBounds(cuOptOptimizationProblem problem,
+                                        cuopt_float_t* lower_bounds_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (lower_bounds_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_variables();
+  problem_and_stream_view->get_problem()->copy_variable_lower_bounds_to_host(lower_bounds_ptr,
+                                                                             size);
+
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetVariableUpperBounds(cuOptOptimizationProblem problem,
+                                        cuopt_float_t* upper_bounds_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (upper_bounds_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_variables();
+  problem_and_stream_view->get_problem()->copy_variable_upper_bounds_to_host(upper_bounds_ptr,
+                                                                             size);
+
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetVariableTypes(cuOptOptimizationProblem problem, char* variable_types_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (variable_types_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  cuopt_int_t size = problem_and_stream_view->get_problem()->get_n_variables();
+  std::vector<var_t> variable_types_host(size);
+  problem_and_stream_view->get_problem()->copy_variable_types_to_host(variable_types_host.data(),
+                                                                      size);
+
+  // Convert var_t enum to C API char values
+  for (size_t j = 0; j < variable_types_host.size(); j++) {
+    variable_types_ptr[j] =
+      cuopt::mathematical_optimization::var_type_to_char(variable_types_host[j]);
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptCreateSolverSettings(cuOptSolverSettings* settings_ptr)
+{
+  if (settings_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_handle_t* settings_handle = new solver_settings_handle_t();
+  *settings_ptr                             = static_cast<cuOptSolverSettings>(settings_handle);
+  return CUOPT_SUCCESS;
+}
+
+void cuOptDestroySolverSettings(cuOptSolverSettings* settings_ptr)
+{
+  if (settings_ptr == nullptr) { return; }
+  delete get_settings_handle(*settings_ptr);
+  *settings_ptr = nullptr;
+}
+
+cuopt_int_t cuOptSetParameter(cuOptSolverSettings settings,
+                              const char* parameter_name,
+                              const char* parameter_value)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_name == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_value == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    solver_settings->set_parameter_from_string(parameter_name, parameter_value);
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetParameter(cuOptSolverSettings settings,
+                              const char* parameter_name,
+                              cuopt_int_t parameter_value_size,
+                              char* parameter_value)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_name == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_value == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_value_size <= 0) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    std::string parameter_value_str = solver_settings->get_parameter_as_string(parameter_name);
+    std::snprintf(parameter_value, parameter_value_size, "%s", parameter_value_str.c_str());
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSetIntegerParameter(cuOptSolverSettings settings,
+                                     const char* parameter_name,
+                                     cuopt_int_t parameter_value)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_name == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    solver_settings->set_parameter<cuopt_int_t>(parameter_name, parameter_value);
+  } catch (const std::invalid_argument& e) {
+    // We could be trying to set a boolean parameter. Try that
+    try {
+      bool value = static_cast<bool>(parameter_value);
+      solver_settings->set_parameter<bool>(parameter_name, value);
+    } catch (const std::exception& e) {
+      return CUOPT_INVALID_ARGUMENT;
+    }
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetIntegerParameter(cuOptSolverSettings settings,
+                                     const char* parameter_name,
+                                     cuopt_int_t* parameter_value_ptr)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_name == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_value_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    *parameter_value_ptr = solver_settings->get_parameter<cuopt_int_t>(parameter_name);
+  } catch (const std::invalid_argument& e) {
+    // We could be trying to get a boolean parameter. Try that
+    try {
+      *parameter_value_ptr =
+        static_cast<cuopt_int_t>(solver_settings->get_parameter<bool>(parameter_name));
+    } catch (const std::exception& e) {
+      return CUOPT_INVALID_ARGUMENT;
+    }
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSetFloatParameter(cuOptSolverSettings settings,
+                                   const char* parameter_name,
+                                   cuopt_float_t parameter_value)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_name == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    solver_settings->set_parameter<cuopt_float_t>(parameter_name, parameter_value);
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetFloatParameter(cuOptSolverSettings settings,
+                                   const char* parameter_name,
+                                   cuopt_float_t* parameter_value_ptr)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_name == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (parameter_value_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    *parameter_value_ptr = solver_settings->get_parameter<cuopt_float_t>(parameter_name);
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSetMIPGetSolutionCallback(cuOptSolverSettings settings,
+                                           cuOptMIPGetSolutionCallback callback,
+                                           void* user_data)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (callback == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_handle_t* settings_handle = get_settings_handle(settings);
+  auto callback_wrapper                     = std::make_unique<c_get_solution_callback_t>(callback);
+  settings_handle->settings->set_mip_callback(callback_wrapper.get(), user_data);
+  settings_handle->callbacks.push_back(std::move(callback_wrapper));
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSetMIPSetSolutionCallback(cuOptSolverSettings settings,
+                                           cuOptMIPSetSolutionCallback callback,
+                                           void* user_data)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (callback == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solver_settings_handle_t* settings_handle = get_settings_handle(settings);
+  auto callback_wrapper                     = std::make_unique<c_set_solution_callback_t>(callback);
+  settings_handle->settings->set_mip_callback(callback_wrapper.get(), user_data);
+  settings_handle->callbacks.push_back(std::move(callback_wrapper));
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSetInitialPrimalSolution(cuOptSolverSettings settings,
+                                          const cuopt_float_t* primal_solution,
+                                          cuopt_int_t num_variables)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (primal_solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_variables <= 0) { return CUOPT_INVALID_ARGUMENT; }
+
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    solver_settings->set_initial_pdlp_primal_solution(primal_solution, num_variables);
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSetInitialDualSolution(cuOptSolverSettings settings,
+                                        const cuopt_float_t* dual_solution,
+                                        cuopt_int_t num_constraints)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (dual_solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_constraints <= 0) { return CUOPT_INVALID_ARGUMENT; }
+
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    solver_settings->set_initial_pdlp_dual_solution(dual_solution, num_constraints);
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptAddMIPStart(cuOptSolverSettings settings,
+                             const cuopt_float_t* solution,
+                             cuopt_int_t num_variables)
+{
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (num_variables <= 0) { return CUOPT_INVALID_ARGUMENT; }
+
+  solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+    get_settings_handle(settings)->settings;
+  try {
+    solver_settings->get_mip_settings().add_initial_solution(solution, num_variables);
+  } catch (const std::exception& e) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptIsMIP(cuOptOptimizationProblem problem, cuopt_int_t* is_mip_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (is_mip_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+  problem_category_t category = problem_and_stream_view->get_problem()->get_problem_category();
+  bool is_mip = (category == problem_category_t::MIP) || (category == problem_category_t::IP);
+  *is_mip_ptr = static_cast<cuopt_int_t>(is_mip);
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptSolve(cuOptOptimizationProblem problem,
+                       cuOptSolverSettings settings,
+                       cuOptSolution* solution_ptr)
+{
+  cuopt::utilities::printTimestamp("CUOPT_SOLVE_START");
+
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (settings == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (solution_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+
+  problem_and_stream_view_t* problem_and_stream_view =
+    static_cast<problem_and_stream_view_t*>(problem);
+
+  // Get the problem interface (GPU or CPU backed)
+  cuopt::mathematical_optimization::optimization_problem_interface_t<cuopt_int_t, cuopt_float_t>*
+    problem_interface = problem_and_stream_view->get_problem();
+
+  try {
+    if (problem_interface->get_problem_category() == problem_category_t::MIP ||
+        problem_interface->get_problem_category() == problem_category_t::IP) {
+      solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+        get_settings_handle(settings)->settings;
+      cuopt::mathematical_optimization::mip_solver_settings_t<cuopt_int_t, cuopt_float_t>&
+        mip_settings = solver_settings->get_mip_settings();
+
+      // Solve returns unique_ptr<mip_solution_interface_t>
+      auto solution_interface =
+        cuopt::mathematical_optimization::solve_mip<cuopt_int_t, cuopt_float_t>(problem_interface,
+                                                                                mip_settings);
+
+      auto solution_holder =
+        std::make_unique<solution_and_stream_view_t>(true, problem_and_stream_view->memory_backend);
+      solution_holder->mip_solution_interface_ptr = solution_interface.release();
+
+      cuopt::utilities::printTimestamp("CUOPT_SOLVE_RETURN");
+
+      auto err = static_cast<cuopt_int_t>(
+        solution_holder->mip_solution_interface_ptr->get_error_status().get_error_type());
+      *solution_ptr = static_cast<cuOptSolution>(solution_holder.release());
+      return err;
+    } else {
+      solver_settings_t<cuopt_int_t, cuopt_float_t>* solver_settings =
+        get_settings_handle(settings)->settings;
+      cuopt::mathematical_optimization::pdlp_solver_settings_t<cuopt_int_t, cuopt_float_t>&
+        pdlp_settings = solver_settings->get_pdlp_settings();
+
+      // Solve returns unique_ptr<lp_solution_interface_t>
+      auto solution_interface =
+        cuopt::mathematical_optimization::solve_lp<cuopt_int_t, cuopt_float_t>(problem_interface,
+                                                                               pdlp_settings);
+
+      auto solution_holder = std::make_unique<solution_and_stream_view_t>(
+        false, problem_and_stream_view->memory_backend);
+      solution_holder->lp_solution_interface_ptr = solution_interface.release();
+
+      cuopt::utilities::printTimestamp("CUOPT_SOLVE_RETURN");
+
+      auto err = static_cast<cuopt_int_t>(
+        solution_holder->lp_solution_interface_ptr->get_error_status().get_error_type());
+      *solution_ptr = static_cast<cuOptSolution>(solution_holder.release());
+      return err;
+    }
+  } catch (const cuopt::logic_error& e) {
+    // Remote execution not yet implemented or other logic errors
+    CUOPT_LOG_ERROR("Solve failed: %s", e.what());
+    return static_cast<cuopt_int_t>(e.get_error_type());
+  } catch (const std::exception& e) {
+    CUOPT_LOG_ERROR("Solve failed with exception: %s", e.what());
+    return CUOPT_RUNTIME_ERROR;
+  }
+}
+
+void cuOptDestroySolution(cuOptSolution* solution_ptr)
+{
+  if (solution_ptr == nullptr) { return; }
+  if (*solution_ptr == nullptr) { return; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(*solution_ptr);
+  // Destructor handles cleanup of interface pointers
+  delete solution_and_stream_view;
+  *solution_ptr = nullptr;
+}
+
+cuopt_int_t cuOptGetTerminationStatus(cuOptSolution solution, cuopt_int_t* termination_status_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (termination_status_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  *termination_status_ptr = static_cast<cuopt_int_t>(
+    solution_and_stream_view->get_solution()->get_termination_status_int());
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetErrorStatus(cuOptSolution solution, cuopt_int_t* error_status_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (error_status_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  *error_status_ptr = static_cast<cuopt_int_t>(
+    solution_and_stream_view->get_solution()->get_error_status().get_error_type());
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetErrorString(cuOptSolution solution,
+                                char* error_string_ptr,
+                                cuopt_int_t error_string_size)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (error_string_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (error_string_size < 0) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  std::string error_string = solution_and_stream_view->get_solution()->get_error_status().what();
+  std::snprintf(error_string_ptr, error_string_size, "%s", error_string.c_str());
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetPrimalSolution(cuOptSolution solution, cuopt_float_t* solution_values_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (solution_values_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+
+  const auto solution_host = solution_and_stream_view->get_solution()->get_solution_host();
+  std::memcpy(
+    solution_values_ptr, solution_host.data(), solution_host.size() * sizeof(cuopt_float_t));
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetObjectiveValue(cuOptSolution solution, cuopt_float_t* objective_value_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (objective_value_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  *objective_value_ptr = solution_and_stream_view->get_solution()->get_objective_value();
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetSolveTime(cuOptSolution solution, cuopt_float_t* solve_time_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (solve_time_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  *solve_time_ptr = solution_and_stream_view->get_solution()->get_solve_time();
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetMIPGap(cuOptSolution solution, cuopt_float_t* mip_gap_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (mip_gap_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  try {
+    *mip_gap_ptr = solution_and_stream_view->get_solution()->get_mip_gap();
+    return CUOPT_SUCCESS;
+  } catch (const std::logic_error&) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+}
+
+cuopt_int_t cuOptGetSolutionBound(cuOptSolution solution, cuopt_float_t* solution_bound_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (solution_bound_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  try {
+    *solution_bound_ptr = solution_and_stream_view->get_solution()->get_solution_bound();
+    return CUOPT_SUCCESS;
+  } catch (const std::logic_error&) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+}
+
+cuopt_int_t cuOptGetDualSolution(cuOptSolution solution, cuopt_float_t* dual_solution_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (dual_solution_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  try {
+    const auto dual_host = solution_and_stream_view->get_solution()->get_dual_solution();
+    std::memcpy(dual_solution_ptr, dual_host.data(), dual_host.size() * sizeof(cuopt_float_t));
+    return CUOPT_SUCCESS;
+  } catch (const std::logic_error&) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+}
+
+cuopt_int_t cuOptGetDualObjectiveValue(cuOptSolution solution,
+                                       cuopt_float_t* dual_objective_value_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (dual_objective_value_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  try {
+    *dual_objective_value_ptr =
+      solution_and_stream_view->get_solution()->get_dual_objective_value();
+    return CUOPT_SUCCESS;
+  } catch (const std::logic_error&) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+}
+
+cuopt_int_t cuOptGetReducedCosts(cuOptSolution solution, cuopt_float_t* reduced_cost_ptr)
+{
+  if (solution == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (reduced_cost_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  solution_and_stream_view_t* solution_and_stream_view =
+    static_cast<solution_and_stream_view_t*>(solution);
+  try {
+    const auto reduced_cost_host = solution_and_stream_view->get_solution()->get_reduced_costs();
+    std::memcpy(
+      reduced_cost_ptr, reduced_cost_host.data(), reduced_cost_host.size() * sizeof(cuopt_float_t));
+    return CUOPT_SUCCESS;
+  } catch (const std::logic_error&) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Generic problem attribute getters                                          */
+/* -------------------------------------------------------------------------- */
+
+cuopt_int_t cuOptGetProblemIntAttribute(cuOptOptimizationProblem problem,
+                                        cuopt_int_t attribute,
+                                        cuopt_int_t* value_out)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (value_out == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (!is_int_attribute(attribute)) { return CUOPT_INVALID_ARGUMENT; }
+
+  auto* iface = get_iface(problem);
+  switch (attribute) {
+    case CUOPT_ATTR_NUM_VARIABLES: *value_out = iface->get_n_variables(); return CUOPT_SUCCESS;
+    case CUOPT_ATTR_NUM_CONSTRAINTS: *value_out = iface->get_n_constraints(); return CUOPT_SUCCESS;
+    case CUOPT_ATTR_NUM_NONZEROS: *value_out = iface->get_nnz(); return CUOPT_SUCCESS;
+    case CUOPT_ATTR_NUM_INTEGERS: *value_out = iface->get_n_integers(); return CUOPT_SUCCESS;
+    case CUOPT_ATTR_OBJECTIVE_SENSE:
+      *value_out = iface->get_sense() ? CUOPT_MAXIMIZE : CUOPT_MINIMIZE;
+      return CUOPT_SUCCESS;
+    case CUOPT_ATTR_PROBLEM_CATEGORY:
+      *value_out = static_cast<cuopt_int_t>(iface->get_problem_category());
+      return CUOPT_SUCCESS;
+    case CUOPT_ATTR_IS_MIP: {
+      const auto category = iface->get_problem_category();
+      *value_out =
+        (category == problem_category_t::MIP || category == problem_category_t::IP) ? 1 : 0;
+      return CUOPT_SUCCESS;
+    }
+    case CUOPT_ATTR_HAS_QUADRATIC_OBJECTIVE:
+      *value_out = iface->has_quadratic_objective() ? 1 : 0;
+      return CUOPT_SUCCESS;
+    case CUOPT_ATTR_HAS_QUADRATIC_CONSTRAINTS:
+      *value_out = iface->has_quadratic_constraints() ? 1 : 0;
+      return CUOPT_SUCCESS;
+    default: return CUOPT_INVALID_ARGUMENT;
+  }
+}
+
+cuopt_int_t cuOptGetProblemFloatAttribute(cuOptOptimizationProblem problem,
+                                          cuopt_int_t attribute,
+                                          cuopt_float_t* value_out)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (value_out == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (!is_float_attribute(attribute)) { return CUOPT_INVALID_ARGUMENT; }
+
+  auto* iface = get_iface(problem);
+  if (attribute == CUOPT_ATTR_OBJECTIVE_OFFSET) {
+    *value_out = iface->get_objective_offset();
+  } else {
+    *value_out = iface->get_objective_scaling_factor();
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetProblemFloatArrayAttribute(cuOptOptimizationProblem problem,
+                                               cuopt_int_t attribute,
+                                               cuopt_float_t* out,
+                                               cuopt_int_t count)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (out == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (!is_float_array_attribute(attribute)) { return CUOPT_INVALID_ARGUMENT; }
+
+  auto* iface                = get_iface(problem);
+  const cuopt_int_t expected = get_array_size(iface, attribute);
+  if (expected < 0 || count != expected) { return CUOPT_INVALID_ARGUMENT; }
+
+  std::vector<cuopt_float_t> values;
+  switch (attribute) {
+    case CUOPT_ARRAY_ATTR_OBJECTIVE_COEFFICIENTS:
+      values = iface->get_objective_coefficients_host();
+      break;
+    case CUOPT_ARRAY_ATTR_VARIABLE_LOWER_BOUNDS:
+      values = iface->get_variable_lower_bounds_host();
+      break;
+    case CUOPT_ARRAY_ATTR_VARIABLE_UPPER_BOUNDS:
+      values = iface->get_variable_upper_bounds_host();
+      break;
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_LOWER_BOUNDS:
+      values = iface->get_constraint_lower_bounds_host();
+      break;
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_UPPER_BOUNDS:
+      values = iface->get_constraint_upper_bounds_host();
+      break;
+    case CUOPT_ARRAY_ATTR_CONSTRAINT_RHS: values = iface->get_constraint_bounds_host(); break;
+    default: return CUOPT_INVALID_ARGUMENT;
+  }
+
+  if (values.size() != expected) { return CUOPT_VALIDATION_ERROR; }
+  std::copy(values.begin(), values.end(), out);
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetProblemCharArrayAttribute(cuOptOptimizationProblem problem,
+                                              cuopt_int_t attribute,
+                                              char* out,
+                                              cuopt_int_t count)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (out == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (!is_char_array_attribute(attribute)) { return CUOPT_INVALID_ARGUMENT; }
+
+  auto* iface                = get_iface(problem);
+  const cuopt_int_t expected = get_array_size(iface, attribute);
+  if (expected < 0 || count != expected) { return CUOPT_INVALID_ARGUMENT; }
+
+  if (attribute == CUOPT_ARRAY_ATTR_CONSTRAINT_SENSE) {
+    const std::vector<char> row_types = iface->get_row_types_host();
+    if (row_types.size() != expected) { return CUOPT_VALIDATION_ERROR; }
+    std::copy(row_types.begin(), row_types.end(), out);
+  } else if (attribute == CUOPT_ARRAY_ATTR_VARIABLE_TYPES) {
+    const std::vector<var_t> var_types = iface->get_variable_types_host();
+    if (var_types.size() != expected) { return CUOPT_VALIDATION_ERROR; }
+    for (cuopt_int_t i = 0; i < count; ++i) {
+      out[i] = var_type_to_char(var_types[i]);
+    }
+  } else {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetProblemStringArrayAttribute(cuOptOptimizationProblem problem,
+                                                cuopt_int_t attribute,
+                                                const char** strings_out,
+                                                cuopt_int_t count)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (strings_out == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (attribute != CUOPT_STRING_ARRAY_VARIABLE_NAMES && attribute != CUOPT_STRING_ARRAY_ROW_NAMES) {
+    return CUOPT_INVALID_ARGUMENT;
+  }
+
+  auto* iface       = get_iface(problem);
+  const auto& names = (attribute == CUOPT_STRING_ARRAY_VARIABLE_NAMES) ? iface->get_variable_names()
+                                                                       : iface->get_row_names();
+
+  if (names.size() != count) { return CUOPT_INVALID_ARGUMENT; }
+  for (cuopt_int_t i = 0; i < count; ++i) {
+    strings_out[i] = names[i].c_str();
+  }
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetConstraintMatrixCSR(cuOptOptimizationProblem problem,
+                                        cuopt_int_t* constraint_matrix_row_offsets_ptr,
+                                        cuopt_int_t* constraint_matrix_column_indices_ptr,
+                                        cuopt_float_t* constraint_matrix_coefficients_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (constraint_matrix_row_offsets_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (constraint_matrix_column_indices_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (constraint_matrix_coefficients_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+
+  auto* iface          = get_iface(problem);
+  cuopt_int_t num_nnz  = iface->get_nnz();
+  cuopt_int_t num_rows = iface->get_n_constraints();
+
+  iface->copy_constraint_matrix_to_host(constraint_matrix_coefficients_ptr,
+                                        constraint_matrix_column_indices_ptr,
+                                        constraint_matrix_row_offsets_ptr,
+                                        num_nnz,
+                                        num_nnz,
+                                        num_rows + 1);
+  return CUOPT_SUCCESS;
+}
+
+cuopt_int_t cuOptGetConstraintMatrixCSC(cuOptOptimizationProblem problem,
+                                        cuopt_int_t* column_offsets_ptr,
+                                        cuopt_int_t* row_indices_ptr,
+                                        cuopt_float_t* values_ptr)
+{
+  if (problem == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+  if (column_offsets_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+
+  auto* iface         = get_iface(problem);
+  const cuopt_int_t n = iface->get_n_variables();
+  const cuopt_int_t m = iface->get_n_constraints();
+
+  std::vector<cuopt_int_t> row_offsets = iface->get_constraint_matrix_offsets_host();
+  std::vector<cuopt_int_t> col_indices = iface->get_constraint_matrix_indices_host();
+  std::vector<cuopt_float_t> values    = iface->get_constraint_matrix_values_host();
+  const cuopt_int_t nnz                = static_cast<cuopt_int_t>(values.size());
+
+  // Empty / unset matrix: emit all-zero column offsets and nothing else.
+  if (row_offsets.size() < m + 1 || nnz == 0) {
+    std::fill(column_offsets_ptr, column_offsets_ptr + (n + 1), 0);
+    return CUOPT_SUCCESS;
+  }
+  if (row_indices_ptr == nullptr || values_ptr == nullptr) { return CUOPT_INVALID_ARGUMENT; }
+
+  csr_matrix_t<cuopt_int_t, cuopt_float_t> csr(m, n, nnz);
+  csr.row_start = std::move(row_offsets);
+  csr.j         = std::move(col_indices);
+  csr.x         = std::move(values);
+
+  csc_matrix_t<cuopt_int_t, cuopt_float_t> csc(m, n, nnz);
+  csr.to_compressed_col(csc);
+
+  std::copy(csc.col_start.begin(), csc.col_start.end(), column_offsets_ptr);
+  std::copy(csc.i.begin(), csc.i.end(), row_indices_ptr);
+  std::copy(csc.x.begin(), csc.x.end(), values_ptr);
+  return CUOPT_SUCCESS;
+}

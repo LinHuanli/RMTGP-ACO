@@ -1,0 +1,1079 @@
+/* clang-format off */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/* clang-format on */
+
+#include "c_api_tests.h"
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include <cuopt/mathematical_optimization/cuopt_c.h>
+#include <pdlp/cuopt_c_internal.hpp>
+
+#include <cuda_runtime.h>
+#include <cusparse.h>
+
+#include <utilities/common_utils.hpp>
+#include <utilities/error.hpp>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
+using ::testing::ElementsAreArray;
+
+TEST(c_api, int_size) { EXPECT_EQ(test_int_size(), sizeof(int32_t)); }
+
+TEST(c_api, float_size) { EXPECT_EQ(test_float_size(), sizeof(double)); }
+
+TEST(c_api, afiro)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string filename = rapidsDatasetRootDir + "/linear_programming/" + "afiro_original.mps";
+  int termination_status;
+  EXPECT_EQ(solve_mps_file(filename.c_str(), 60, CUOPT_INFINITY, &termination_status),
+            CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+}
+
+// Test both LP and MIP codepaths
+class TimeLimitTestFixture : public ::testing::TestWithParam<std::tuple<std::string, double, int>> {
+};
+TEST_P(TimeLimitTestFixture, time_limit)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string filename                    = rapidsDatasetRootDir + std::get<0>(GetParam());
+  double target_solve_time                = std::get<1>(GetParam());
+  int method                              = std::get<2>(GetParam());
+
+  // supportcase22.mps overshoots the 3s tolerance on CPU-thread-constrained CI runners
+  // because solve_time includes Papilo presolve and post-B&B serial wind-down.
+  // Tracked in https://github.com/NVIDIA/cuopt/issues/1135.
+  if (std::get<0>(GetParam()) == "/mip/supportcase22.mps") {
+    GTEST_SKIP() << "Disabled pending NVIDIA/cuopt#1135";
+  }
+
+  int termination_status;
+  double solve_time = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(solve_mps_file(filename.c_str(),
+                           target_solve_time,
+                           CUOPT_INFINITY,
+                           &termination_status,
+                           &solve_time,
+                           method),
+            CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_TIME_LIMIT);
+
+  // Dual simplex is spending some time for factorizing the basis, and this computation does not
+  // check for time limit
+  double excess_allowed_time = 3.0;
+  EXPECT_NEAR(solve_time, target_solve_time, excess_allowed_time);
+}
+INSTANTIATE_TEST_SUITE_P(
+  c_api,
+  TimeLimitTestFixture,
+  ::testing::Values(
+    std::make_tuple("/linear_programming/square41/square41.mps",
+                    5,
+                    CUOPT_METHOD_DUAL_SIMPLEX),  // LP, Dual Simplex
+    std::make_tuple("/linear_programming/square41/square41.mps", 5, CUOPT_METHOD_PDLP),  // LP, PDLP
+    std::make_tuple("/mip/supportcase22.mps", 15, CUOPT_METHOD_DUAL_SIMPLEX)             // MIP
+    ));
+
+TEST(c_api, iteration_limit)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string filename = rapidsDatasetRootDir + "/linear_programming/" + "afiro_original.mps";
+  int termination_status;
+  EXPECT_EQ(solve_mps_file(filename.c_str(), 60, 1, &termination_status), CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_ITERATION_LIMIT);
+}
+
+TEST(c_api, solve_time_bb_preemption)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string filename                    = rapidsDatasetRootDir + "/mip/" + "bb_optimality.mps";
+  int termination_status;
+  double solve_time = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(solve_mps_file(filename.c_str(), 5, CUOPT_INFINITY, &termination_status, &solve_time),
+            CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  EXPECT_GT(solve_time, 0);  // solve time should not be equal to 0, even on very simple instances
+  // solved by B&B before the diversity solver has time to run
+}
+
+TEST(c_api, bad_parameter_name) { EXPECT_EQ(test_bad_parameter_name(), CUOPT_INVALID_ARGUMENT); }
+
+TEST(c_api, mip_get_callbacks_only) { EXPECT_EQ(test_mip_get_callbacks_only(), CUOPT_SUCCESS); }
+
+TEST(c_api, mip_get_set_callbacks) { EXPECT_EQ(test_mip_get_set_callbacks(), CUOPT_SUCCESS); }
+
+TEST(c_api, burglar) { EXPECT_EQ(burglar_problem(), CUOPT_SUCCESS); }
+
+TEST(c_api, test_missing_file) { EXPECT_EQ(test_missing_file(), CUOPT_MPS_FILE_ERROR); }
+
+TEST(c_api, read_problem_null_or_empty_inputs_rejected)
+{
+  cuOptOptimizationProblem handle = nullptr;
+  // Null filename pointer.
+  EXPECT_EQ(cuOptReadProblem(nullptr, &handle), CUOPT_INVALID_ARGUMENT);
+  EXPECT_EQ(handle, nullptr);
+  // Empty filename string.
+  EXPECT_EQ(cuOptReadProblem("", &handle), CUOPT_INVALID_ARGUMENT);
+  EXPECT_EQ(handle, nullptr);
+  // Null out-pointer.
+  EXPECT_EQ(cuOptReadProblem("any.lp", nullptr), CUOPT_INVALID_ARGUMENT);
+}
+
+// Verifies that cuOptReadProblem dispatches to the LP parser when given a
+// path with a .lp extension. The input is a minimal LP (1 variable, 1
+// constraint); we just check the round-trip read produces the expected shape.
+TEST(c_api, read_lp_file_by_extension)
+{
+  constexpr const char* lp_text = R"LP(
+Minimize
+  x
+Subject To
+ c1: x >= 2.5
+Bounds
+ x <= 10
+End
+)LP";
+  std::filesystem::path lp_path =
+    std::filesystem::temp_directory_path() /
+    (std::string{"c_api_read_lp_"} + std::to_string(::getpid()) + ".lp");
+  {
+    std::ofstream out(lp_path);
+    out << lp_text;
+  }
+
+  cuOptOptimizationProblem handle = nullptr;
+  // Scope guard: tear the temp file and the problem handle down on every
+  // exit path (including assertion failure) so the test doesn't leak.
+  struct cleanup_t {
+    cuOptOptimizationProblem* handle_ptr;
+    const std::filesystem::path& lp_path;
+    ~cleanup_t()
+    {
+      if (*handle_ptr != nullptr) { cuOptDestroyProblem(handle_ptr); }
+      std::error_code ec;
+      std::filesystem::remove(lp_path, ec);
+    }
+  } cleanup{&handle, lp_path};
+
+  cuopt_int_t status = cuOptReadProblem(lp_path.string().c_str(), &handle);
+  EXPECT_EQ(status, CUOPT_SUCCESS);
+  ASSERT_NE(handle, nullptr);
+
+  cuopt_int_t n_vars    = 0;
+  cuopt_int_t n_constrs = 0;
+  EXPECT_EQ(cuOptGetNumVariables(handle, &n_vars), CUOPT_SUCCESS);
+  EXPECT_EQ(cuOptGetNumConstraints(handle, &n_constrs), CUOPT_SUCCESS);
+  EXPECT_EQ(n_vars, 1);
+  EXPECT_EQ(n_constrs, 1);
+}
+
+TEST(c_api, test_infeasible_problem) { EXPECT_EQ(test_infeasible_problem(), CUOPT_SUCCESS); }
+
+TEST(c_api, test_ranged_problem)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  EXPECT_EQ(test_ranged_problem(&termination_status, &objective), CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  EXPECT_NEAR(objective, 32.0, 1e-3);
+}
+
+TEST(c_api, test_semi_continuous_problem)
+{
+  cuopt_int_t termination_status   = CUOPT_TERMINATION_STATUS_NO_TERMINATION;
+  cuopt_float_t objective          = 0.0;
+  cuopt_float_t solution_values[2] = {0.0, 0.0};
+  ASSERT_EQ(test_semi_continuous_problem(&termination_status, &objective, solution_values),
+            CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  EXPECT_NEAR(objective, 0.0, 1e-6);
+  EXPECT_NEAR(solution_values[0], 0.0, 1e-6);
+  EXPECT_NEAR(solution_values[1], 1.0, 1e-6);
+}
+
+TEST(c_api, test_invalid_bounds)
+{
+  // Test LP codepath
+  EXPECT_EQ(test_invalid_bounds(false), CUOPT_SUCCESS);
+  // Test MIP codepath
+  EXPECT_EQ(test_invalid_bounds(true), CUOPT_SUCCESS);
+}
+
+TEST(c_api, test_quadratic_problem)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  EXPECT_EQ(test_quadratic_problem(&termination_status, &objective), CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  EXPECT_NEAR(objective, -32.0, 1e-3);
+}
+
+TEST(c_api, test_quadratic_ranged_problem)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  EXPECT_EQ(test_quadratic_ranged_problem(&termination_status, &objective), CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, (int)CUOPT_TERMINATION_STATUS_OPTIMAL);
+  EXPECT_NEAR(objective, -32.0, 1e-3);
+}
+
+TEST(c_api, test_quadratic_constraint_problem)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  cuopt_float_t solution_values[4];
+  EXPECT_EQ(test_quadratic_constraint_problem(&termination_status, &objective, solution_values),
+            CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  EXPECT_NEAR(objective, -13.548638904065102, 1e-4);
+  EXPECT_NEAR(solution_values[0], -3.874621860638774, 1e-4);
+  EXPECT_NEAR(solution_values[1], -2.129788233677883, 1e-4);
+  EXPECT_NEAR(solution_values[2], 2.33480343377204, 1e-4);
+  EXPECT_NEAR(solution_values[3], 5.0, 1e-4);
+}
+
+TEST(c_api, test_general_quadratic_constraint_problem)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  cuopt_float_t solution_values[2];
+  EXPECT_EQ(
+    test_general_quadratic_constraint_problem(&termination_status, &objective, solution_values),
+    CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  // Optimal: x0 = x1 = -1/sqrt(7), obj = -2/sqrt(7) ≈ -0.755929
+  EXPECT_NEAR(objective, -2.0 / sqrt(7.0), 1e-4);
+  EXPECT_NEAR(solution_values[0], -1.0 / sqrt(7.0), 1e-4);
+  EXPECT_NEAR(solution_values[1], -1.0 / sqrt(7.0), 1e-4);
+}
+
+TEST(c_api, test_rotated_soc_constraint_problem)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  cuopt_float_t solution_values[4];
+  EXPECT_EQ(test_rotated_soc_constraint_problem(&termination_status, &objective, solution_values),
+            CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  // Optimal: x1 = x2 = 1, x3 = x4 = sqrt(2), obj = 2*sqrt(2)
+  EXPECT_NEAR(objective, 2.0 * sqrt(2.0), 1e-4);
+  EXPECT_NEAR(solution_values[0], 1.0, 1e-4);
+  EXPECT_NEAR(solution_values[1], 1.0, 1e-4);
+  EXPECT_NEAR(solution_values[2], sqrt(2.0), 1e-4);
+  EXPECT_NEAR(solution_values[3], sqrt(2.0), 1e-4);
+}
+
+TEST(c_api, test_rotated_soc_standard_cross_term_problem)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  cuopt_float_t solution_values[4];
+  EXPECT_EQ(
+    test_rotated_soc_standard_cross_term_problem(&termination_status, &objective, solution_values),
+    CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  // ||tail||^2 <= 2*x3*x4 with canonical Q[x3,x4] = -2: x1 = x2 = x3 = x4 = 1, obj = 2
+  EXPECT_NEAR(objective, 2.0, 1e-4);
+  EXPECT_NEAR(solution_values[0], 1.0, 1e-4);
+  EXPECT_NEAR(solution_values[1], 1.0, 1e-4);
+  EXPECT_NEAR(solution_values[2], 1.0, 1e-4);
+  EXPECT_NEAR(solution_values[3], 1.0, 1e-4);
+}
+
+TEST(c_api, test_write_problem)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string input_file = rapidsDatasetRootDir + "/linear_programming/afiro_original.mps";
+  std::string temp_file = std::filesystem::temp_directory_path().string() + "/c_api_test_write.mps";
+  EXPECT_EQ(test_write_problem(input_file.c_str(), temp_file.c_str()), CUOPT_SUCCESS);
+  std::filesystem::remove(temp_file);
+}
+
+TEST(c_api, test_maximize_problem_dual_variables)
+{
+  cuopt_int_t termination_status;
+  cuopt_float_t objective, dual_objective;
+  cuopt_float_t dual_variables[3];
+  cuopt_float_t reduced_costs[4];
+  for (cuopt_int_t method = CUOPT_METHOD_CONCURRENT; method <= CUOPT_METHOD_BARRIER; method++) {
+    EXPECT_EQ(
+      test_maximize_problem_dual_variables(
+        method, &termination_status, &objective, dual_variables, reduced_costs, &dual_objective),
+      CUOPT_SUCCESS);
+    EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+    EXPECT_NEAR(objective,
+                dual_objective,
+                method == CUOPT_METHOD_CONCURRENT || method == CUOPT_METHOD_PDLP ? 1e-2 : 1e-5);
+  }
+}
+
+static bool test_mps_roundtrip(const std::string& mps_file_path)
+{
+  using cuopt::mathematical_optimization::problem_and_stream_view_t;
+
+  cuOptOptimizationProblem original_handle = nullptr;
+  cuOptOptimizationProblem reread_handle   = nullptr;
+  bool result                              = false;
+
+  std::string model_basename = std::filesystem::path(mps_file_path).filename().string();
+  std::string temp_file =
+    std::filesystem::temp_directory_path().string() + "/roundtrip_temp_" + model_basename;
+
+  if (cuOptReadProblem(mps_file_path.c_str(), &original_handle) != CUOPT_SUCCESS) {
+    std::cerr << "Failed to read original MPS file: " << mps_file_path << std::endl;
+    goto cleanup;
+  }
+
+  if (cuOptWriteProblem(original_handle, temp_file.c_str(), CUOPT_FILE_FORMAT_MPS) !=
+      CUOPT_SUCCESS) {
+    std::cerr << "Failed to write MPS file: " << temp_file << std::endl;
+    goto cleanup;
+  }
+
+  if (cuOptReadProblem(temp_file.c_str(), &reread_handle) != CUOPT_SUCCESS) {
+    std::cerr << "Failed to re-read MPS file: " << temp_file << std::endl;
+    goto cleanup;
+  }
+
+  {
+    auto* original_problem_wrapper = static_cast<problem_and_stream_view_t*>(original_handle);
+    auto* reread_problem_wrapper   = static_cast<problem_and_stream_view_t*>(reread_handle);
+
+    // Use the interface method to compare (works for both CPU and GPU backends)
+    result = original_problem_wrapper->get_problem()->is_equivalent(
+      *reread_problem_wrapper->get_problem());
+  }
+
+cleanup:
+  std::filesystem::remove(temp_file);
+  cuOptDestroyProblem(&original_handle);
+  cuOptDestroyProblem(&reread_handle);
+
+  return result;
+}
+
+class WriteRoundtripTestFixture : public ::testing::TestWithParam<std::string> {};
+TEST_P(WriteRoundtripTestFixture, roundtrip)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  EXPECT_TRUE(test_mps_roundtrip(rapidsDatasetRootDir + GetParam()));
+}
+INSTANTIATE_TEST_SUITE_P(c_api,
+                         WriteRoundtripTestFixture,
+                         ::testing::Values("/linear_programming/afiro_original.mps",
+                                           "/mip/50v-10.mps",
+                                           "/mip/fiball.mps",
+                                           "/mip/gen-ip054.mps",
+                                           "/mip/sct2.mps",
+                                           "/mip/uccase9.mps",
+                                           "/mip/drayage-25-23.mps",
+                                           "/mip/tr12-30.mps",
+                                           "/mip/neos-3004026-krka.mps",
+                                           "/mip/ns1208400.mps",
+                                           "/mip/gmu-35-50.mps",
+                                           "/mip/n2seq36q.mps",
+                                           "/mip/seymour1.mps",
+                                           "/mip/rmatr200-p5.mps",
+                                           "/mip/cvs16r128-89.mps",
+                                           "/mip/thor50dday.mps",
+                                           "/mip/stein9inf.mps",
+                                           "/mip/neos5.mps",
+                                           "/mip/neos5-free-bound.mps",
+                                           "/mip/crossing_var_bounds.mps",
+                                           "/mip/cod105_max.mps",
+                                           "/mip/sudoku.mps",
+                                           "/mip/presolve-infeasible.mps",
+                                           "/mip/swath1.mps",
+                                           "/mip/enlight_hard.mps",
+                                           "/mip/enlight11.mps",
+                                           "/mip/supportcase22.mps"));
+
+class DeterministicBBTestFixture
+  : public ::testing::TestWithParam<std::tuple<std::string, int, double, double>> {};
+TEST_P(DeterministicBBTestFixture, deterministic_reproducibility)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string filename                    = rapidsDatasetRootDir + std::get<0>(GetParam());
+  int num_threads                         = std::get<1>(GetParam());
+  double time_limit                       = std::get<2>(GetParam());
+  double work_limit                       = std::get<3>(GetParam());
+
+  // Run 3 times and verify identical results
+  EXPECT_EQ(test_deterministic_bb(filename.c_str(), 3, num_threads, time_limit, work_limit),
+            CUOPT_SUCCESS);
+}
+INSTANTIATE_TEST_SUITE_P(c_api,
+                         DeterministicBBTestFixture,
+                         ::testing::Values(
+                           // Low thread count
+                           std::make_tuple("/mip/gen-ip054.mps", 4, 60.0, 2),
+                           // High thread count (high contention)
+                           std::make_tuple("/mip/gen-ip054.mps", 128, 60.0, 2),
+                           // Different instance
+                           std::make_tuple("/mip/bb_optimality.mps", 8, 60.0, 2)));
+
+// =============================================================================
+// PDLP Precision Tests
+// =============================================================================
+
+TEST(c_api, pdlp_precision_single)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string filename = rapidsDatasetRootDir + "/linear_programming/afiro_original.mps";
+  cuopt_int_t termination_status;
+  cuopt_float_t objective;
+  EXPECT_EQ(test_pdlp_precision_single(filename.c_str(), &termination_status, &objective),
+            CUOPT_SUCCESS);
+  EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+  EXPECT_NEAR(objective, -464.7531, 1e-1);
+}
+
+TEST(c_api, pdlp_precision_mixed)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string filename           = rapidsDatasetRootDir + "/linear_programming/afiro_original.mps";
+  cuopt_int_t termination_status = -1;
+  cuopt_float_t objective;
+  // Mixed-precision SpMV (FP32 matrix × FP64 vector) requires cuSPARSE >= 12.5 at BOTH
+  // compile time (header) and runtime (loaded .so). The header version (#if) guards symbol
+  // availability; the runtime check below mirrors is_cusparse_runtime_mixed_precision_supported().
+#if CUSPARSE_VERSION >= 12500
+  int cusparseMajor = 0, cusparseMinor = 0;
+  cusparseGetProperty(MAJOR_VERSION, &cusparseMajor);
+  cusparseGetProperty(MINOR_VERSION, &cusparseMinor);
+  bool runtimeSupported = (cusparseMajor > 12) || (cusparseMajor == 12 && cusparseMinor >= 5);
+  if (runtimeSupported) {
+    EXPECT_EQ(test_pdlp_precision_mixed(filename.c_str(), &termination_status, &objective),
+              CUOPT_SUCCESS);
+    EXPECT_EQ(termination_status, CUOPT_TERMINATION_STATUS_OPTIMAL);
+    EXPECT_NEAR(objective, -464.7531, 1e-1);
+  } else {
+    // cuopt_expects throws ValidationError when mixed precision is requested without runtime
+    // support, so the C API always returns an error code — never CUOPT_SUCCESS.
+    EXPECT_NE(test_pdlp_precision_mixed(filename.c_str(), &termination_status, &objective),
+              CUOPT_SUCCESS);
+  }
+#else
+  // cuopt_expects throws ValidationError when mixed precision is requested without support,
+  // so the C API always returns an error code — never CUOPT_SUCCESS.
+  EXPECT_NE(test_pdlp_precision_mixed(filename.c_str(), &termination_status, &objective),
+            CUOPT_SUCCESS);
+#endif
+}
+
+// =============================================================================
+// Solution Interface Polymorphism Tests
+// =============================================================================
+
+TEST(c_api, lp_solution_mip_methods) { EXPECT_EQ(test_lp_solution_mip_methods(), CUOPT_SUCCESS); }
+
+TEST(c_api, mip_solution_lp_methods) { EXPECT_EQ(test_mip_solution_lp_methods(), CUOPT_SUCCESS); }
+
+// =============================================================================
+// CPU-Only Execution Tests
+// These tests verify that cuOpt can run on a CPU-only host with remote execution
+// enabled, forwarding solves to a real cuopt_grpc_server over gRPC.
+//
+// A single shared server is started once for all tests in this fixture
+// (SetUpTestSuite / TearDownTestSuite) to avoid per-test startup overhead.
+// =============================================================================
+
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <thread>
+
+namespace {
+
+std::string find_in_path(const std::string& name)
+{
+  const char* path_env = std::getenv("PATH");
+  if (!path_env) return "";
+
+  std::string path_str(path_env);
+  std::string::size_type start = 0;
+  std::string::size_type end;
+
+  while ((end = path_str.find(':', start)) != std::string::npos || start < path_str.size()) {
+    std::string dir;
+    if (end != std::string::npos) {
+      dir   = path_str.substr(start, end - start);
+      start = end + 1;
+    } else {
+      dir   = path_str.substr(start);
+      start = path_str.size();
+    }
+    if (dir.empty()) continue;
+    std::string full_path = dir + "/" + name;
+    if (access(full_path.c_str(), X_OK) == 0) { return full_path; }
+  }
+  return "";
+}
+
+std::string find_server_binary()
+{
+  const char* env_path = std::getenv("CUOPT_GRPC_SERVER_PATH");
+  if (env_path && access(env_path, X_OK) == 0) { return env_path; }
+
+  std::string path_result = find_in_path("cuopt_grpc_server");
+  if (!path_result.empty()) { return path_result; }
+
+  std::vector<std::string> paths = {
+    "./cuopt_grpc_server",
+    "../cuopt_grpc_server",
+    "../../cuopt_grpc_server",
+    "./build/cuopt_grpc_server",
+    "../build/cuopt_grpc_server",
+  };
+  for (const auto& path : paths) {
+    if (access(path.c_str(), X_OK) == 0) { return path; }
+  }
+  return "";
+}
+
+bool tcp_connect_check(int port, int timeout_ms)
+{
+  auto start = std::chrono::steady_clock::now();
+  while (true) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return false;
+
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(port);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    if (connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+      close(sock);
+      return true;
+    }
+    close(sock);
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start);
+    if (elapsed.count() >= timeout_ms) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+}
+
+}  // namespace
+
+class CpuHostProblemApiTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite()
+  {
+    const char* cv     = getenv("CUDA_VISIBLE_DEVICES");
+    const char* rh     = getenv("CUOPT_REMOTE_HOST");
+    const char* rp     = getenv("CUOPT_REMOTE_PORT");
+    orig_cuda_visible_ = cv ? cv : "";
+    orig_remote_host_  = rh ? rh : "";
+    orig_remote_port_  = rp ? rp : "";
+    cuda_was_set_      = (cv != nullptr);
+    host_was_set_      = (rh != nullptr);
+    port_was_set_      = (rp != nullptr);
+
+    setenv("CUDA_VISIBLE_DEVICES", "", 1);
+    unsetenv("CUOPT_REMOTE_HOST");
+    unsetenv("CUOPT_REMOTE_PORT");
+  }
+
+  static void TearDownTestSuite()
+  {
+    if (cuda_was_set_) {
+      setenv("CUDA_VISIBLE_DEVICES", orig_cuda_visible_.c_str(), 1);
+    } else {
+      unsetenv("CUDA_VISIBLE_DEVICES");
+    }
+    if (host_was_set_) {
+      setenv("CUOPT_REMOTE_HOST", orig_remote_host_.c_str(), 1);
+    } else {
+      unsetenv("CUOPT_REMOTE_HOST");
+    }
+    if (port_was_set_) {
+      setenv("CUOPT_REMOTE_PORT", orig_remote_port_.c_str(), 1);
+    } else {
+      unsetenv("CUOPT_REMOTE_PORT");
+    }
+  }
+
+  static std::string orig_cuda_visible_;
+  static std::string orig_remote_host_;
+  static std::string orig_remote_port_;
+  static bool cuda_was_set_;
+  static bool host_was_set_;
+  static bool port_was_set_;
+};
+
+std::string CpuHostProblemApiTest::orig_cuda_visible_;
+std::string CpuHostProblemApiTest::orig_remote_host_;
+std::string CpuHostProblemApiTest::orig_remote_port_;
+bool CpuHostProblemApiTest::cuda_was_set_ = false;
+bool CpuHostProblemApiTest::host_was_set_ = false;
+bool CpuHostProblemApiTest::port_was_set_ = false;
+
+TEST_F(CpuHostProblemApiTest, read_problem_api)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string lp_file = rapidsDatasetRootDir + "/linear_programming/afiro_original.mps";
+  EXPECT_EQ(test_cpu_host_read_problem_api(lp_file.c_str()), CUOPT_SUCCESS);
+}
+
+TEST_F(CpuHostProblemApiTest, create_problem_api)
+{
+  EXPECT_EQ(test_cpu_host_create_problem_api(), CUOPT_SUCCESS);
+}
+
+class CpuOnlyWithServerTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite()
+  {
+    server_path_ = find_server_binary();
+    if (server_path_.empty()) {
+      skip_reason_ = "cuopt_grpc_server binary not found";
+      return;
+    }
+
+    port_                = 18500;
+    const char* env_base = std::getenv("CUOPT_TEST_PORT_BASE");
+    if (env_base) { port_ = std::atoi(env_base) + 500; }
+
+    server_pid_ = fork();
+    if (server_pid_ < 0) {
+      skip_reason_ = "fork() failed";
+      return;
+    }
+
+    if (server_pid_ == 0) {
+      std::string port_str = std::to_string(port_);
+      std::string log_file = "/tmp/cuopt_c_api_test_server_" + port_str + ".log";
+      int fd               = open(log_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd >= 0) {
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+      }
+      execl(server_path_.c_str(),
+            server_path_.c_str(),
+            "--port",
+            port_str.c_str(),
+            "--workers",
+            "1",
+            nullptr);
+      _exit(127);
+    }
+
+    if (!tcp_connect_check(port_, 15000)) {
+      skip_reason_ = "cuopt_grpc_server failed to start within 15 seconds";
+      kill(server_pid_, SIGKILL);
+      waitpid(server_pid_, nullptr, 0);
+      server_pid_ = -1;
+      return;
+    }
+
+    const char* cv     = getenv("CUDA_VISIBLE_DEVICES");
+    const char* rh     = getenv("CUOPT_REMOTE_HOST");
+    const char* rp     = getenv("CUOPT_REMOTE_PORT");
+    orig_cuda_visible_ = cv ? cv : "";
+    orig_remote_host_  = rh ? rh : "";
+    orig_remote_port_  = rp ? rp : "";
+    cuda_was_set_      = (cv != nullptr);
+    host_was_set_      = (rh != nullptr);
+    port_was_set_      = (rp != nullptr);
+
+    setenv("CUDA_VISIBLE_DEVICES", "", 1);
+    setenv("CUOPT_REMOTE_HOST", "localhost", 1);
+    setenv("CUOPT_REMOTE_PORT", std::to_string(port_).c_str(), 1);
+  }
+
+  static void TearDownTestSuite()
+  {
+    if (cuda_was_set_) {
+      setenv("CUDA_VISIBLE_DEVICES", orig_cuda_visible_.c_str(), 1);
+    } else {
+      unsetenv("CUDA_VISIBLE_DEVICES");
+    }
+    if (host_was_set_) {
+      setenv("CUOPT_REMOTE_HOST", orig_remote_host_.c_str(), 1);
+    } else {
+      unsetenv("CUOPT_REMOTE_HOST");
+    }
+    if (port_was_set_) {
+      setenv("CUOPT_REMOTE_PORT", orig_remote_port_.c_str(), 1);
+    } else {
+      unsetenv("CUOPT_REMOTE_PORT");
+    }
+
+    if (server_pid_ > 0) {
+      kill(server_pid_, SIGTERM);
+      int status;
+      int wait_ms = 0;
+      while (wait_ms < 5000) {
+        if (waitpid(server_pid_, &status, WNOHANG) != 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        wait_ms += 100;
+      }
+      if (waitpid(server_pid_, &status, WNOHANG) == 0) {
+        kill(server_pid_, SIGKILL);
+        waitpid(server_pid_, &status, 0);
+      }
+      server_pid_ = -1;
+    }
+  }
+
+  void SetUp() override
+  {
+    if (!skip_reason_.empty()) { GTEST_SKIP() << skip_reason_; }
+  }
+
+  static std::string server_path_;
+  static std::string skip_reason_;
+  static pid_t server_pid_;
+  static int port_;
+
+  static std::string orig_cuda_visible_;
+  static std::string orig_remote_host_;
+  static std::string orig_remote_port_;
+  static bool cuda_was_set_;
+  static bool host_was_set_;
+  static bool port_was_set_;
+};
+
+std::string CpuOnlyWithServerTest::server_path_;
+std::string CpuOnlyWithServerTest::skip_reason_;
+pid_t CpuOnlyWithServerTest::server_pid_ = -1;
+int CpuOnlyWithServerTest::port_         = 0;
+std::string CpuOnlyWithServerTest::orig_cuda_visible_;
+std::string CpuOnlyWithServerTest::orig_remote_host_;
+std::string CpuOnlyWithServerTest::orig_remote_port_;
+bool CpuOnlyWithServerTest::cuda_was_set_ = false;
+bool CpuOnlyWithServerTest::host_was_set_ = false;
+bool CpuOnlyWithServerTest::port_was_set_ = false;
+
+TEST_F(CpuOnlyWithServerTest, lp_solve)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string lp_file = rapidsDatasetRootDir + "/linear_programming/afiro_original.mps";
+  EXPECT_EQ(test_cpu_only_execution(lp_file.c_str()), CUOPT_SUCCESS);
+}
+
+TEST_F(CpuOnlyWithServerTest, mip_solve)
+{
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string mip_file                    = rapidsDatasetRootDir + "/mip/bb_optimality.mps";
+  EXPECT_EQ(test_cpu_only_mip_execution(mip_file.c_str()), CUOPT_SUCCESS);
+}
+
+TEST(c_api, gpu_problem_rejects_remote_after_create)
+{
+  int device_count = 0;
+  if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count <= 0) {
+    GTEST_SKIP() << "Requires a visible CUDA device to create a GPU-backed problem";
+  }
+
+  const std::string& rapidsDatasetRootDir = cuopt::test::get_rapids_dataset_root_dir();
+  std::string lp_file = rapidsDatasetRootDir + "/linear_programming/afiro_original.mps";
+  EXPECT_EQ(test_gpu_problem_remote_after_create(lp_file.c_str()), CUOPT_SUCCESS);
+}
+
+// Attribute getters are checked against the exact values passed to the cuOptCreate* / cuOptSet*
+// interfaces. cuOptReadProblem is used only for variable/row names, which no create/set routine
+// sets.
+TEST(c_api, problem_attributes_created)
+{
+  // A small mixed-integer LP, built by hand so every getter can be compared to a known value:
+  //   A = [ 1 0 2 ]  sense L, rhs 10     min 5 + [1,2,3].x     var types [I,C,I]
+  //       [ 0 3 4 ]  sense G, rhs 20
+  const cuopt_int_t num_constraints             = 2;
+  const cuopt_int_t num_variables               = 3;
+  const cuopt_int_t nnz                         = 4;
+  const cuopt_float_t objective_offset          = 5.0;
+  const cuopt_float_t objective_coefficients[3] = {1.0, 2.0, 3.0};
+  const cuopt_int_t row_offsets[3]              = {0, 2, 4};
+  const cuopt_int_t col_indices[4]              = {0, 2, 1, 2};
+  const cuopt_float_t matrix_values[4]          = {1.0, 2.0, 3.0, 4.0};
+  const char constraint_sense[2]                = {CUOPT_LESS_THAN, CUOPT_GREATER_THAN};
+  const cuopt_float_t rhs[2]                    = {10.0, 20.0};
+  const cuopt_float_t lower_bounds[3]           = {0.0, 0.0, 0.0};
+  const cuopt_float_t upper_bounds[3]           = {100.0, 100.0, 100.0};
+  const char variable_types[3]                  = {CUOPT_INTEGER, CUOPT_CONTINUOUS, CUOPT_INTEGER};
+
+  // CSC is the transpose of the CSR above, written out by hand for a direct comparison.
+  const cuopt_int_t csc_offsets[4]     = {0, 1, 2, 4};
+  const cuopt_int_t csc_row_indices[4] = {0, 1, 0, 1};
+  const cuopt_float_t csc_values[4]    = {1.0, 3.0, 2.0, 4.0};
+
+  cuOptOptimizationProblem problem = nullptr;
+  ASSERT_EQ(cuOptCreateProblem(num_constraints,
+                               num_variables,
+                               CUOPT_MINIMIZE,
+                               objective_offset,
+                               objective_coefficients,
+                               row_offsets,
+                               col_indices,
+                               matrix_values,
+                               constraint_sense,
+                               rhs,
+                               lower_bounds,
+                               upper_bounds,
+                               variable_types,
+                               &problem),
+            CUOPT_SUCCESS);
+
+  auto get_int = [&](cuopt_int_t attr) {
+    cuopt_int_t v = -1;
+    EXPECT_EQ(cuOptGetProblemIntAttribute(problem, attr, &v), CUOPT_SUCCESS);
+    return v;
+  };
+  auto get_float = [&](cuopt_int_t attr) {
+    cuopt_float_t v = 0.0;
+    EXPECT_EQ(cuOptGetProblemFloatAttribute(problem, attr, &v), CUOPT_SUCCESS);
+    return v;
+  };
+
+  EXPECT_EQ(get_int(CUOPT_ATTR_NUM_VARIABLES), num_variables);
+  EXPECT_EQ(get_int(CUOPT_ATTR_NUM_CONSTRAINTS), num_constraints);
+  EXPECT_EQ(get_int(CUOPT_ATTR_NUM_NONZEROS), nnz);
+  EXPECT_EQ(get_int(CUOPT_ATTR_NUM_INTEGERS), 2);
+  EXPECT_EQ(get_int(CUOPT_ATTR_PROBLEM_CATEGORY), 1 /* MIP */);
+  EXPECT_EQ(get_int(CUOPT_ATTR_IS_MIP), 1);
+  EXPECT_EQ(get_int(CUOPT_ATTR_HAS_QUADRATIC_OBJECTIVE), 0);
+  EXPECT_EQ(get_int(CUOPT_ATTR_HAS_QUADRATIC_CONSTRAINTS), 0);
+  EXPECT_EQ(get_int(CUOPT_ATTR_OBJECTIVE_SENSE), CUOPT_MINIMIZE);
+  EXPECT_EQ(get_float(CUOPT_ATTR_OBJECTIVE_OFFSET), objective_offset);
+  EXPECT_EQ(get_float(CUOPT_ATTR_OBJECTIVE_SCALING_FACTOR), 1.0);  // create leaves the default of 1
+
+  std::vector<cuopt_float_t> fbuf(num_variables);
+  EXPECT_EQ(cuOptGetProblemFloatArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_OBJECTIVE_COEFFICIENTS, fbuf.data(), num_variables),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(fbuf, ElementsAreArray(objective_coefficients));
+  EXPECT_EQ(cuOptGetProblemFloatArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_VARIABLE_LOWER_BOUNDS, fbuf.data(), num_variables),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(fbuf, ElementsAreArray(lower_bounds));
+  EXPECT_EQ(cuOptGetProblemFloatArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_VARIABLE_UPPER_BOUNDS, fbuf.data(), num_variables),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(fbuf, ElementsAreArray(upper_bounds));
+
+  std::vector<cuopt_float_t> rhs_buf(num_constraints);
+  EXPECT_EQ(cuOptGetProblemFloatArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_CONSTRAINT_RHS, rhs_buf.data(), num_constraints),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(rhs_buf, ElementsAreArray(rhs));
+
+  std::vector<char> sense_buf(num_constraints);
+  EXPECT_EQ(cuOptGetProblemCharArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_CONSTRAINT_SENSE, sense_buf.data(), num_constraints),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(sense_buf, ElementsAreArray(constraint_sense));
+  std::vector<char> type_buf(num_variables);
+  EXPECT_EQ(cuOptGetProblemCharArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_VARIABLE_TYPES, type_buf.data(), num_variables),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(type_buf, ElementsAreArray(variable_types));
+
+  // CSR getter must return exactly the matrix we created with.
+  std::vector<cuopt_int_t> csr_off(num_constraints + 1), csr_col(nnz);
+  std::vector<cuopt_float_t> csr_val(nnz);
+  EXPECT_EQ(cuOptGetConstraintMatrixCSR(problem, csr_off.data(), csr_col.data(), csr_val.data()),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(csr_off, ElementsAreArray(row_offsets));
+  EXPECT_THAT(csr_col, ElementsAreArray(col_indices));
+  EXPECT_THAT(csr_val, ElementsAreArray(matrix_values));
+
+  // CSC getter returns the transpose; compare against the hand-written expected layout.
+  std::vector<cuopt_int_t> csc_off(num_variables + 1), csc_row(nnz);
+  std::vector<cuopt_float_t> csc_val(nnz);
+  EXPECT_EQ(cuOptGetConstraintMatrixCSC(problem, csc_off.data(), csc_row.data(), csc_val.data()),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(csc_off, ElementsAreArray(csc_offsets));
+  EXPECT_THAT(csc_row, ElementsAreArray(csc_row_indices));
+  EXPECT_THAT(csc_val, ElementsAreArray(csc_values));
+
+  // Names are not set by create; requesting them must be rejected.
+  const char* names[3] = {nullptr, nullptr, nullptr};
+  EXPECT_EQ(cuOptGetProblemStringArrayAttribute(
+              problem, CUOPT_STRING_ARRAY_VARIABLE_NAMES, names, num_variables),
+            CUOPT_INVALID_ARGUMENT);
+
+  cuOptDestroyProblem(&problem);
+}
+
+// Ranged rows can only be built with cuOptCreateRangedProblem, so it is the only path that sets the
+// constraint lower/upper bound attributes.
+TEST(c_api, problem_attributes_ranged)
+{
+  const cuopt_int_t num_constraints              = 2;
+  const cuopt_int_t num_variables                = 2;
+  const cuopt_float_t objective_coefficients[2]  = {1.0, 1.0};
+  const cuopt_int_t row_offsets[3]               = {0, 2, 3};
+  const cuopt_int_t col_indices[3]               = {0, 1, 0};
+  const cuopt_float_t matrix_values[3]           = {1.0, 1.0, 1.0};
+  const cuopt_float_t constraint_lower_bounds[2] = {1.0, 0.0};
+  const cuopt_float_t constraint_upper_bounds[2] = {10.0, 5.0};
+  const cuopt_float_t variable_lower_bounds[2]   = {0.0, 0.0};
+  const cuopt_float_t variable_upper_bounds[2]   = {100.0, 100.0};
+  const char variable_types[2]                   = {CUOPT_CONTINUOUS, CUOPT_CONTINUOUS};
+
+  cuOptOptimizationProblem problem = nullptr;
+  ASSERT_EQ(cuOptCreateRangedProblem(num_constraints,
+                                     num_variables,
+                                     CUOPT_MINIMIZE,
+                                     0.0,
+                                     objective_coefficients,
+                                     row_offsets,
+                                     col_indices,
+                                     matrix_values,
+                                     constraint_lower_bounds,
+                                     constraint_upper_bounds,
+                                     variable_lower_bounds,
+                                     variable_upper_bounds,
+                                     variable_types,
+                                     &problem),
+            CUOPT_SUCCESS);
+
+  std::vector<cuopt_float_t> buf(num_constraints);
+  EXPECT_EQ(cuOptGetProblemFloatArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_CONSTRAINT_LOWER_BOUNDS, buf.data(), num_constraints),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(buf, ElementsAreArray(constraint_lower_bounds));
+  EXPECT_EQ(cuOptGetProblemFloatArrayAttribute(
+              problem, CUOPT_ARRAY_ATTR_CONSTRAINT_UPPER_BOUNDS, buf.data(), num_constraints),
+            CUOPT_SUCCESS);
+  EXPECT_THAT(buf, ElementsAreArray(constraint_upper_bounds));
+
+  cuOptDestroyProblem(&problem);
+}
+
+// The quadratic-presence flags flip only after cuOptSetQuadraticObjective /
+// cuOptAddQuadraticConstraint.
+TEST(c_api, problem_attributes_quadratic)
+{
+  const cuopt_int_t num_constraints             = 1;
+  const cuopt_int_t num_variables               = 2;
+  const cuopt_float_t objective_coefficients[2] = {1.0, 1.0};
+  const cuopt_int_t row_offsets[2]              = {0, 2};
+  const cuopt_int_t col_indices[2]              = {0, 1};
+  const cuopt_float_t matrix_values[2]          = {1.0, 1.0};
+  const char constraint_sense[1]                = {CUOPT_LESS_THAN};
+  const cuopt_float_t rhs[1]                    = {10.0};
+  const cuopt_float_t lower_bounds[2]           = {0.0, 0.0};
+  const cuopt_float_t upper_bounds[2]           = {100.0, 100.0};
+  const char variable_types[2]                  = {CUOPT_CONTINUOUS, CUOPT_CONTINUOUS};
+
+  cuOptOptimizationProblem problem = nullptr;
+  ASSERT_EQ(cuOptCreateProblem(num_constraints,
+                               num_variables,
+                               CUOPT_MINIMIZE,
+                               0.0,
+                               objective_coefficients,
+                               row_offsets,
+                               col_indices,
+                               matrix_values,
+                               constraint_sense,
+                               rhs,
+                               lower_bounds,
+                               upper_bounds,
+                               variable_types,
+                               &problem),
+            CUOPT_SUCCESS);
+
+  // Fresh sentinel-initialized read on every call, so a getter that fails to write is always
+  // caught.
+  auto get_int = [&](cuopt_int_t attr) {
+    cuopt_int_t v = -1;
+    EXPECT_EQ(cuOptGetProblemIntAttribute(problem, attr, &v), CUOPT_SUCCESS);
+    return v;
+  };
+
+  // Purely linear to start: both presence flags read 0.
+  EXPECT_EQ(get_int(CUOPT_ATTR_HAS_QUADRATIC_OBJECTIVE), 0);
+  EXPECT_EQ(get_int(CUOPT_ATTR_HAS_QUADRATIC_CONSTRAINTS), 0);
+
+  // Add a quadratic objective term 2 * x0^2.
+  const cuopt_int_t q_row[1]   = {0};
+  const cuopt_int_t q_col[1]   = {0};
+  const cuopt_float_t q_val[1] = {2.0};
+  ASSERT_EQ(cuOptSetQuadraticObjective(problem, 1, q_row, q_col, q_val), CUOPT_SUCCESS);
+  EXPECT_EQ(get_int(CUOPT_ATTR_HAS_QUADRATIC_OBJECTIVE), 1);
+
+  // Add a quadratic constraint x1^2 + x0 <= 5.
+  const cuopt_int_t qc_row[1]         = {1};
+  const cuopt_int_t qc_col[1]         = {1};
+  const cuopt_float_t qc_val[1]       = {1.0};
+  const cuopt_int_t qc_lin_idx[1]     = {0};
+  const cuopt_float_t qc_lin_coeff[1] = {1.0};
+  ASSERT_EQ(
+    cuOptAddQuadraticConstraint(
+      problem, 1, qc_row, qc_col, qc_val, 1, qc_lin_idx, qc_lin_coeff, CUOPT_LESS_THAN, 5.0),
+    CUOPT_SUCCESS);
+  EXPECT_EQ(get_int(CUOPT_ATTR_HAS_QUADRATIC_CONSTRAINTS), 1);
+
+  cuOptDestroyProblem(&problem);
+}
+
+// Variable/row names are the only attributes no create/set routine can set, so read a tiny MPS with
+// known names and check them back.
+TEST(c_api, problem_attributes_names)
+{
+  const std::string mps_path =
+    std::filesystem::temp_directory_path().string() + "/cuopt_attr_names.mps";
+  {
+    std::ofstream out(mps_path);
+    out << "NAME          TOY\n"
+           "ROWS\n"
+           " N  COST\n"
+           " L  C1\n"
+           " G  C2\n"
+           "COLUMNS\n"
+           "    X1        COST      1.0        C1        1.0\n"
+           "    X1        C2        1.0\n"
+           "    X2        COST      2.0        C1        3.0\n"
+           "    X2        C2        1.0\n"
+           "RHS\n"
+           "    RHS       C1        10.0       C2        2.0\n"
+           "ENDATA\n";
+  }
+
+  cuOptOptimizationProblem problem = nullptr;
+  ASSERT_EQ(cuOptReadProblem(mps_path.c_str(), &problem), CUOPT_SUCCESS);
+
+  const char* var_names[2] = {nullptr, nullptr};
+  ASSERT_EQ(
+    cuOptGetProblemStringArrayAttribute(problem, CUOPT_STRING_ARRAY_VARIABLE_NAMES, var_names, 2),
+    CUOPT_SUCCESS);
+  EXPECT_STREQ(var_names[0], "X1");
+  EXPECT_STREQ(var_names[1], "X2");
+
+  const char* row_names[2] = {nullptr, nullptr};
+  ASSERT_EQ(
+    cuOptGetProblemStringArrayAttribute(problem, CUOPT_STRING_ARRAY_ROW_NAMES, row_names, 2),
+    CUOPT_SUCCESS);
+  EXPECT_STREQ(row_names[0], "C1");
+  EXPECT_STREQ(row_names[1], "C2");
+
+  cuOptDestroyProblem(&problem);
+  std::filesystem::remove(mps_path);
+}
+
+// Note: cuopt_cli subprocess tests are in Python (test_cpu_only_execution.py)
+// which provides better cross-platform subprocess handling

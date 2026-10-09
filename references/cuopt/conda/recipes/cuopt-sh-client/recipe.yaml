@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+
+context:
+  version: ${{ env.get("RAPIDS_PACKAGE_VERSION") }}
+  minor_version: ${{ (version | split("."))[:2] | join(".") }}
+  datetime_string: '${{ env.get("RAPIDS_DATETIME_STRING") }}'
+  py_version: ${{ env.get("RAPIDS_PY_VERSION") }}
+  py_buildstring: ${{ py_version | version_to_buildstring }}
+  head_rev: '${{ git.head_rev(".")[:8] }}'
+
+package:
+  name: cuopt-sh-client
+  version: ${{ version }}
+
+source:
+  path: ../../..
+
+build:
+  string: py${{ py_buildstring }}_${{ datetime_string }}_${{ head_rev }}
+  script:
+    content: |
+      ./build.sh cuopt_sh_client
+
+requirements:
+  host:
+    - pip
+    - python-gil =${{ py_version }}
+    - setuptools>=77.0.0
+  run:
+    - msgpack-python =1.2.1
+    - python
+    - requests
+
+tests:
+  - python:
+      imports:
+        - cuopt_sh_client
+      pip_check: false
+
+about:
+  homepage: ${{ load_from_file("python/cuopt_self_hosted/pyproject.toml").project.urls.Homepage }}
+  license: ${{ load_from_file("python/cuopt_self_hosted/pyproject.toml").project.license }}
+  summary: ${{ load_from_file("python/cuopt_self_hosted/pyproject.toml").project.description }}

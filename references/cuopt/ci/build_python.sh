@@ -1,0 +1,71 @@
+#!/bin/bash
+
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+source rapids-configure-sccache
+
+source rapids-datetime-string
+
+export CMAKE_GENERATOR=Ninja
+
+rapids-print-env
+
+CPP_CHANNEL=$(rapids-download-from-github "$(rapids-artifact-name conda_cpp libcuopt cuopt --cuda "$RAPIDS_CUDA_VERSION")")
+
+version=$(rapids-generate-version)
+export RAPIDS_PACKAGE_VERSION=${version}
+
+echo "${version}" > ./VERSION
+
+git_commit=$(git rev-parse HEAD)
+package_dir="python"
+for package_name in cuopt cuopt_server; do
+  sed -i "/^__git_commit__/ s/= .*/= \"${git_commit}\"/g" "${package_dir}/${package_name}/${package_name}/_version.py"
+done
+
+# populates `RATTLER_CHANNELS` array and `RATTLER_ARGS` array
+source rapids-rattler-channel-string
+
+# Override `rapids-rattler-channelstring` while cuOpt is not on the standard RAPIDS release cycle
+RATTLER_ARGS=("--experimental" "--no-build-id" "--channel-priority" "disabled" "--output-dir" "$RAPIDS_CONDA_BLD_OUTPUT_DIR")
+# Prepending `rapidsai` channel so cuOpt can grab release builds of dependencies
+# that have been cleared from `rapidsai-nightly`
+RATTLER_CHANNELS=("--channel" "rapidsai" "${RATTLER_CHANNELS[@]}")
+
+rapids-logger "Prepending channel ${CPP_CHANNEL} to RATTLER_CHANNELS"
+
+RATTLER_CHANNELS=("--channel" "${CPP_CHANNEL}" "${RATTLER_CHANNELS[@]}")
+
+sccache --zero-stats
+
+rapids-logger "Building cuopt"
+
+# --no-build-id allows for caching with `sccache`
+# more info is available at
+# https://rattler.build/latest/tips_and_tricks/#using-sccache-or-ccache-with-rattler-build
+rattler-build build --recipe conda/recipes/cuopt \
+                    --test skip \
+                    "${RATTLER_ARGS[@]}" \
+                    "${RATTLER_CHANNELS[@]}"
+
+sccache --show-adv-stats
+
+rattler-build build --recipe conda/recipes/cuopt-server \
+                    --test skip \
+                    "${RATTLER_ARGS[@]}" \
+                    "${RATTLER_CHANNELS[@]}"
+
+rattler-build build --recipe conda/recipes/cuopt-sh-client \
+                    --test skip \
+                    "${RATTLER_ARGS[@]}" \
+                    "${RATTLER_CHANNELS[@]}"
+
+# remove build_cache directory to avoid uploading the entire source tree
+# tracked in https://github.com/prefix-dev/rattler-build/issues/1424
+rm -rf "$RAPIDS_CONDA_BLD_OUTPUT_DIR"/build_cache
+
+RAPIDS_PACKAGE_NAME="$(rapids-artifact-name conda_python cuopt cuopt --py "$RAPIDS_PY_VERSION" --cuda "$RAPIDS_CUDA_VERSION")"
+export RAPIDS_PACKAGE_NAME

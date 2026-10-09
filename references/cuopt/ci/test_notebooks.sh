@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+. /opt/conda/etc/profile.d/conda.sh
+
+rapids-logger "Configuring conda strict channel priority"
+conda config --set channel_priority strict
+
+rapids-logger "Downloading artifacts from previous jobs"
+CPP_CHANNEL=$(rapids-download-from-github "$(rapids-artifact-name conda_cpp libcuopt cuopt --cuda "$RAPIDS_CUDA_VERSION")")
+PYTHON_CHANNEL=$(rapids-download-from-github "$(rapids-artifact-name conda_python cuopt cuopt --py "$RAPIDS_PY_VERSION" --cuda "$RAPIDS_CUDA_VERSION")")
+
+rapids-logger "Generate notebook testing dependencies"
+
+ENV_YAML_DIR="$(mktemp -d)"
+
+rapids-dependency-file-generator \
+  --output conda \
+  --file-key test_notebooks \
+  --prepend-channel "${CPP_CHANNEL}" \
+  --prepend-channel "${PYTHON_CHANNEL}" \
+  --matrix "cuda=${RAPIDS_CUDA_VERSION%.*};arch=$(arch);py=${RAPIDS_PY_VERSION}" | tee "${ENV_YAML_DIR}/env.yaml"
+
+rapids-mamba-retry env create --yes -f "${ENV_YAML_DIR}/env.yaml" -n test
+
+# Temporarily allow unbound variables for conda activation.
+set +u
+conda activate test
+set -u
+
+rapids-print-env
+
+# Remove any existing cuopt-examples directory
+
+rapids-logger "Cloning cuopt-examples repository"
+rm -rf cuopt-examples
+git clone https://github.com/NVIDIA/cuopt-examples.git
+
+NBTEST="$(realpath "$(dirname "$0")/utils/nbtest.sh")"
+NBLIST_PATH="$(realpath "$(dirname "$0")/utils/notebook_list.py")"
+
+pushd cuopt-examples
+
+NBLIST=$(python "${NBLIST_PATH}")
+
+EXITCODE=0
+trap "EXITCODE=1" ERR
+
+rapids-logger "Start cuopt-server"
+
+set +e
+
+rapids-logger "Start notebooks tests"
+for nb in ${NBLIST}; do
+  nvidia-smi
+  ${NBTEST} "${nb}"
+  if [ $? -ne 0 ]; then
+    echo "Notebook ${nb} failed to execute. Exiting."
+    exit 1
+  fi
+done
+
+popd
+
+rapids-logger "Generate nightly test report"
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/utils/nightly_report_helper.sh"
+generate_nightly_report "notebooks" --with-python-version
+
+rapids-logger "Notebook test script exiting with value: $EXITCODE"
+exit ${EXITCODE}

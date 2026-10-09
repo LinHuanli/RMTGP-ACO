@@ -1,0 +1,92 @@
+/* clang-format off */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/* clang-format on */
+
+#include <cuopt/mathematical_optimization/cuopt_c.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int test_int_size();
+int test_float_size();
+cuopt_int_t burglar_problem();
+cuopt_int_t solve_mps_file(const char* filename,
+                           double time_limit,
+                           double iteration_limit,
+                           cuopt_int_t* termination_status,
+#ifdef __cplusplus
+                           cuopt_float_t* solve_time = 0,
+                           cuopt_int_t method        = CUOPT_METHOD_DUAL_SIMPLEX);
+#else
+                           cuopt_float_t* solve_time,
+                           cuopt_int_t method);
+#endif
+cuopt_int_t test_missing_file();
+cuopt_int_t test_infeasible_problem();
+cuopt_int_t test_bad_parameter_name();
+cuopt_int_t test_mip_get_callbacks_only();
+cuopt_int_t test_mip_get_set_callbacks();
+cuopt_int_t test_ranged_problem(cuopt_int_t* termination_status_ptr, cuopt_float_t* objective_ptr);
+cuopt_int_t test_semi_continuous_problem(cuopt_int_t* termination_status_ptr,
+                                         cuopt_float_t* objective_ptr,
+                                         cuopt_float_t* solution_values);
+cuopt_int_t test_invalid_bounds(cuopt_int_t test_mip);
+cuopt_int_t test_quadratic_problem(cuopt_int_t* termination_status_ptr,
+                                   cuopt_float_t* objective_ptr);
+cuopt_int_t test_quadratic_ranged_problem(cuopt_int_t* termination_status_ptr,
+                                          cuopt_float_t* objective_ptr);
+cuopt_int_t test_quadratic_constraint_problem(cuopt_int_t* termination_status_ptr,
+                                              cuopt_float_t* objective_ptr,
+                                              cuopt_float_t* solution_values);
+cuopt_int_t test_general_quadratic_constraint_problem(cuopt_int_t* termination_status_ptr,
+                                                      cuopt_float_t* objective_ptr,
+                                                      cuopt_float_t* solution_values);
+cuopt_int_t test_rotated_soc_constraint_problem(cuopt_int_t* termination_status_ptr,
+                                                cuopt_float_t* objective_ptr,
+                                                cuopt_float_t* solution_values);
+cuopt_int_t test_rotated_soc_standard_cross_term_problem(cuopt_int_t* termination_status_ptr,
+                                                         cuopt_float_t* objective_ptr,
+                                                         cuopt_float_t* solution_values);
+cuopt_int_t test_write_problem(const char* input_filename, const char* output_filename);
+cuopt_int_t test_maximize_problem_dual_variables(cuopt_int_t method,
+                                                 cuopt_int_t* termination_status_ptr,
+                                                 cuopt_float_t* objective_ptr,
+                                                 cuopt_float_t* dual_variables,
+                                                 cuopt_float_t* reduced_costs,
+                                                 cuopt_float_t* dual_obj_ptr);
+cuopt_int_t test_deterministic_bb(const char* filename,
+                                  cuopt_int_t num_runs,
+                                  cuopt_int_t num_threads,
+                                  cuopt_float_t time_limit,
+                                  cuopt_float_t work_limit);
+
+/* Tests for solution interface polymorphism (use inline problems, no file I/O) */
+cuopt_int_t test_lp_solution_mip_methods();
+cuopt_int_t test_mip_solution_lp_methods();
+
+cuopt_int_t test_pdlp_precision_single(const char* filename,
+                                       cuopt_int_t* termination_status_ptr,
+                                       cuopt_float_t* objective_ptr);
+
+cuopt_int_t test_pdlp_precision_mixed(const char* filename,
+                                      cuopt_int_t* termination_status_ptr,
+                                      cuopt_float_t* objective_ptr);
+
+/* CPU-only execution tests (require env vars CUDA_VISIBLE_DEVICES="" and CUOPT_REMOTE_HOST) */
+cuopt_int_t test_cpu_only_execution(const char* filename);
+cuopt_int_t test_cpu_only_mip_execution(const char* filename);
+
+/* CPU-host read/create C API (require CUDA_VISIBLE_DEVICES="", no remote, no solve) */
+cuopt_int_t test_cpu_host_read_problem_api(const char* filename);
+cuopt_int_t test_cpu_host_create_problem_api();
+
+/* GPU-backed problem created before remote env is set must reject remote solve */
+cuopt_int_t test_gpu_problem_remote_after_create(const char* filename);
+
+#ifdef __cplusplus
+}
+#endif

@@ -1,0 +1,124 @@
+/* clang-format off */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/* clang-format on */
+
+#pragma once
+
+#include <utilities/error.hpp>
+#include <utilities/macros.cuh>
+#include "cxxopts.hpp"
+
+#include <gtest/gtest.h>
+
+#include <cuda/memory_resource>
+
+#include <rmm/mr/binning_memory_resource.hpp>
+#include <rmm/mr/cuda_async_memory_resource.hpp>
+#include <rmm/mr/cuda_memory_resource.hpp>
+#include <rmm/mr/managed_memory_resource.hpp>
+#include <rmm/mr/per_device_resource.hpp>
+#include <rmm/mr/pool_memory_resource.hpp>
+
+namespace cuopt {
+namespace test {
+
+/// MR factory functions
+inline auto make_cuda() { return rmm::mr::cuda_memory_resource(); }
+
+inline auto make_async() { return rmm::mr::cuda_async_memory_resource(); }
+
+inline auto make_managed() { return rmm::mr::managed_memory_resource(); }
+
+inline auto make_pool()
+{
+  // 1GB of initial pool size
+  const size_t initial_pool_size = 1024 * 1024 * 1024;
+  return rmm::mr::pool_memory_resource(make_async(), initial_pool_size);
+}
+
+inline auto make_binning()
+{
+  auto pool = make_pool();
+  // Add a fixed_size_memory_resource for bins of size 256, 512, 1024, 2048 and
+  // 4096KiB Larger allocations will use the pool resource
+  return rmm::mr::binning_memory_resource(pool, 18, 22);
+}
+
+/**
+ * @brief Creates a memory resource for the unit test environment given the name
+ * of the allocation mode.
+ *
+ * The returned resource instance must be kept alive for the duration of the
+ * tests. Attaching the resource to a TestEnvironment causes issues since the
+ * environment objects are not destroyed until after the runtime is shutdown.
+ *
+ * @throw cuopt::logic_error if the `allocation_mode` is unsupported.
+ *
+ * @param allocation_mode String identifies which resource type.
+ *        Accepted types are "pool", "cuda", and "managed" only.
+ * @return Memory resource instance
+ */
+inline cuda::mr::any_resource<cuda::mr::device_accessible> create_memory_resource(
+  std::string const& allocation_mode)
+{
+  if (allocation_mode == "binning") return make_binning();
+  if (allocation_mode == "cuda") return make_cuda();
+  if (allocation_mode == "pool") return make_pool();
+  if (allocation_mode == "managed") return make_managed();
+  cuopt_assert(false, "Invalid RMM allocation mode");
+
+  // control will never reach this point
+  return make_managed();
+}
+
+}  // namespace test
+}  // namespace cuopt
+
+/**
+ * @brief Parses the cuOpt test command line options.
+ *
+ * Currently only supports 'rmm_mode' string paramater, which set the rmm
+ * allocation mode. The default value of the parameter is 'pool'.
+ *
+ * @return Parsing results in the form of cxxopts::ParseResult
+ */
+inline auto parse_test_options(int argc, char** argv)
+{
+  try {
+    cxxopts::Options options(argv[0], " - cuOpt tests command line options");
+    options.allow_unrecognised_options().add_options()(
+      "rmm_mode", "RMM allocation mode", cxxopts::value<std::string>()->default_value("pool"));
+
+    return options.parse(argc, argv);
+  } catch (const std::exception& e) {
+    cuopt_assert(false, "Error parsing command line options");
+  }
+
+  // control will never reach this point
+  cxxopts::Options options(argv[0], " - cuOpt tests command line options");
+  return options.parse(argc, argv);
+}
+
+/**
+ * @brief Macro that defines main function for gtest programs that use rmm
+ *
+ * Should be included in every test program that uses rmm allocators since it
+ * maintains the lifespan of the rmm default memory resource. This `main`
+ * function is a wrapper around the google test generated `main`, maintaining
+ * the original functionality. In addition, this custom `main` function parses
+ * the command line to customize test behavior, like the allocation mode used
+ * for creating the default memory resource.
+ */
+#define CUOPT_TEST_PROGRAM_MAIN()                                        \
+  int main(int argc, char** argv)                                        \
+  {                                                                      \
+    ::testing::InitGoogleTest(&argc, argv);                              \
+    auto const cmd_opts = parse_test_options(argc, argv);                \
+    auto const rmm_mode = cmd_opts["rmm_mode"].as<std::string>();        \
+    auto resource       = cuopt::test::create_memory_resource(rmm_mode); \
+    rmm::mr::set_current_device_resource(resource);                      \
+    return RUN_ALL_TESTS();                                              \
+  }
