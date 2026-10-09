@@ -29,3 +29,19 @@
 实际启动/完成以 `artifacts/hardware-pilot-v1/campaign.json`、各卡的 `launched.json`、`status.json`、`heartbeat.json` 和 `COMPLETE.json` 为准；失败写入 `FAILED.json`。本文件后续只增补已核实的进度和结果。
 
 标准测试不变且未用于本轮实验。原六个A5000 50代训练不改参数或运行快照。
+
+## 已核实的后台启动
+
+2026-10-10（NZDT），五个nohup进程已启动。运行源码固定为 `57b82e1d44e757f9abc80d8b6d84cf08dd748ce5`。启动器和每个worker均复查过设备空闲。不可变快照内的基础CUDA检查再次在每张卡上得到28 passed。
+
+| 型号 | 主机 | 物理GPU索引 | worker PID | 当前安排 |
+|---|---|---:|---:|---|
+| RTX A5000 | cuda08 | 1 | 1601014 | 规范参考写入、性能/训练、最终共同审计 |
+| A40 | cuda14 | 0 | 2583802 | 同输入独立调优、测量、短训练 |
+| L40S | cuda20 | 2 | 548244 | 同上 |
+| L4 | cuda19 | 0 | 1825960 | 同上 |
+| RTX PRO 5000 Blackwell | cuda06 | 1 | 2967807 | 同上 |
+
+每个进程只暴露配置中对应的GPU UUID，内部设备编号为0。TSP100的冻结输入库及规范ACO缓存已经生成并提交READY；manifest SHA256前缀为 `0da8f0b206ecd136`。各卡已开始接续TSP100调优。TSP500在各自TSP100流程完成后接续，输入仍由同一A5000写入者生成。
+
+此处是启动和完整性记录，不是最终性能结果。留出配对、短训练和共同审计的实时数据由 `summary/README.md`、`comparisons.csv`、`training.csv` 和 `audits.csv` 增量呈现。阶段性缺失值不会填成0，也不把单次调优速度当成最终加速比。
