@@ -140,6 +140,7 @@ def train(
     validation_interval=5,
     validation_repeats=3,
     resume=False,
+    inputs=None,
 ):
     output = Path(output).resolve()
     if not output.is_relative_to(ROOT):
@@ -158,6 +159,7 @@ def train(
         "batch_size": batch_size,
         "validation_interval": validation_interval,
         "validation_repeats": validation_repeats,
+        "frozen_inputs": None if inputs is None else inputs.identity,
     }
     signature = config_hash(requested)
     checkpoint = output / "checkpoint.pkl"
@@ -214,8 +216,12 @@ def train(
                 },
             },
         )
-    val_coords, val_tours, val_ids = load_split(n, "validation")
-    val_problem = prepare_problem(val_coords, val_tours, val_ids, search.candidate_size)
+    if inputs is None:
+        val_coords, val_tours, val_ids = load_split(n, "validation")
+        val_problem = prepare_problem(val_coords, val_tours, val_ids, search.candidate_size)
+    else:
+        val_problem = inputs.validation(0)
+    reference_lookup = baseline if inputs is None else inputs.baseline
     for generation in range(start_generation, generations + 1):
         generation_start = perf_counter()
         write_json(
@@ -229,12 +235,15 @@ def train(
             },
         )
         setup_start = perf_counter()
-        coords, tours, ids = load_split(n, "train", schedule[generation - 1])
-        problem = prepare_problem(coords, tours, ids, search.candidate_size)
+        if inputs is None:
+            coords, tours, ids = load_split(n, "train", schedule[generation - 1])
+            problem = prepare_problem(coords, tours, ids, search.candidate_size)
+        else:
+            problem = inputs.training(generation, schedule[generation - 1])
         data_setup_s = perf_counter() - setup_start
         programs = [ProgramSpec.from_tree(tree) for tree in population]
         seed = namespace_seed(root_seed, "train", generation)
-        base_lengths, baseline_s, baseline_hit = baseline(problem, search, seed, plan)
+        base_lengths, baseline_s, baseline_hit = reference_lookup(problem, search, seed, plan)
         result = evaluate(programs, problem, search, seed, plan)
         gaps = gap(result.lengths, problem.reference[None, :])
         fitness = np.mean(gaps, axis=1, dtype=np.float32)
@@ -264,7 +273,9 @@ def train(
             base_scores = []
             for repeat in range(validation_repeats):
                 val_seed = namespace_seed(root_seed, "validation", repeat=repeat)
-                val_base, cache_cost, _ = baseline(val_problem, search, val_seed, plan)
+                if inputs is not None:
+                    val_problem = inputs.validation(repeat)
+                val_base, cache_cost, _ = reference_lookup(val_problem, search, val_seed, plan)
                 val_baseline_s += cache_cost
                 base_scores.append(np.mean(gap(val_base, val_problem.reference), dtype=np.float32))
                 validation_result = evaluate(

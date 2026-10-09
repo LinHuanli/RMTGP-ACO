@@ -9,6 +9,7 @@
 - [研究计划](docs/design/README.md)：问题、方法和 E00–E13 实验卡。
 - [执行协议 v1.1](docs/design/04_implementation_protocol.md)：本轮决策、准确的数据量、公式、接口和数值约定。
 - [第一阶段记录](docs/results/phase1_status.md)：实际完成项、先导测量和未完成项。
+- [五类GPU先导协议](docs/design/05_cross_gpu_pilot.md)：统一冻结输入、硬件调优、留出性能、3-seed短训练及规范冠军审计。
 
 ## 目录
 
@@ -74,3 +75,16 @@ CUDA_VISIBLE_DEVICES=0 python -m gpaco.cli benchmark --n 100 --blocks 5 \
 `--profile-stages` 是单独的事件插桩诊断，不能与无插桩正式性能样本混用。`device_search_s` 不等于端到端时间；`eval_wall_s` 含本次编译、准备、上传、搜索和回传，但不含外层数据读取、适应度归约、验证及保存。`generation_wall_s` 和 `training_wall_s` 是更完整的边界。
 
 当前尚未实现最终测试命令，也不会由训练自动运行测试集。第一阶段的目标是验证强基线并生成真实 cohort；共享优化、CPU/GPU 加速倍数和正式质量结论需后续配对实验。
+
+### 异构 GPU 先导
+
+```bash
+source scripts/env.sh
+python scripts/launch_hardware_pilot.py            # 检查五张预选卡，不启动
+python scripts/launch_hardware_pilot.py --execute  # 仅首次启动；不覆盖已有实验
+python scripts/report_hardware_pilot.py           # 从已完成记录增量汇总
+```
+
+配置位于 `configs/hardware/cross_gpu_pilot.yaml`。A5000、A40、L40S、L4、RTX PRO 5000 Blackwell各使用一张物理卡；先进行基础E00，再筛选执行计划、完成5个独立随机流的留出配对block，随后进行每规模3个seed、各3代的短训练。每卡每规模的最终选定计划只由tuning数据决定。独立A5000规范参考库和冠军复评用于隔离输入与浮点差异。
+
+产物位于 `artifacts/hardware-pilot-v1/`，汇总在其 `summary/` 下；包括CSV/JSON、曲线、能耗图和原始测量。旧50代训练继续使用原快照，标准测试集不打开。进一步的进度记录见 [异构先导状态](docs/results/hardware_pilot_status.md)。

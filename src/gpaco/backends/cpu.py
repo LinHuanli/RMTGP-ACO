@@ -203,17 +203,34 @@ def solve_kernel(
     return output_lengths, output_tours, output_diagnostics
 
 
+def problem_initialization(problem, config, seed):
+    """冻结输入只读使用；不允许错用其他随机种子或重新在异构 CPU 上计算。"""
+    frozen = problem.initialization
+    if frozen is None:
+        return initial_parameters(
+            problem.distances,
+            problem.instance_keys,
+            np.uint64(seed),
+            config.variant_id,
+            np.float32(config.rho),
+        )
+    if (frozen.seed, frozen.variant, frozen.rho, frozen.instance_ids) != (
+        int(seed),
+        config.variant,
+        config.rho,
+        problem.instance_ids,
+    ):
+        raise ValueError("冻结初始化与本次搜索身份不一致")
+    if any(v.dtype != np.float32 or v.shape != (problem.size,) for v in frozen.values):
+        raise ValueError("冻结初始化的 shape 或 dtype 错误")
+    return frozen.values
+
+
 def evaluate(programs, problem, config, seed, plan):
     begin = perf_counter()
     set_num_threads(plan.cpu_threads)
     packed = pack_programs(programs)
-    initial = initial_parameters(
-        problem.distances,
-        problem.instance_keys,
-        np.uint64(seed),
-        config.variant_id,
-        np.float32(config.rho),
-    )
+    initial = problem_initialization(problem, config, seed)
     setup = perf_counter() - begin
     values = solve_kernel(
         problem.coords,

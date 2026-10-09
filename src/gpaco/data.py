@@ -45,6 +45,19 @@ def tour_length(coords, tour, dtype=np.float64):
 
 
 @dataclass
+class FrozenInitialization:
+    """跨主机复用同一初始化；绑定随机流、实例顺序及初始化算法参数。"""
+
+    seed: int
+    variant: str
+    rho: float
+    instance_ids: tuple[str, ...]
+    values: tuple[np.ndarray, np.ndarray, np.ndarray]
+    scenario: str
+    input_manifest_sha256: str | None = None
+
+
+@dataclass
 class ProblemSpec:
     coords: np.ndarray
     distances: np.ndarray
@@ -55,6 +68,7 @@ class ProblemSpec:
     reference: np.ndarray
     instance_keys: np.ndarray
     instance_ids: tuple[str, ...]
+    initialization: FrozenInitialization | None = None
 
     @property
     def n(self):

@@ -1,0 +1,42 @@
+# 异构硬件先导：性能配置选择与科研预算严格分离。标准测试集封存。
+name: hardware-pilot-v1
+sizes: [100, 500]
+seeds: [1001, 1002, 1003]
+population: 100
+batch: 32
+generations: 3
+validation_interval: 5
+validation_repeats: 3
+paired_blocks: 5
+candidate_lanes: [4, 8, 16, 32]
+active_sm_multipliers: [2, 4]
+default_active_tasks: 3200
+minimum_fractional_time_reduction: 0.03
+capacity_batch: 128
+capacity_active_tasks: [3200, 12800]
+search:
+  variant: as
+  ants: 32
+  iterations: 500
+  candidate_size: 20
+targets:
+  a5000:
+    host: cuda08
+    gpu_uuid: GPU-d95564d4-d213-111a-b0d3-395af979938f
+    model: NVIDIA RTX A5000
+  a40:
+    host: cuda14
+    gpu_uuid: GPU-75662310-a0a3-6a3a-a025-b1ecf786282a
+    model: NVIDIA A40
+  l40s:
+    host: cuda20
+    gpu_uuid: GPU-e1cade69-d8b0-509a-0116-fd9806cd3326
+    model: NVIDIA L40S
+  l4:
+    host: cuda19
+    gpu_uuid: GPU-3b100ffc-0e0b-c482-854f-4777ca648fd9
+    model: NVIDIA L4
+  pro5000:
+    host: cuda06
+    gpu_uuid: GPU-90cb0d88-15f1-389f-1f7b-db68d87a3601
+    model: NVIDIA RTX PRO 5000 Blackwell

@@ -6,6 +6,10 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 
 
+class InfeasiblePlan(ValueError):
+    """合法科学工作负载在某个编译资源布局下无法启动，不代表数值失败。"""
+
+
 @dataclass(frozen=True)
 class SearchConfig:
     variant: str = "as"

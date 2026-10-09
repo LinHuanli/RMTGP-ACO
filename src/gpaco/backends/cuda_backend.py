@@ -6,8 +6,9 @@ from time import perf_counter
 
 import numpy as np
 
+from ..config import InfeasiblePlan
 from ..language import pack_programs
-from .cpu import EvaluationResult, initial_parameters
+from .cpu import EvaluationResult, problem_initialization
 
 _MODULES = {}
 SOURCE_ROOT = Path(__file__).with_name("cuda")
@@ -107,7 +108,7 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
     a, k = config.ants, problem.nearest.shape[2]
     maximum_threads = functions["v2_construct"].attributes["max_threads_per_block"]
     if a * plan.candidate_lanes > maximum_threads:
-        raise ValueError(
+        raise InfeasiblePlan(
             f"编译后的寄存器资源只支持 {maximum_threads} threads/block，"
             f"当前 ants×lanes={a * plan.candidate_lanes}；此执行计划不可行"
         )
@@ -127,13 +128,7 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
     keys = cp.asarray(problem.instance_keys)
     initial = tuple(
         cp.asarray(v)
-        for v in initial_parameters(
-            problem.distances,
-            problem.instance_keys,
-            np.uint64(seed),
-            config.variant_id,
-            np.float32(config.rho),
-        )
+        for v in problem_initialization(problem, config, seed)
     )
     total = p * b
     free, _ = cp.cuda.runtime.memGetInfo()

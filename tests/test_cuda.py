@@ -105,6 +105,33 @@ def test_generated_matches_interpreter(cp):
     np.testing.assert_array_equal(first.lengths, second.lengths)
 
 
+def test_cuda_frozen_initialization(cp):
+    from dataclasses import replace
+
+    from gpaco.data import FrozenInitialization
+
+    data = problem()
+    config = SearchConfig(ants=4, iterations=3, candidate_size=3)
+    values = cpu.problem_initialization(data, config, 12)
+    frozen = replace(
+        data,
+        initialization=FrozenInitialization(
+            12,
+            config.variant,
+            config.rho,
+            data.instance_ids,
+            values,
+            "cuda_test",
+        ),
+    )
+    programs = [ProgramSpec.parse("ADD(RTau, REta)"), ProgramSpec.parse("ZERO")]
+    plan = ExecutionPlan(active_tasks=2, generated=True)
+    first = cuda_backend.evaluate(programs, data, config, 12, plan)
+    second = cuda_backend.evaluate(programs, frozen, config, 12, plan)
+    np.testing.assert_array_equal(first.lengths, second.lengths)
+    np.testing.assert_array_equal(first.tours, second.tours)
+
+
 @pytest.mark.parametrize("variant", ["as", "acs", "mmas"])
 def test_task_mapping_and_pheromone_invariants(cp, variant):
     data = problem()
