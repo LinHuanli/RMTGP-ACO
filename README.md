@@ -92,3 +92,5 @@ python scripts/report_hardware_pilot.py           # 从已完成记录增量汇�
 ### 持续利用空闲 A5000
 
 `scripts/a5000_pool.py --execute` 启动项目内nohup调度器，每60秒使用 `gpu-free` 扫描并复查空闲RTX A5000。队列包含两个规模、三阶段真实种群和三ACO宿主的GPU基线配对与独立诊断；缺失cohort自动等待依赖，不占卡空等。已有50代训练及跨卡先导保持原样。详见[持续队列协议](docs/design/06_a5000_continuous_queue.md)，实时进度与图表位于 `artifacts/a5000-main-v1/summary/`。
+
+当前控制器与新增GPU使用清单见[队列启动记录](docs/results/a5000_main_queue_status.md)。
