@@ -38,6 +38,14 @@ def test_resolution_never_silently_chooses_duplicate_copies(tmp_path, monkeypatc
         registry.resolve("test")
 
 
+def test_explicit_compatibility_alias_is_not_duplicate_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(registry, "ROOT", tmp_path)
+    monkeypatch.setattr(registry, "entry", lambda _: {"path": "target", "legacy_path": "legacy"})
+    (tmp_path / "target").mkdir()
+    (tmp_path / "legacy").symlink_to("target", target_is_directory=True)
+    assert registry.resolve("example") == tmp_path / "target"
+
+
 def test_moved_inputs_remain_content_verified():
     from gpaco.benchmark_inputs import BenchmarkInputs
 

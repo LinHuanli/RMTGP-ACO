@@ -29,7 +29,8 @@ artifacts/
   inputs/<input-set>/p01/          只读冻结输入、manifest与校验值
   cache/aco-baselines/             可复算的共享ACO缓存
   provenance/
-    source-snapshots/<commit>/     不可变源码
+    source-snapshots/managed/<commit>/ 新任务的不可变源码
+    source-snapshots/legacy/       待旧任务结束后迁入的原快照
     historical/E02/p01/            历史导出副本和实际文件SHA
     bootstrap/p01/                 整理前的环境、仓库和开发检查原始包
   operations/                     锁、启动器、调度和目录迁移审计
@@ -71,11 +72,13 @@ docs/results/
 
 首先迁移已结束的smoke、初始诊断、CPU/GPU冻结输入副本和旧bootstrap原始包。迁移逐文件计算SHA，改名后复核，写迁移日志。不删除实验数据，不覆盖目标，不改动文件内部的历史地址。
 
-下列对象暂不迁移：三组存活实验队列、训练启动日志、源码快照、共享ACO缓存和设备锁。控制器还在读写绝对路径；训练cohort仍被其他队列依赖。即使某个子实验完成，也不能只移动该子目录。所有这些例外在登记表中列明原因，不以软链接伪装迁移完成。
+下列对象暂不迁移：仍在计算的训练与跨卡队列、训练启动日志、旧源码快照、共享ACO缓存和设备锁。控制器还在读写绝对路径；训练cohort仍被其他队列依赖。即使某个子实验完成，也不能只移动该子目录。所有这些例外在登记表中列明原因。
+
+原A5000基线队列在74项完成、36项依赖等待且无测量worker运行时，已通过STOP_DISPATCH退出控制器，迁移到规范目录，随后用原commit恢复。文件逐一校验，旧顶层地址只保留指向新目录的兼容软链接。数据实际只存在一份。这与“只建一个指向旧目录的新快捷方式”不同；存储状态明确标为canonical_with_legacy_alias。旧文件内的绝对地址和哈希不改写。
 
 尤其不能复制或替换锁文件inode，否则新旧worker会持有不同的锁。已有后台任务仍用原源码；不热更新或重启它们来整理目录。待所有相关写入者和消费者退出后，重新检查并单独执行迁移。
 
-本轮只迁移登记为 `move_inactive` 的明确目标。`scripts/manage_artifacts.py inventory`只读盘点；`migrate --execute`才迁移。它不会自动接管任何活跃队列。
+迁移只允许登记为 `move_inactive` 或 `move_idle_controller` 的明确目标。后者必须先确认控制器退出、测量worker为零，并显式保留兼容入口。`scripts/manage_artifacts.py inventory`只读盘点；`migrate --execute`才迁移。不对NFS上的活跃目录实施存在路径空窗的热迁移。
 
 ## 6. 后续执行纪律
 

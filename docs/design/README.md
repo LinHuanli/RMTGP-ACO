@@ -10,6 +10,8 @@
 
 新增：[CPU基线与GPU诊断补充协议](07_cpu_baselines_and_diagnostics.md)；[产物与结果管理规范](08_artifact_and_result_management.md)；[已有先导结果及图表](../results/pilot/E01/p01/README.md)。
 
+新增：[完整预算诊断持续队列](09_diagnostic_campaign.md)：54项预登记任务，按真实cohort依赖自动接续，不混入正式计时。
+
 | 文件 | 内容 | 使用时机 |
 |---|---|---|
 | [01 研究总计划](01_research_plan.md) | objective、motivation、goals、研究范围、具体方法、实施阶段与贡献边界 | 确定研究主线，安排实现依赖 |

@@ -1,11 +1,11 @@
 {
-  "created_at_utc": "2026-10-09T14:31:22.151984+00:00",
+  "created_at_utc": "2026-10-09T14:54:07.039563+00:00",
   "evidence_tier": "diagnostic",
   "experiment_id": "E01",
   "protocol_id": "p01",
   "formal_result": false,
-  "script_sha256": "4dade8ec619d76849958481c4e01d8ddf8bb398ab345952cf0f619d24c117c75",
-  "registry_sha256": "ab3ca899bcfaf9dcf556107de7256c8d7a82b812b985ae2ae30e5ffab909d7bb",
+  "script_sha256": "f542dc852daa3b0f4d285665e58e968693a480d4f2feaf8a04b8b69b2da8917d",
+  "registry_sha256": "03113677459f3188a94bd131ee0b02fc91770506dc3974bfbcd4ccbf26c482cb",
   "input_records": [
     {
       "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g001-acs-profile/attempt-001/measurements/generated/record.json",
@@ -60,12 +60,12 @@
   "tests_opened": false,
   "exports": {
     "README.md": "63a3ae061d4d71587076d0892a5d916d4991bb20666b6825632b1888b3213f3e",
-    "figures/tsp100_stages.pdf": "d69f9fedcc6a5db4c0496200a7b36a2f1746894eade8fd803fa74e2643aed7c9",
+    "figures/tsp100_stages.pdf": "261b52345d1f0260657808e33f0b318822edf14fad72d2669a44f46c457bad28",
     "figures/tsp100_stages.png": "9b0582ea89cc39416d1d1fee0182b202e2d6b52ae902a0b538eb711d4f95470e",
-    "figures/tsp100_stages.svg": "5b0bda93d93a52884d3fd29c88b700ea67a4177ec0d175dd03a5c7f68ee0104a",
-    "figures/tsp500_stages.pdf": "89fe0041274ceed1d3e755812e9abac92c4e010e109d6e4a9236f70e968006e6",
+    "figures/tsp100_stages.svg": "8ee1d2db5b18ae4e8cb39439b2ed0bdfa3dfdfaf26fb960746eb16d03d01cc4d",
+    "figures/tsp500_stages.pdf": "44f9ba8526047055d2fcb67ee5f32854259ee383f0206cb3ed4d5cc314aa7468",
     "figures/tsp500_stages.png": "d6cf0ac452b3d6ddfc8d516a09628a55793fc8afe5c95d5557cde5ff5afb0571",
-    "figures/tsp500_stages.svg": "9bfb85ace92dd5700d23565e0b05f045f52f855759a91f891c3332384e7b08e8",
+    "figures/tsp500_stages.svg": "18b7a06e2051dd83e1bf969d712dd262e10fa9d9b83b99e12d51f637034f68c3",
     "tables/detailed_diagnostics.csv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "tables/detailed_diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
     "tables/gpu_stage_profiles.csv": "0694942a5931fedd63733a3c8a2fccdb866f13c22e1cb6c82824c624c5e7f6f2",

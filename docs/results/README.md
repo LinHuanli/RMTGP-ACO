@@ -11,13 +11,14 @@
 | 功能验证 `smoke` | [验证记录边界](smoke/README.md) | 说明验证位置；不合并成科研结果 |
 | 管理状态 `status` | [产物盘点和迁移状态](status/storage_inventory.md) | 路径、用途、规模和迁移例外，不等于实验完成状态 |
 
-## 仍在旧路径运行的先导任务
+## 运行中任务的位置
 
 - E09／p01：AS两规模×3根种子×50代。原始运行仍在 `artifacts/pilot-v1`。
 - E12／p01：五类GPU的调优、留出与短训练。原始运行仍在 `artifacts/hardware-pilot-v1`。
-- E01／p01：A5000冻结cohort基线队列。原始运行仍在 `artifacts/a5000-main-v1`。
+- E01／p01：A5000冻结cohort基线队列。原始运行已迁至 `artifacts/runs/pilot/E01/p01/gpu-baselines`；`artifacts/a5000-main-v1`只是兼容旧manifest的软链接，不是第二份数据。
+- E01／p01：完整预算的工作量诊断队列。原始记录在 `artifacts/runs/diagnostic/E01/p01/work-diagnostics`，调度状态在 `artifacts/operations/diagnostic-dispatch/p01`。矩阵和解释边界见 [诊断队列协议](../design/09_diagnostic_campaign.md)。
 
-这些目录的增量 `summary/`是运行期视图，不是正式发表结果。读取其状态时必须注明核查时间。已登记为待迁移；不在运行时改动路径和历史manifest。
+这些目录的增量 `summary/`是运行期视图，不是正式发表结果。读取其状态时必须注明核查时间。E09、E12等仍被存活worker引用的旧目录已登记为待迁移；不在运行时改动路径和历史manifest。
 
 ## 溯源规则
 

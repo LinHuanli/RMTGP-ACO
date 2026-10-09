@@ -1,0 +1,28 @@
+# E01细粒度诊断；三个block是ACO随机重复，不是三个独立GP训练seed。
+registry_id: shared-diagnostic-dispatch
+protocol_id: p01
+scales: [100, 500]
+variants: [as, acs, mmas]
+cohort_generations: [1, 25, 50]
+blocks: [0, 1, 2]
+cohort_training_variant: as
+cohort_root_seed: 1002
+input_registry_id: shared-frozen-population-p01
+gpu_model: NVIDIA RTX A5000
+gpu_free_command: /home/linbocheng/bin/gpu-free
+scan_interval_s: 60
+scan_timeout_s: 45
+max_startup_rejections_per_gpu: 3
+scientific_budget:
+  population: 100
+  batch: 32
+  ants: 32
+  iterations: 500
+  candidate_size: 20
+  numerical_mode: fp32
+execution:
+  generated: true
+  candidate_lanes: 8
+  plain_instrumented_pair: true
+automatic_formal_training: false
+automatic_standard_test: false

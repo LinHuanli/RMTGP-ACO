@@ -1,7 +1,7 @@
 {
-  "observed_at_utc": "2026-10-09T14:28:00.786363+00:00",
+  "observed_at_utc": "2026-10-09T14:50:58.535630+00:00",
   "scope": "非原子只读文件盘点；存活实验仍可新增文件；不是进程存活或实验完成证明",
-  "registry_sha256": "ab3ca899bcfaf9dcf556107de7256c8d7a82b812b985ae2ae30e5ffab909d7bb",
+  "registry_sha256": "03113677459f3188a94bd131ee0b02fc91770506dc3974bfbcd4ccbf26c482cb",
   "entries": [
     {
       "id": "E00-p01-initial-validation",
@@ -63,13 +63,13 @@
       "purpose": "A5000 三宿主冻结种群解释器/JIT的五block先导；包含独立诊断子任务",
       "path": "artifacts/runs/pilot/E01/p01/gpu-baselines",
       "legacy_path": "artifacts/a5000-main-v1",
-      "migration": "defer_live",
-      "reason": "控制器正在写入，且等待TSP500的第25和50代cohort；不可拆分输入与绝对路径记录",
+      "migration": "move_idle_controller",
+      "reason": "无测量worker运行时停派发后迁移；保留旧路径兼容入口，恢复原源码控制器",
       "report": "docs/results/pilot/E01/p01",
-      "actual_path": "artifacts/a5000-main-v1",
-      "storage_status": "legacy_deferred",
-      "files": 1470,
-      "logical_bytes": 749107963
+      "actual_path": "artifacts/runs/pilot/E01/p01/gpu-baselines",
+      "storage_status": "canonical_with_legacy_alias",
+      "files": 1489,
+      "logical_bytes": 749305354
     },
     {
       "id": "E01-p01-cpu-baselines",
@@ -96,7 +96,7 @@
         "E01"
       ],
       "protocol": "p01",
-      "purpose": "完整预算逻辑工作量、状态快照和插桩扰动诊断；尚未启动",
+      "purpose": "两规模×三宿主×三种群阶段×三ACO随机重复的完整预算诊断；与无插桩计时分开",
       "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics",
       "migration": "new_only",
       "report": "docs/results/diagnostic/E01/p01",
@@ -120,7 +120,7 @@
       "actual_path": "artifacts/pilot-v1",
       "storage_status": "legacy_deferred",
       "files": 65,
-      "logical_bytes": 2680947
+      "logical_bytes": 2713382
     },
     {
       "id": "E12-p01-cross-gpu",
@@ -138,8 +138,8 @@
       "reason": "各卡仍在执行TSP500任务及后续训练和审计",
       "actual_path": "artifacts/hardware-pilot-v1",
       "storage_status": "legacy_deferred",
-      "files": 1208,
-      "logical_bytes": 2896369102
+      "files": 1231,
+      "logical_bytes": 2932708312
     },
     {
       "id": "shared-frozen-population-p01",
@@ -174,8 +174,8 @@
       "reason": "正在运行的不可变源码继续读写旧路径",
       "actual_path": "artifacts/baselines",
       "storage_status": "legacy_deferred",
-      "files": 227,
-      "logical_bytes": 8458810
+      "files": 233,
+      "logical_bytes": 8847406
     },
     {
       "id": "shared-source-snapshots",
@@ -183,7 +183,7 @@
       "experiments": [],
       "protocol": "p01",
       "purpose": "git commit命名的不可变运行源码；不是实验输出",
-      "path": "artifacts/provenance/source-snapshots",
+      "path": "artifacts/provenance/source-snapshots/legacy",
       "legacy_path": "artifacts/runtime",
       "migration": "defer_live",
       "reason": "存活进程仍从这些目录导入源码",
@@ -191,6 +191,50 @@
       "storage_status": "legacy_deferred",
       "files": 117,
       "logical_bytes": 716368
+    },
+    {
+      "id": "shared-managed-source-snapshots",
+      "tier": "provenance",
+      "experiments": [],
+      "protocol": "p01",
+      "purpose": "登记制度启用后的git commit不可变源码；不向旧runtime目录追加",
+      "path": "artifacts/provenance/source-snapshots/managed",
+      "migration": "new_only",
+      "actual_path": null,
+      "storage_status": "not_created",
+      "files": 0,
+      "logical_bytes": 0
+    },
+    {
+      "id": "shared-diagnostic-dispatch",
+      "tier": "operations",
+      "experiments": [
+        "E00",
+        "E01"
+      ],
+      "protocol": "p01",
+      "purpose": "完整预算诊断有限队列、nohup控制器、GPU扫描、启动记录与心跳",
+      "path": "artifacts/operations/diagnostic-dispatch/p01",
+      "migration": "new_only",
+      "actual_path": null,
+      "storage_status": "not_created",
+      "files": 0,
+      "logical_bytes": 0
+    },
+    {
+      "id": "shared-diagnostic-cohorts-p01",
+      "tier": "input",
+      "experiments": [
+        "E01"
+      ],
+      "protocol": "p01",
+      "purpose": "后期真实cohort就绪后显式导出独立输入包；不修改已冻结p01输入",
+      "path": "artifacts/inputs/diagnostic-cohorts/p01",
+      "migration": "new_only",
+      "actual_path": null,
+      "storage_status": "not_created",
+      "files": 0,
+      "logical_bytes": 0
     },
     {
       "id": "shared-bootstrap-records",
@@ -236,7 +280,7 @@
       "actual_path": "artifacts/launches",
       "storage_status": "legacy_deferred",
       "files": 42,
-      "logical_bytes": 1153184
+      "logical_bytes": 1242356
     },
     {
       "id": "shared-device-locks",

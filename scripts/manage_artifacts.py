@@ -21,6 +21,10 @@ def inventory():
                 "storage_status": (
                     "not_created"
                     if not actual.exists()
+                    else "canonical_with_legacy_alias"
+                    if entry.get("legacy_path")
+                    and (ROOT / entry["legacy_path"]).is_symlink()
+                    and (ROOT / entry["legacy_path"]).resolve() == actual.resolve()
                     else "canonical"
                     if actual == ROOT / entry["path"]
                     else "legacy_deferred"
@@ -69,6 +73,12 @@ def publish_inventory(rows):
         for row in rows
         if row["storage_status"] == "legacy_deferred"
     )
+    lines.extend(["", "## 已迁移且保留旧地址兼容入口", ""])
+    lines.extend(
+        f"- `{row['legacy_path']}` 是指向 `{row['path']}` 的兼容软链接；数据只在新目录中保存一份。"
+        for row in rows
+        if row["storage_status"] == "canonical_with_legacy_alias"
+    )
     lines.extend(
         [
             "",
@@ -99,6 +109,12 @@ def publish_inventory(rows):
         for row in rows
         if row["storage_status"] == "legacy_deferred"
     )
+    artifact_lines.extend(["", "## 兼容入口（不是第二份数据）", ""])
+    artifact_lines.extend(
+        f"- `{row['legacy_path']}` → `{row['path']}`。已物理迁移，旧入口只服务不可变历史地址。"
+        for row in rows
+        if row["storage_status"] == "canonical_with_legacy_alias"
+    )
     artifact_lines.extend(
         [
             "",
@@ -118,7 +134,7 @@ def tree_hashes(directory):
     return result
 
 
-def migrate(selected, execute, verified_inactive):
+def migrate(selected, execute, verified_inactive, compatibility_alias=False):
     rows = entries()
     unknown = set(selected) - {row["id"] for row in rows}
     if unknown:
@@ -126,8 +142,10 @@ def migrate(selected, execute, verified_inactive):
     for row in rows:
         if row["id"] not in selected:
             continue
-        if row["migration"] != "move_inactive":
+        if row["migration"] not in ("move_inactive", "move_idle_controller"):
             raise ValueError(f"禁止本次迁移：{row['id']} / {row['migration']}")
+        if row["migration"] == "move_idle_controller" and not compatibility_alias:
+            raise ValueError("旧队列记录含绝对地址；此次必须显式保留兼容入口")
         source, target = ROOT / row["legacy_path"], ROOT / row["path"]
         if not source.exists() or target.exists():
             raise ValueError(f"迁移要求源存在且目标不存在：{source} -> {target}")
@@ -150,10 +168,14 @@ def migrate(selected, execute, verified_inactive):
             "file_sha256": before,
             "status": "prepared",
             "deleted_experiment_data": False,
+            "compatibility_alias": compatibility_alias,
         }
         write_json(log, record)
         target.parent.mkdir(parents=True, exist_ok=True)
         source.rename(target)
+        if compatibility_alias:
+            # 只在写入者均已退出后建立；不用于热迁移运行中的NFS目录。
+            source.symlink_to(target.relative_to(source.parent), target_is_directory=True)
         if tree_hashes(target) != before:
             write_json(log, {**record, "status": "verification_failed"})
             raise RuntimeError("迁移后校验失败；保留现场，不自动删除或覆盖")
@@ -169,9 +191,10 @@ def main():
     move.add_argument("--id", action="append", required=True)
     move.add_argument("--execute", action="store_true")
     move.add_argument("--verified-inactive", action="store_true")
+    move.add_argument("--compatibility-alias", action="store_true")
     args = parser.parse_args()
     if args.command == "migrate":
-        migrate(args.id, args.execute, args.verified_inactive)
+        migrate(args.id, args.execute, args.verified_inactive, args.compatibility_alias)
     else:
         rows = inventory()
         print(json.dumps(rows, ensure_ascii=False, indent=2))

@@ -1,11 +1,11 @@
 {
-  "created_at_utc": "2026-10-09T14:31:22.181411+00:00",
+  "created_at_utc": "2026-10-09T14:54:07.079788+00:00",
   "evidence_tier": "historical",
   "experiment_id": "E02",
   "protocol_id": "p01",
   "formal_result": false,
-  "script_sha256": "4dade8ec619d76849958481c4e01d8ddf8bb398ab345952cf0f619d24c117c75",
-  "registry_sha256": "ab3ca899bcfaf9dcf556107de7256c8d7a82b812b985ae2ae30e5ffab909d7bb",
+  "script_sha256": "f542dc852daa3b0f4d285665e58e968693a480d4f2feaf8a04b8b69b2da8917d",
+  "registry_sha256": "03113677459f3188a94bd131ee0b02fc91770506dc3974bfbcd4ccbf26c482cb",
   "input_records": [
     {
       "path": "artifacts/provenance/historical/E02/p01/RESULTS.md",
@@ -48,9 +48,9 @@
   "tests_opened": false,
   "exports": {
     "README.md": "14791fa01260dd380641b55f200ec13da0de0dc0a287c138845d5b72dab5f11c",
-    "figures/historical_timings.pdf": "fd2f74c183a6794a80b15fe98e30f4dd80aa714f22715202c8ad402fdcb874eb",
+    "figures/historical_timings.pdf": "0679b346b097fd068dee6bbf88bac7cd10c2ae39e7c387934938adb934c430bd",
     "figures/historical_timings.png": "7f34a76e31fc889b0ec17ba3b537ce970f2d3dc2c0173b971d2cce1a3d13186c",
-    "figures/historical_timings.svg": "cf644afc2a555479a9c44e7c9f92c359ec261122deceff1464209a70dc785b50",
+    "figures/historical_timings.svg": "2d475e0afd1d9be3abac0b457e34a28a81823773d37246a1837fbfdb255fa8c2",
     "historical_provenance.json": "88638aa22a31cf066b98284623390e770f491323101210550110638776596a28",
     "tables/historical_timing.csv": "c71e17ef087e2b79a35a241edf8891b8405c34a5859993f6e6701629bae27a78",
     "tables/historical_timing.json": "556a1f7c83cf7609f58e986caf004c38f44147fd2c4a0c0ac8d6543a406226a4"

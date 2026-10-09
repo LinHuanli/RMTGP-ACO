@@ -472,6 +472,11 @@ def cpu_plots(directory, cpu_rows, gpu_rows):
 def deep_diagnostics(directory):
     rows = []
     for path in sorted(resolve("E01-p01-work-diagnostics").glob("**/record.json")):
+        attempt = path.parent.parent
+        if (attempt / "job.json").exists():
+            complete = attempt / "COMPLETE.json"
+            if not complete.exists() or not json.loads(complete.read_text()).get("clean"):
+                continue
         r = json.loads(path.read_text())
         if (
             r.get("reduced_budget_smoke")

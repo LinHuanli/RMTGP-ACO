@@ -33,6 +33,8 @@ def resolve(identifier):
     target = ROOT / row["path"]
     legacy = ROOT / row["legacy_path"] if row.get("legacy_path") else None
     if target.exists() and legacy is not None and legacy.exists():
+        if legacy.is_symlink() and legacy.resolve() == target.resolve():
+            return target
         raise ValueError(f"同一产物出现两份，必须人工核对：{identifier}")
     return legacy if legacy is not None and legacy.exists() else target
 
