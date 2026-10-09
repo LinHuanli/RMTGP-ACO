@@ -2,7 +2,7 @@
 
 证据等级：`diagnostic`；实验：E01；协议：p01。
 
-已整理 12 条独立阶段诊断和 0 条完整预算细粒度诊断。
+已整理 12 条独立阶段诊断和 10 条完整预算细粒度诊断。
 
 - 构造阶段包含终端、GP、候选选择和同步ACS局部更新，不等于纯GP时间。
 - 逻辑工作计数不是硬件指令。插桩lane-0周期分布不是整卡墙钟比例。
@@ -12,6 +12,7 @@
 
 ## 图表和原始表
 
+- [detailed_work_and_sampled_cycles](figures/detailed_work_and_sampled_cycles.svg)
 - [tsp100_stages](figures/tsp100_stages.svg)
 - [tsp500_stages](figures/tsp500_stages.svg)
 

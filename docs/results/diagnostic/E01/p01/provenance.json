@@ -1,10 +1,10 @@
 {
-  "created_at_utc": "2026-10-09T14:54:07.039563+00:00",
+  "created_at_utc": "2026-10-09T15:00:39.766994+00:00",
   "evidence_tier": "diagnostic",
   "experiment_id": "E01",
   "protocol_id": "p01",
   "formal_result": false,
-  "script_sha256": "f542dc852daa3b0f4d285665e58e968693a480d4f2feaf8a04b8b69b2da8917d",
+  "script_sha256": "e14fd6a06191a16967061a3cdde8f854e6f87cc1f427c239cc9f29c5b61a705d",
   "registry_sha256": "03113677459f3188a94bd131ee0b02fc91770506dc3974bfbcd4ccbf26c482cb",
   "input_records": [
     {
@@ -54,20 +54,63 @@
     {
       "path": "artifacts/a5000-main-v1/tasks/e01-tsp500-g001-mmas-profile/attempt-001/measurements/generated/record.json",
       "sha256": "e982933d3ddec821ecf8af5fa091e66cfce34df31cc0f3c121777ab40afe4686"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-acs-g001-b000-a01/measurement/record.json",
+      "sha256": "5db4a4cc6d57091cd8ad6cd251c2118c5d510475cf3a50b6f07c645047613f45"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-acs-g001-b001-a01/measurement/record.json",
+      "sha256": "ad1de28008da6c420dff8e5c15a12f0f481c078ea1b0b3906eec876ab02a11a0"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-acs-g001-b002-a01/measurement/record.json",
+      "sha256": "ff41fc92a581f6d9cbb6a40d231f983f5883774693b0016ebbc9a595f94bc212"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-acs-g025-b000-a01/measurement/record.json",
+      "sha256": "a7a0d63455729cd719fa59020c9230bcfdeff0eef781ba31d0b4b7cce1194841"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-as-g001-b000-a01/measurement/record.json",
+      "sha256": "4923d8b40090660722950cf138c69b470e754d5cde596d7e1b33d09e26e6ce00"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-as-g001-b001-a01/measurement/record.json",
+      "sha256": "a3e2d324ffd3124302937a201f8c940094755e610552b52bcb5b2a5460eddd33"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-as-g001-b002-a01/measurement/record.json",
+      "sha256": "1434283705cb47dd75b0dac6cf031bf0ee0354643a0fd9635f54e74397a06bd6"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-mmas-g001-b000-a01/measurement/record.json",
+      "sha256": "f70f2ed18f74f0307deef6dd96e87c76e42b53400a037a5b93887fb14703d266"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-mmas-g001-b001-a01/measurement/record.json",
+      "sha256": "77510abf2e5641ee06aab1f96d9654da72d3630308f7a6e89c4eb79a73854a26"
+    },
+    {
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-mmas-g001-b002-a01/measurement/record.json",
+      "sha256": "3bc0bf5278fcfa07c1a3127efbdd54dd99943dd25beb51024a5beb64bd9638c2"
     }
   ],
   "filter_policy": "显式登记来源；已完成且未检测到争用/监测错误；smoke与历史协议不进入当前测量；不同split分表",
   "tests_opened": false,
   "exports": {
-    "README.md": "63a3ae061d4d71587076d0892a5d916d4991bb20666b6825632b1888b3213f3e",
-    "figures/tsp100_stages.pdf": "261b52345d1f0260657808e33f0b318822edf14fad72d2669a44f46c457bad28",
+    "README.md": "894517b89a913be5abf680583d0243324b34c4c269b175e4a8b5f2c182cc2bbf",
+    "figures/detailed_work_and_sampled_cycles.pdf": "20d12e9f4dfa2a56727afb94484e202ba66db890c0103ecb79fa50dd16886554",
+    "figures/detailed_work_and_sampled_cycles.png": "f2247a3596a5960de2656d522e00a964966da98ea304c8fe351e24ac8a6fbc12",
+    "figures/detailed_work_and_sampled_cycles.svg": "a012772f44680b1e7991f3310d78f8a63171a3fbd39fdaf805bf81452b42ba78",
+    "figures/tsp100_stages.pdf": "9fe5090ccf3df3786eede84cdcfda22248b595a4e886141891ee97cc66e31e9c",
     "figures/tsp100_stages.png": "9b0582ea89cc39416d1d1fee0182b202e2d6b52ae902a0b538eb711d4f95470e",
-    "figures/tsp100_stages.svg": "8ee1d2db5b18ae4e8cb39439b2ed0bdfa3dfdfaf26fb960746eb16d03d01cc4d",
-    "figures/tsp500_stages.pdf": "44f9ba8526047055d2fcb67ee5f32854259ee383f0206cb3ed4d5cc314aa7468",
+    "figures/tsp100_stages.svg": "772a4c618e3e37bd03f0f4ec09c2f226ad25b5a9d8e308d50c58abe66940661a",
+    "figures/tsp500_stages.pdf": "07365c523c3b2c83840074719af7c57451f25f719121756f6c956d7ba841e512",
     "figures/tsp500_stages.png": "d6cf0ac452b3d6ddfc8d516a09628a55793fc8afe5c95d5557cde5ff5afb0571",
-    "figures/tsp500_stages.svg": "18b7a06e2051dd83e1bf969d712dd262e10fa9d9b83b99e12d51f637034f68c3",
-    "tables/detailed_diagnostics.csv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "tables/detailed_diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "figures/tsp500_stages.svg": "90e7f097ba405b55ff9419d9717fb97206a2e0ca72dba286aafcbb0cdd7490b1",
+    "tables/detailed_diagnostics.csv": "9bc5cea04c67eb4f6e9f0f3af44b8ab33d7994fdbc395ef019b6225147c5685e",
+    "tables/detailed_diagnostics.json": "2f6cc1127ed831f16463c0d152d5179defff6d2591896d63c8b7b0009db24206",
     "tables/gpu_stage_profiles.csv": "0694942a5931fedd63733a3c8a2fccdb866f13c22e1cb6c82824c624c5e7f6f2",
     "tables/gpu_stage_profiles.json": "8b181748fbbc0a503a2f38739f245b1acc3779329736d8f645bc62a728dd9f65"
   }

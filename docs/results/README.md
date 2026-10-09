@@ -11,6 +11,8 @@
 | 功能验证 `smoke` | [验证记录边界](smoke/README.md) | 说明验证位置；不合并成科研结果 |
 | 管理状态 `status` | [产物盘点和迁移状态](status/storage_inventory.md) | 路径、用途、规模和迁移例外，不等于实验完成状态 |
 
+后台队列、GPU分配和最近一次核查见 [运行状态](status/execution_status.md)。这是带时间戳的管理快照，不是实时仪表盘或科研结果。
+
 ## 运行中任务的位置
 
 - E09／p01：AS两规模×3根种子×50代。原始运行仍在 `artifacts/pilot-v1`。

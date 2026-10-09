@@ -95,6 +95,8 @@ python scripts/report_hardware_pilot.py           # 从已完成记录增量汇�
 
 ### 持续利用空闲 A5000
 
-`scripts/a5000_pool.py --execute` 启动项目内nohup调度器，每60秒使用 `gpu-free` 扫描并复查空闲RTX A5000。队列包含两个规模、三阶段真实种群和三ACO宿主的GPU基线配对与独立诊断；缺失cohort自动等待依赖，不占卡空等。已有50代训练及跨卡先导保持原样。详见[持续队列协议](docs/design/06_a5000_continuous_queue.md)，实时进度与图表位于 `artifacts/a5000-main-v1/summary/`。
+`scripts/a5000_pool.py --execute` 首次创建项目内nohup调度器，每60秒使用 `gpu-free` 扫描并复查空闲RTX A5000。队列包含两个规模、三阶段真实种群和三ACO宿主的GPU基线配对与独立诊断；缺失cohort自动等待依赖，不占卡空等。已有50代训练及跨卡先导保持原样。详见[持续队列协议](docs/design/06_a5000_continuous_queue.md)，实时进度与图表位于 `artifacts/runs/pilot/E01/p01/gpu-baselines/summary/`。旧 `artifacts/a5000-main-v1` 只作历史地址兼容。
+
+另有 `scripts/diagnostic_pool.py` 管理的54项完整预算细粒度诊断，协议见 [09](docs/design/09_diagnostic_campaign.md)。两个队列均已启动，不要重复创建；原始调度状态和最近核查见 [运行状态](docs/results/status/execution_status.md)。新增科学记录只写登记的 `artifacts/runs/<tier>/<E>/<protocol>/`，不再创建任意顶层实验目录。
 
 启动当时的控制器与GPU清单见[历史启动记录](docs/results/status/snapshots/2026-10-10-a5000-queue-startup.md)。实际进度读取队列及心跳，不能从历史文档推断。

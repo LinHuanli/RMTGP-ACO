@@ -56,13 +56,13 @@ source scripts/env.sh
 python scripts/a5000_pool.py                 # 查看冻结任务规模，不启动
 python scripts/a5000_pool.py --execute       # 首次创建队列，并nohup启动持续控制器
 python scripts/a5000_pool.py --execute --resume  # 仅控制器已退出时显式恢复
-python scripts/report_a5000_main.py --campaign artifacts/a5000-main-v1
+python scripts/report_a5000_main.py --campaign artifacts/runs/pilot/E01/p01/gpu-baselines
 ```
 
 控制器和worker均来自项目内已提交的不可变快照。所有缓存、扫描输出、结果、图表都保存在本项目内。`STOP_DISPATCH`文件存在时仅停止新派发，已开始的任务继续运行；再次恢复需明确撤销该文件。
 
 ```text
-artifacts/a5000-main-v1/
+artifacts/runs/pilot/E01/p01/gpu-baselines/
   campaign.json, queue.json
   dispatcher.log, dispatcher_status.json, dispatcher_events.jsonl
   scans/                             # gpu-free原始快照
@@ -74,6 +74,8 @@ artifacts/a5000-main-v1/
     measurements/{generated,interpreted}/
   summary/                           # CSV/JSON/Markdown/PNG/PDF
 ```
+
+2026-10-10已在没有测量worker运行时暂停控制器并物理迁移。原 `artifacts/a5000-main-v1` 保留为兼容软链接；原manifest、commit、科学预算和历史job路径不改写。迁移前后逐文件SHA核验记录在 `artifacts/operations/migrations/E01-p01-gpu-baselines.json`。
 
 ## 5. 尚未自动解锁的研究部分
 

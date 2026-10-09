@@ -511,7 +511,7 @@ def deep_diagnostics(directory):
     export(directory, "detailed_diagnostics", rows)
     if rows:
         fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
-        labels = [f"{r['n']}/{r['variant']}/g{r['generation']}" for r in rows]
+        labels = [f"{r['n']}/{r['variant']}/g{r['generation']}/b{r['block']}" for r in rows]
         x = np.arange(len(rows))
         for index, field in enumerate(
             (
@@ -539,10 +539,14 @@ def deep_diagnostics(directory):
         totals = np.asarray([sum(r[f] for f in fields) for r in rows], float)
         for field in fields:
             height = np.asarray([r[field] for r in rows]) / totals * 100
-            axes[1].bar(labels, height, bottom=bottom, label=field)
+            # 独立随机block使用数值横坐标；重复类别字符串会把柱子叠在同一位置。
+            axes[1].bar(x, height, bottom=bottom, label=field)
             bottom += height
         axes[1].set(
-            ylabel="Instrumented lane-0 cycle distribution (%)", title="Not device wall-time shares"
+            xticks=x,
+            xticklabels=labels,
+            ylabel="Instrumented lane-0 cycle distribution (%)",
+            title="Not device wall-time shares",
         )
         for ax in axes:
             ax.tick_params(axis="x", rotation=45)
