@@ -1,0 +1,29 @@
+protocol: single-tree-fp32-v1
+stage: pilot
+scales: [100, 500]
+root_seeds: [1001, 1002, 1003]
+formal_root_seeds: [2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010]
+variant: as
+population: 100
+generations: 50
+instances_per_generation: 32
+aco_repeats: 1
+ants: 32
+iterations: 500
+candidate_size: 20
+max_nodes: 31
+max_depth: 5
+initial_depth: [2, 4]
+crossover: 0.80
+mutation: 0.15
+reproduction: 0.05
+elite_fraction: 0.10
+tournament: 4
+validation_interval: 5
+validation_candidates: 5
+validation_instances: 128
+validation_aco_repeats: 3
+standard_test_counts: {100: 1280, 500: 128}
+test_aco_repeats: 10
+result_cache: false
+automatic_final_test: false

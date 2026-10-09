@@ -1,0 +1,9 @@
+backend: cuda_existing
+candidate_lanes: 8
+active_tasks: 3200
+generated: true
+single_gpu: true
+gpu_selection: uuid
+cpu_host_threads: 1
+profile_in_timed_run: false
+exclusive_device_required: true

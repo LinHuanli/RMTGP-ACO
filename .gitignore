@@ -17,3 +17,16 @@ __pycache__/
 *.nbi
 *.o
 .DS_Store
+
+# 本研究的环境、派生产物和编辑器状态均留在项目内，但不提交大文件。
+/.envs/
+/.tools/
+/artifacts/
+/.vscode/
+*.egg-info/
+/build/
+/dist/
+
+# 小型、可复现的数据划分与校验清单进入版本管理。
+!/Datasets/splits/
+!/Datasets/splits/**

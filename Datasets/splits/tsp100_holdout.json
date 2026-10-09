@@ -1,0 +1,659 @@
+{
+  "schema_version": 1,
+  "n": 100,
+  "split": "holdout",
+  "count": 128,
+  "format": "npy",
+  "distance_convention": "continuous_euclidean",
+  "reference_type": "user_supplied_optimal_tour",
+  "optimality_certificates_checked": false,
+  "arrays": {
+    "coords_fp32": "3a76c065f3d877607d1814ce28ecd9565fe4749d35984b5c13029e7c448dc373",
+    "coords_original": "5c1677b9731ae6c09563d7610650c5bf1b12fc888679aca1e8272cde8a3fa8b2",
+    "reference_tours": "5b26ddba2eeb50923b9a368e9ceb734517550f64ec2a5dd401e194a50342507a",
+    "instance_ids": "daea3345ac60fda56c1c9d46a9b4a04c4decb23767555ebae6b4bbc0a44496f5",
+    "reference_lengths_original": "3e34a66d4c04cdf6297e97b26084900c72c69de5ea96b6b6c88515156f2d17fa"
+  },
+  "instances": [
+    {
+      "id": "0c315dd9488a117b3b85ae2c3ce95c947205d9423c0e6ff61314396beb42e4ea",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 55870
+    },
+    {
+      "id": "335540e00cc549ff1a6eb8f8fa1360285344d570bf1fa8c0bd1014299b192313",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 61053
+    },
+    {
+      "id": "8abdc1bb896db32a04916549b57a30bd6dfa4bf911f3750be9bbbc628d3bd451",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 118235
+    },
+    {
+      "id": "c94adc40a2327700c17614d3d0e73a43fdfa39077955cb114f39a411aa7a2d4c",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 44860
+    },
+    {
+      "id": "f992860fb57bf03de3901a5b2ebcd6f458aa7b67807408d90e70ec0357550c68",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 70535
+    },
+    {
+      "id": "bd642ca8752b523cd838241592f685de83085f67eaac05ee162ef8e6e253f46d",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 30494
+    },
+    {
+      "id": "3f95e35e829705cec1f8bcae843c6d397c0b658621806dee8348a7202c10221c",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 16187
+    },
+    {
+      "id": "0bb5e323837017cf119532a59a75844d33ebd789018124ac9087d5a554f2aaa0",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 53766
+    },
+    {
+      "id": "fce1acd325d2012207986c05040a268b7e8e8a54be1c884ddcc298a81e9e2185",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 87740
+    },
+    {
+      "id": "947d6b13d3ab81eb8cec639f79ce5ab2f3e7af832b639da62ec9109849d5051b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 73248
+    },
+    {
+      "id": "0a2dd6081da894d453859e1bbabe8c7e9a98d14139176a08658aacef15f30cbf",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 53423
+    },
+    {
+      "id": "091f6745430a24919fe65a5dc95aecaf92c5c3f8d4fa065b5f922411f1ef3e95",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 88179
+    },
+    {
+      "id": "0f22a1eb233616a8dbbe0fb4773673fc9ac3505d367edb2c14773c00b98d1942",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 2641
+    },
+    {
+      "id": "467e7cd06b9c66e2bea8ed151e8050cf098f0145c3dc2739374b668f66e1bb52",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 88552
+    },
+    {
+      "id": "1984c3d714a5e5dc00b54dc056a0d596c5ffe2db0386e03735e5c5900809ff19",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 125584
+    },
+    {
+      "id": "285d29178a72dc7bc4d66ecd7cfe8b043a521815c8056528823eff487e47bf3d",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 104861
+    },
+    {
+      "id": "17844ef10d290bc126c3e5349dbc447d1dfc835e64f3adc719f5655bb67b62cc",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 125505
+    },
+    {
+      "id": "90ec6a693f25a8083117f71a4f51d91a764e10872e3c2bc06597c836b7cd0a6b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 120686
+    },
+    {
+      "id": "fa8fa05334c9fda8db6279c16f912cc18161ff6d88cac74db9c4672de7f2dff5",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 109937
+    },
+    {
+      "id": "2103c8af468b9e45e338fb133f0a9e01139acaef1ab1c74e925dbe1bf5aa327f",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 44735
+    },
+    {
+      "id": "a424ff7b7be66a89f29d56ffa4bd4c366d7ec915e6500774bbff76e51a57d41a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 52673
+    },
+    {
+      "id": "3eda953b83406085063937756307254b7336eda9216f802452e7dcb7b82e2e42",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 2765
+    },
+    {
+      "id": "457c72ab487bb48586e7ab471a3214eba02036c187644d241401d40961f84e71",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 85550
+    },
+    {
+      "id": "0908cfc4688d901c1886847c524d6f73481a0199b4fd48aae9087db1ed22619b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 16932
+    },
+    {
+      "id": "c91df50ad100678dddf874cbcd2e71293f8f805356da4dbdcc43dc30f3185cee",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 83893
+    },
+    {
+      "id": "4c4984bb2cd82ccd456880eda46f8324ad85a30f2955864c1f05443bd28bd2c7",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 82597
+    },
+    {
+      "id": "d9c6c5b8dfe00bc6118fb50e2227e7c5a2d514e1931966c366279bce9799867a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 11312
+    },
+    {
+      "id": "82bdce7430f59c27f029de23eaf4f24d42919308b2ae008d3b2b8cef5b881570",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 4798
+    },
+    {
+      "id": "e7b4ffe2beaf14c0558a84e15af60ff6923f7f626d76737fa20e6b7775af956a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 47419
+    },
+    {
+      "id": "f6f9e5fec19aa416302385bc618d96fcfff557e542de3b4fb9f9799d31c62e9a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 127610
+    },
+    {
+      "id": "47aab4651b1e81636bcd0981222874ff9a93d3375c2cba9b7fe62cfda227758e",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 74881
+    },
+    {
+      "id": "7651f5af4581e54f7ff9cb74367c41a2ff35beb496c0a79235b55f014c0c688b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 113089
+    },
+    {
+      "id": "4f0f391c2de4a4e2dce8e2ce65c3d5ad4462fca567632fcd6710006fb382f8b1",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 90100
+    },
+    {
+      "id": "637f2804b15c0b349cc9f9dba1793c0affdc8c5b01a7f3254179762f44d2449b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 20472
+    },
+    {
+      "id": "67907219072fb413bd692af29a862ff060afc01c89cdafec6ec7b6efff65a820",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 104712
+    },
+    {
+      "id": "fe449d73646bbcf6314aaad9d67cf4af1200c858d8c5c5f756567c7a763b2d1a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 61717
+    },
+    {
+      "id": "2ad7dba7617bf2fd9189874124c5e2cbd2ca11fdc4bb7aac93171c38c3b157d6",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 4996
+    },
+    {
+      "id": "82ad3bfd61a718809b5d150b76ef06c5db8c0f93b8da2c6b8749b214b7d012d6",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 93046
+    },
+    {
+      "id": "bdc1988880654c834d89df8603859987169c5b18d2f3e18d07722d08884bde24",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 45974
+    },
+    {
+      "id": "d31e91c30d059a1a2ffad254e266d44da40255978800e18e77a6c1ac1df16e66",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 104543
+    },
+    {
+      "id": "e36807fafdeacae9badc38a407e069b0ed9097feb85715e1402cd9af49acaeea",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 44871
+    },
+    {
+      "id": "76eebf1318e78521507d45eee55c3cb01239d6c11d2df4f2afb74ddc615c3b45",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 3356
+    },
+    {
+      "id": "a109af805773caf67bbbe7de607e0de055b59cddac0518b3e68b7a5fc7ba7ed5",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 61252
+    },
+    {
+      "id": "a8be61073974ce3f423beaf7a744fb3dcd973d3770ffc456fbc3a21291b2b074",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 2875
+    },
+    {
+      "id": "eb3c3ccbbbb5b30fdf83c39e7a88a86252e2b5d46c7d4fc1803d3cb1fa29e114",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 41418
+    },
+    {
+      "id": "ff88b7521036a6f88c5db3e7e48166aab9337fc364e64cc07bdc6edfc5dabb8b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 56995
+    },
+    {
+      "id": "b28aa3bac5b2b2d72b740d6e044e7e77038dd65752602436d898ca9d02a84432",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 111229
+    },
+    {
+      "id": "ba61c867130218535079bf9240175192660351a8f2fadb0fcc258a30ac8944b9",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 18153
+    },
+    {
+      "id": "aaa0e4fb95c59946a286cf85e83cd3e52048d24b8e1b1f0cf1df96ca5061ab7d",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 126517
+    },
+    {
+      "id": "23b050d6b3b1d17870aa50c983680c3a84fc9c3529ff65d7bfe58198d07b9e97",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 127811
+    },
+    {
+      "id": "9bab217b76a628f324209fac4b1536fe2d1a9d319257643065df30eb80fdc353",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 99038
+    },
+    {
+      "id": "00d2bf51a4b11fed157c358665d7f153d244faaba616ec0a13a13223d5768897",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 574
+    },
+    {
+      "id": "1cb082931824776a70d8a482d894500689fda30838d2561540eef9c95bd74b0c",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 3558
+    },
+    {
+      "id": "f0ea2a15b4b7e2da61ae8c43507bedb99f9e0677a49ca508ee9a7c8b290ae2b2",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 32031
+    },
+    {
+      "id": "6859cb629550dda1c49195481c34ab7ae4f337c50cb1d93bc2305d529c89c611",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 96346
+    },
+    {
+      "id": "37129b6d1c362e8e9e029f5ff0228a8a0f1549b9fb270a314ad09789638656cb",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 79952
+    },
+    {
+      "id": "306626cec17abf4d30c96ef2430596322938d4294feed1137f1a1ede1a0afab9",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 31902
+    },
+    {
+      "id": "f862b3ba1366bb7bc744ed04ee91f6999c1ff88082f69b1c0ababea0aee4fd87",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 88392
+    },
+    {
+      "id": "4fb378475c42b471bd0d4e2bf3cf60602923bfdb2a2e2c08d3f412198e3ea48a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 56612
+    },
+    {
+      "id": "4abce23b66b5923f92e0f2ae88657d9fa7b0882f2d28e9ba2df698028cf5eb21",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 64768
+    },
+    {
+      "id": "a642979588ee4684a4e8783ac0a7b4f4f45cfeb7d0fed05ea528aee54fe4fb04",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 68987
+    },
+    {
+      "id": "50d7b81dc45936b4b94f4dcc38fee0104992002ec6fbf37b3c1086bc620fc4f2",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 44318
+    },
+    {
+      "id": "9eff7e33931cc98913c176fed3ac3b2ec0a067c964dbc802edeb7c5519f4655d",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 18723
+    },
+    {
+      "id": "5d41aa09fd0e27d54f90c764722f2e59e83c7e26a759255c1578330a105da739",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 31664
+    },
+    {
+      "id": "e353fd71b73d546dde6dcd32f0c3784eab55f9a0d24e7265a285b483ccc3d44a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 104247
+    },
+    {
+      "id": "761ed3a0dd0c97d2685af446a786fefeb58f9c4b5ecd66aaf715d4fc86ac9dd4",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 59038
+    },
+    {
+      "id": "12d778edc4c6687c9bd9a50d3d0dd86eb33a93267cb53743559fcbec1f210315",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 19934
+    },
+    {
+      "id": "ce18658889823d7d20a48bd4a2465cc1c27c7e31661d26a93de6c0ff5e3c016e",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 42851
+    },
+    {
+      "id": "42cb7d5807d52ccdb5fbd955a1dc26a9f04226c98028067848872c3f28384faf",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 1830
+    },
+    {
+      "id": "a43578e18d9423cce6b3e0e1e77fe3a8dcc07557a5656b791ff2d588ad6ce8b4",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 61515
+    },
+    {
+      "id": "5d579454b29afe49bd551fdecd1f88c4227a7526ca16229be6155f11412ec83b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 73345
+    },
+    {
+      "id": "2edc87743b9c600d43fb6a27d5f37a57d4c12b1e446106ea7e4cf5f3fb2e186e",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 47336
+    },
+    {
+      "id": "c41997faee87ea4ce9a3454f0068814ea12640b964de05b38d5a93ee29cd369c",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 58778
+    },
+    {
+      "id": "267fa6952c0de0797e0b040ad0415918eab0d744e39f09cc5db9b80f5c248e92",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 27142
+    },
+    {
+      "id": "ba5c030e987a1593c43c41dc854f9c6990a9c197d4021340e5b58c1f5836ac45",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 58510
+    },
+    {
+      "id": "1deb02ba7e0467107442c0dc7d2478b4fba010cde3d5c1e47bbf02da0e233c11",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 119461
+    },
+    {
+      "id": "3459d6a69fb6a193d9008fb1e4543c33cc9b6b127cd95ba4c2f9516183842a74",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 40266
+    },
+    {
+      "id": "3274655aac60dafeebfcd770d54d8ea60091e1a1f7fd61669a21ff6b9590f210",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 86397
+    },
+    {
+      "id": "4a11f6e09e2538707ef4be8d73c439a5d238e3db3a4592127bf2949dd8bbc479",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 29521
+    },
+    {
+      "id": "0458b389b45fcccdda6fea25622bc923f83015f40344cad9b7d41bee3a510bf6",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 38277
+    },
+    {
+      "id": "95a62623ad9d03334d8bbc02ae5b3f4b62dae35f5eb086b3ae8fe535d7668935",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 69601
+    },
+    {
+      "id": "0f8d461a7977d54b2fa19169f1ff16a9805a7253c5a13780d6ce0773027ba03b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 20191
+    },
+    {
+      "id": "b26cc80c3324112456e1517d11761c45b9a9ace91305b5d0b3169fc4bcf31b38",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 101794
+    },
+    {
+      "id": "2e414cf4db73b5d36592ae1e832fdb50214bdb39cc6f634268a70360dbe17594",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 95399
+    },
+    {
+      "id": "55658d785ec1a029f684e5ca0bef70223557b3487a2fb881c630b57040986d2b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 75165
+    },
+    {
+      "id": "57c0286df1c7e00995f2c76d94fea3e3547363b8381f27afd66a710573b6d5bf",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 89560
+    },
+    {
+      "id": "8fd6dd01f0c2ba396937ad62ad838714f931f0a0bab14a452a004c4768ae5d4e",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 57216
+    },
+    {
+      "id": "c20a85ab576972cca22db83664ce1c42c176bf64078b783ca39a94117b033645",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 39914
+    },
+    {
+      "id": "fc97cd6adef3f9616e9ba4a55cc752382f2e00fc7f8eb73f55ff87fba794b886",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 79080
+    },
+    {
+      "id": "896988efaafbb75dbfba9fe0dab7ea961c2942f8a160148f0af8ec0e9585f5d2",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 93566
+    },
+    {
+      "id": "6ab1482804ddfb2c01f730dce5f3fdeb1f721137fb73d77785fafbc8db5248dd",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 50708
+    },
+    {
+      "id": "8b9ea2726e83595283b6e2a13dbe0591bfe6e0ef6bf23de43718c589ed89b540",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 13532
+    },
+    {
+      "id": "7b8b1b75639af7e3ea9bdf380dc3235355059d9ccbc8d8275d49e92c65e9c918",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 16952
+    },
+    {
+      "id": "d6996a250444f75291269e3cee90edc11cfe83b13519cb328a8236979084fd11",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 78548
+    },
+    {
+      "id": "069aa2dc8682a4da8b8a25d6132d9e167923517a329b8a5391ddf0e6a1cfe107",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 96291
+    },
+    {
+      "id": "9fd2641f1ea0f7827261267e97fcb4d33fa856120d536133ec0495cc7149b37f",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 45745
+    },
+    {
+      "id": "b49859e644deae6a0ef1b25670f1c11a8af67e699b5dd8b4a4b60a073f994dfe",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 49123
+    },
+    {
+      "id": "8fd84142ac0bb995c41c92a5e76f0cd2e9ba8a8dc23f155ab367dc0f49c7511f",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 43622
+    },
+    {
+      "id": "a304d29f0eca6bb24fc46e3c8f7f81c380ee1e371ee8428e9de9dc504aa8b369",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 40567
+    },
+    {
+      "id": "da8ebcfbe79592265dfef4533aef0e137fb8a275b46e9ce2bc26c9ee18c33d4a",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 78342
+    },
+    {
+      "id": "3265997e7a147f5858eab6df4d6210695b336f18ff13a7045d75b58b3e467475",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 76299
+    },
+    {
+      "id": "f3703745e8969011346b30b212f5635b20e0eeeec736b3af3fa874048ce1d953",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 60363
+    },
+    {
+      "id": "5214a81cf1567a47d24e898a9b2d7e284a767587ddb8b5d533528785c62f19ac",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 66925
+    },
+    {
+      "id": "600e01656029e1176983b56f73f71be888a33fcdffdb3affeacbdc6110d5fdcd",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 25739
+    },
+    {
+      "id": "e6b7a47f0fd9cfd4ec869f51e37bef386aa87884bc5e7fdb98fc313de2cd59d2",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 91448
+    },
+    {
+      "id": "9f4ea1fa19487ae43f4b2f0c33e01d861386b3346c92de5f06d1f63cf3ab5c6c",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_7.txt",
+      "line": 97126
+    },
+    {
+      "id": "2b56fec10fb111a0897a70b49544296ea1b56f3c3ba8a909886d365e26efed45",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 104272
+    },
+    {
+      "id": "931e9019a68c1947b00861dcf7f3d95f6df9072b88a76ac46a94679d993fe5e4",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 61159
+    },
+    {
+      "id": "eccf8246932fbe92d4672744330e1dc4508bc4581b56c0f97eb0dabf8b1a6e07",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 69837
+    },
+    {
+      "id": "c609f26a8e5b6e1548b996cf71217f092fd5ac23f1c960c90d687e6e7262b0b7",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 61381
+    },
+    {
+      "id": "a28e28e1fe2182bb374c1ff8e9a2e95ff20d8616d191a2bb1559c5905af26283",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 125692
+    },
+    {
+      "id": "cae0e35149c83db12644358f067267982b3d3d79bcb92a807c21bfa06ff36139",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 82104
+    },
+    {
+      "id": "eb02db269204e47971c21fdcb3ce93be0f096f09a341138dd2d846c62f618983",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_2.txt",
+      "line": 110894
+    },
+    {
+      "id": "cd21a5f655d57c8d630c5e853449ea708ef7eea5e8a07b9fcd41badc1f0b9d05",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 57705
+    },
+    {
+      "id": "9391ffd11239ae20154079fb10092883ff800b66ae87ab986cff0671fa71f653",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 112183
+    },
+    {
+      "id": "466042ef02116466a9c982eb6689d569b156c8c82d4a870d63be61738ede66f7",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_8.txt",
+      "line": 2967
+    },
+    {
+      "id": "cd07952900ce53bc1c55edf06fccc80fda71c37350029d8ab8a9fd6a9251d05b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 2528
+    },
+    {
+      "id": "d36c2c41e2cf22ab7bc144b77bc2827ccc35b1cc98a7907683a18df7782a02ac",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 97606
+    },
+    {
+      "id": "9d340bce4a6b46b131fe96d333f3bf2b4077ca3159aba3070e22e375dd9f4bdb",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 54999
+    },
+    {
+      "id": "eb5916369b5c90fbac119fa5c93e65e1f3fe3477e4ed8d2bf3ac3a7cd5b3058f",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_3.txt",
+      "line": 78732
+    },
+    {
+      "id": "90e5d379b42d8e2555e61ded91a2dd945d7c7c252027817f8509658b15901249",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 85764
+    },
+    {
+      "id": "af3cc186d94e27c9ebafcd357eb1aa6fbf58881f7a6d7d89aecf576fde128976",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_6.txt",
+      "line": 30920
+    },
+    {
+      "id": "e6495e74ec12a68d60e84d6b3503c2c8d361071a1059a5a2a597565fdf8fc633",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_5.txt",
+      "line": 112616
+    },
+    {
+      "id": "ff16000c667351e172c2dbff7c7898ab4ba4300dd0b6e12b94bc2f9e84a02ac6",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_1.txt",
+      "line": 103762
+    },
+    {
+      "id": "4edad082a0e460440091bdf2ef9c9864182c05fefd2537aec3f7d5c5a9fe310b",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 50581
+    },
+    {
+      "id": "806a9ceb101feebde6eea723efb8801037281ee1d143d2440a5e1b633def0ede",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_9.txt",
+      "line": 39515
+    },
+    {
+      "id": "e04a1bd3c5930e4f986b0fcd96bc0e46947c11706c1ee23b10255f5d22764ba8",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_10.txt",
+      "line": 101252
+    },
+    {
+      "id": "c55ca6a6f63dcb430d1690f8a896b854c4db628eba6866cd96ecf6bda32487ed",
+      "source": "Datasets/TSP/train_dataset/tsp/tsp_100/tsp100_uniform_128k_4.txt",
+      "line": 30323
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+protocol: single-tree-fp32-v1
+source_commit: 2b847698225e1d0fff36a25c1015a080350a7f00
+search_dtype: float32
+fitness_dtype: float32
+distance: continuous_euclidean_from_fp32_coordinates
+candidate_order: [distance_fp32, city_id]
+fallback_order: city_id
+fallback_selection: first_argmax
+roulette_comparison: cumulative_ge_threshold
+q0_comparison: uniform_le_q0
+protected_division: a_times_b_over_b_squared_plus_1e-6
+primitive_sanitize: {nan: 0, posinf: 10, neginf: -10, clip: [-10, 10]}
+standardization: shifted_two_pass_population_variance
+standardization_epsilon: 1.0e-8
+numeric_epsilon: 1.0e-12
+random_generator: philox4x32_10
+random_key: uint64_namespace_seed_xor_unique_instance_key
+random_counter: [uint32_iteration, uint32_ant, uint32_step, uint32_purpose]
+uniform: high_24_bits_times_2_power_minus_24
+random_purposes: {initial_nn: 0, ant_start: 1, acs_greedy: 2, roulette: 3}
+common_random_numbers_across_programs: true
+alpha: 1
+beta: 2
+gamma: 0.3333333333333333
+pheromone_learning: false
+local_search: false
+acs_synchronous: true
+as_deposit_reduction: increasing_ant_id
+fast_math: false
+fma_contraction: false
+online_fp64_rescoring: false
+fitness: mean_100_times_length_minus_label_over_label
+terminal_type: TrField
+logical_candidate_shape: [task, ant, feasible_candidate]
+broadcast_scalar_shape: [task, ant, 1]
