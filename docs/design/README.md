@@ -12,6 +12,8 @@
 
 新增：[完整预算诊断持续队列](09_diagnostic_campaign.md)：54项预登记任务，按真实cohort依赖自动接续，不混入正式计时。
 
+新增：[正式基线前置执行与映射补充](10_formal_baseline_and_mapping.md)：按最新授权提前执行已冻结的20次E09 GPU-Existing正式基线，并行18个E07映射配对block。完整方法对比和标准测试仍未解锁。
+
 | 文件 | 内容 | 使用时机 |
 |---|---|---|
 | [01 研究总计划](01_research_plan.md) | objective、motivation、goals、研究范围、具体方法、实施阶段与贡献边界 | 确定研究主线，安排实现依赖 |

@@ -81,7 +81,8 @@ def test_uncertain_worker_does_not_create_duplicate(tmp_path, monkeypatch):
     assert not (tmp_path / "FAILED.json").exists()
 
 
-def test_startup_rejection_and_contamination_are_different(tmp_path):
+def test_startup_rejection_and_contamination_are_different(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool, "validate_diagnostic", lambda *args: None)
     item = task(tmp_path)
     write_json(tmp_path / "REJECTED.json", {"scientific_work_started": False})
     pool.reconcile([item])

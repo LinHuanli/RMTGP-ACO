@@ -4,8 +4,9 @@
 
 | 证据等级 | 报告 | 当前用途 |
 |---|---|---|
-| 正式 `formal` | [正式结果状态](formal/README.md) | 尚未开始，不用先导结果填充 |
+| 正式 `formal` | [正式结果状态](formal/README.md) | 已登记20次GPU-Existing训练；完整方法对比未完成，不用先导填充 |
 | 先导 `pilot` | [E01／p01 基线](pilot/E01/p01/README.md) | ACO质量基线、GPU无插桩性能、CPU六组覆盖 |
+| 先导 `pilot` | [E07／p01 固定映射](pilot/E07/p01/README.md) | 候选lane与活跃状态上限的同卡配对，不在holdout选择计划 |
 | 诊断 `diagnostic` | [E01／p01 瓶颈证据](diagnostic/E01/p01/README.md) | 阶段、fallback、逻辑工作量与资源；不是正式加速比 |
 | 历史 `historical` | [E02／p01 历史协议](historical/E02/p01/README.md) | 旧双树FP64实验，只作单独复核 |
 | 功能验证 `smoke` | [验证记录边界](smoke/README.md) | 说明验证位置；不合并成科研结果 |

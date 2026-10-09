@@ -13,6 +13,7 @@
 - [五类GPU先导协议](docs/design/05_cross_gpu_pilot.md)：统一冻结输入、硬件调优、留出性能、3-seed短训练及规范冠军审计。
 - [六组CPU基线与独立诊断](docs/design/07_cpu_baselines_and_diagnostics.md)：无JIT／Numba的1、8、16物理核入口、历史复用边界、工作量计数和状态重放。
 - [已有基线与图表](docs/results/pilot/E01/p01/README.md)：普通ACO、当前CPU覆盖、GPU吞吐／显存／能耗；插桩和历史结果另册。
+- [正式基线与映射补充](docs/design/10_formal_baseline_and_mapping.md)：20次独立正式基线训练及18个同卡映射配对block，原始数据分别登记。
 
 ## 目录
 

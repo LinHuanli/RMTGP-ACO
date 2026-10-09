@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 from a5000_pool import confirm_idle, scan
 from launch_pilots import remote
+from queue_state import reconcile_tasks, validate_diagnostic
 
 from gpaco.artifact_registry import identity, resolve
 from gpaco.benchmark_inputs import BenchmarkInputs, export_bundle
@@ -88,26 +89,7 @@ def worker_alive(attempt):
 
 
 def reconcile(tasks):
-    for task in tasks:
-        if task["status"] != "running":
-            continue
-        attempt = task["attempts"][-1]
-        path = Path(attempt["job_path"]).parent
-        if (path / "COMPLETE.json").exists():
-            result = json.loads((path / "COMPLETE.json").read_text())
-            task["status"] = "completed" if result["clean"] else "excluded_contended"
-        elif (path / "FAILED.json").exists():
-            task["status"] = "failed"
-        elif (path / "REJECTED.json").exists():
-            task["status"], attempt["rejected"] = "pending", True
-        elif time.time() - attempt["assigned_unix_s"] > 120:
-            alive = worker_alive(attempt)
-            attempt["last_liveness"] = alive
-            if alive is False:
-                write_json(
-                    path / "FAILED.json", {"reason": "worker消失且没有结束标记；不自动重复科学样本"}
-                )
-                task["status"] = "failed"
+    reconcile_tasks(tasks, worker_alive, validate_diagnostic)
 
 
 def dispatch(task, device, campaign, manifest, tasks):
@@ -301,12 +283,14 @@ def launch(args):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError("诊断控制器已在运行") from error
-    snapshot = Path(manifest["snapshot"])
+    runtime = campaign / "controller_runtime.json"
+    control = json.loads(runtime.read_text()) if runtime.exists() else manifest
+    snapshot = Path(control["snapshot"])
     env = {
         **os.environ,
         "PYTHONPATH": str(snapshot / "src"),
         "GPACO_SNAPSHOT": str(snapshot),
-        "GPACO_COMMIT": manifest["commit"],
+        "GPACO_COMMIT": control["commit"],
     }
     with (campaign / "dispatcher.log").open("a") as log:
         process = subprocess.Popen(
@@ -327,7 +311,12 @@ def launch(args):
         )
     write_json(
         campaign / "launched.json",
-        {"pid": process.pid, "time_unix_s": time.time(), "commit": manifest["commit"]},
+        {
+            "pid": process.pid,
+            "time_unix_s": time.time(),
+            "commit": control["commit"],
+            "worker_commit": manifest["commit"],
+        },
     )
     print(json.dumps({"pid": process.pid, "campaign": str(campaign), "tasks": len(tasks)}))
 

@@ -9,7 +9,7 @@ from gpaco.data import ROOT
 def test_registry_ids_and_evidence_tiers_are_explicit():
     entries = registry.entries()
     assert len({r["id"] for r in entries}) == len(entries)
-    assert not any(r["tier"] == "formal" for r in entries)
+    assert {r["id"] for r in entries if r["tier"] == "formal"} == {"E09-p01-formal-gpu-existing"}
     assert registry.identity("E01-p01-cpu-baselines")["evidence_tier"] == "pilot"
     assert registry.identity("E01-p01-work-diagnostics")["evidence_tier"] == "diagnostic"
 

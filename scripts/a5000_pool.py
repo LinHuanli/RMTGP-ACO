@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 from launch_pilots import remote
+from queue_state import reconcile_tasks, validate_main
 
 from gpaco.config import config_hash
 from gpaco.data import ROOT, write_json
@@ -188,33 +189,7 @@ def worker_alive(attempt):
 
 
 def reconcile(tasks):
-    for task in tasks:
-        if task["status"] != "running":
-            continue
-        attempt = task["attempts"][-1]
-        directory = Path(attempt["job_path"]).parent
-        if (directory / "COMPLETE.json").exists():
-            task["status"] = "completed"
-            task["result"] = str(directory / "COMPLETE.json")
-        elif (directory / "FAILED.json").exists():
-            task["status"] = "failed"
-            task["result"] = str(directory / "FAILED.json")
-        elif (directory / "REJECTED.json").exists():
-            task["status"] = "pending"
-            attempt["rejected"] = True
-        elif time.time() - attempt["assigned_unix_s"] > 120:
-            alive = worker_alive(attempt)
-            attempt["last_liveness"] = alive
-            if alive is False:
-                # 已启动或启动不确定的任务不自动重算，避免重复样本和覆盖半成品。
-                write_json(
-                    directory / "FAILED.json",
-                    {
-                        "error": "worker 已退出且没有完成标记；需检查原日志后显式恢复",
-                        "detected_by_controller": True,
-                    },
-                )
-                task["status"], task["result"] = "failed", str(directory / "FAILED.json")
+    reconcile_tasks(tasks, worker_alive, validate_main, distinguish_contended=False)
 
 
 def dispatch(task, device, manifest, campaign, tasks):
@@ -447,12 +422,14 @@ def launch(args):
         write_json(campaign / "campaign.json", manifest)
         write_json(campaign / "queue.json", tasks_for(config))
     # 本地控制器也运行已提交快照，不随工作树编辑变化。
-    snapshot = Path(manifest["snapshot"])
+    runtime = campaign / "controller_runtime.json"
+    control = json.loads(runtime.read_text()) if runtime.exists() else manifest
+    snapshot = Path(control["snapshot"])
     env = {
         **os.environ,
         "PYTHONPATH": str(snapshot / "src"),
         "GPACO_SNAPSHOT": str(snapshot),
-        "GPACO_COMMIT": manifest["commit"],
+        "GPACO_COMMIT": control["commit"],
     }
     with (campaign / "dispatcher.log").open("a") as log:
         process = subprocess.Popen(
@@ -473,7 +450,12 @@ def launch(args):
         )
     write_json(
         campaign / "dispatcher_launched.json",
-        {"pid": process.pid, "time": time.time(), "commit": manifest["commit"]},
+        {
+            "pid": process.pid,
+            "time": time.time(),
+            "commit": control["commit"],
+            "worker_commit": manifest["commit"],
+        },
     )
     print(
         json.dumps(

@@ -152,6 +152,7 @@ def train(
     validation_repeats=3,
     resume=False,
     inputs=None,
+    evidence=None,
 ):
     output = Path(output).resolve()
     if not output.is_relative_to(ROOT):
@@ -160,6 +161,9 @@ def train(
         raise ValueError("训练预算和验证周期必须为正数")
     if not 0 <= root_seed < 2**64:
         raise ValueError("根种子必须在 uint64 范围内")
+    if evidence and evidence.get("evidence_tier") == "formal":
+        if inputs is None or resume:
+            raise ValueError("正式连续计时需要预冻结输入和ACO参考，且不能断点续跑")
     requested = {
         "n": n,
         "root_seed": root_seed,
@@ -171,6 +175,7 @@ def train(
         "validation_interval": validation_interval,
         "validation_repeats": validation_repeats,
         "frozen_inputs": None if inputs is None else inputs.identity,
+        "evidence": evidence,
     }
     signature = config_hash(requested)
     checkpoint = output / "checkpoint.pkl"
@@ -217,7 +222,8 @@ def train(
                 **metadata(),
                 **requested,
                 "signature": signature,
-                "stage": "pilot",
+                "stage": (evidence or {}).get("evidence_tier", "pilot"),
+                **(evidence or {}),
                 "schedule_hash": sha256(schedule.tobytes()).hexdigest(),
                 "data_manifest_hashes": {
                     split: sha256(

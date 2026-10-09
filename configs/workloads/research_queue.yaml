@@ -1,0 +1,35 @@
+# 已冻结基线先跑；未实现的方法不通过改名进入正式对比。
+registry_id: shared-research-dispatch-p01
+protocol_id: p01
+gpu_model: NVIDIA RTX A5000
+gpu_free_command: /home/linbocheng/bin/gpu-free
+scan_interval_s: 60
+scan_timeout_s: 45
+max_startup_rejections_per_gpu: 3
+formal:
+  registry_id: E09-p01-formal-gpu-existing
+  input_registry_id: shared-formal-training-inputs-p01
+  scales: [500, 100]
+  seeds: [2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010]
+  population: 100
+  batch: 32
+  generations: 50
+  validation_interval: 5
+  validation_repeats: 3
+  search: {variant: as, ants: 32, iterations: 500, candidate_size: 20}
+  plan: {backend: cuda_existing, candidate_lanes: 8, active_tasks: 3200, generated: true}
+  standard_test_opened: false
+mapping:
+  registry_id: E07-p01-fixed-mapping
+  scales: [100, 500]
+  cohort_generations: [1, 25, 50]
+  cohort_root_seed: 1002
+  input_registry_id: shared-frozen-population-p01
+  blocks: [0, 1, 2]
+  candidate_lanes: [4, 8, 16, 32]
+  active_tasks: [256, 1024, 3200]
+  order_seed: 7301
+  variant: as
+  profile_stages: false
+  select_plan_from_holdout: false
+  scientific_budget: {population: 100, batch: 32, ants: 32, iterations: 500, candidate_size: 20}

@@ -2,6 +2,36 @@
 # legacy_path 是不可改写的历史地址；运行期间不迁移、不创建假装迁移的软链接。
 schema: gpaco-artifact-registry-v1
 entries:
+  - id: E09-p01-formal-gpu-existing
+    tier: formal
+    experiments: [E09]
+    protocol: p01
+    purpose: 独立根种子2001–2010，两规模AS各10次GPU-Existing固定预算正式基线；不是完整方法对比
+    path: artifacts/runs/formal/E09/p01/gpu-existing
+    migration: new_only
+    report: docs/results/formal/E09/p01
+  - id: shared-formal-training-inputs-p01
+    tier: input
+    experiments: [E09]
+    protocol: p01
+    purpose: 每次正式训练的固定日程、初始种群、FP32几何、初始化和预生成ZERO对照
+    path: artifacts/inputs/formal-training/p01
+    migration: new_only
+  - id: E07-p01-fixed-mapping
+    tier: pilot
+    experiments: [E07, E08]
+    protocol: p01
+    purpose: 固定AS真实cohort，4种lanes与3种活跃任务上限的同卡随机顺序配对；不是完整GPU-Opt
+    path: artifacts/runs/pilot/E07/p01/fixed-mapping
+    migration: new_only
+    report: docs/results/pilot/E07/p01
+  - id: shared-research-dispatch-p01
+    tier: operations
+    experiments: [E07, E09]
+    protocol: p01
+    purpose: 正式基线与映射补充的有限优先级队列；不自动扩大重复数或打开测试集
+    path: artifacts/operations/research-dispatch/p01
+    migration: new_only
   - id: E00-p01-initial-validation
     tier: smoke
     experiments: [E00]
