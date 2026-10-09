@@ -1,7 +1,9 @@
 # GP-ACO 加速：实验协议与结果判读
 
-版本：v1.1；更新：2026-10-10（仅修订数据与独立种子量；详见[执行补充](04_implementation_protocol.md)）。  
-关联：[主研究计划](01_research_plan.md)；[技术调研与证据](02_related_work_and_evidence.md)。  
+版本：v1.1；更新：2026-10-10（仅修订数据与独立种子量；详见[执行补充](04_implementation_protocol.md)）。
+
+关联：[主研究计划](01_research_plan.md)；[技术调研与证据](02_related_work_and_evidence.md)。
+
 本文件是预设实验计划，不含新实验结果。所有数量、阈值和计划标识在确认性实验开始前冻结。
 
 导航：[基线](#baselines) · [计时](#timing) · [指标](#metrics) · [统计](#statistics) · [结果判读](#interpretation) · [数据模式](#schemas) · [文档索引](README.md)

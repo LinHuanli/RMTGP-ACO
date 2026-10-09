@@ -1,5 +1,7 @@
 """在指定的一张可见 GPU 上检查 E00，profiling 与性能实验另行执行。"""
 
+import os
+
 import numpy as np
 import pytest
 from test_core import problem
@@ -15,6 +17,8 @@ pytestmark = pytest.mark.cuda
 
 @pytest.fixture(scope="module")
 def cp():
+    if not os.environ.get("CUDA_VISIBLE_DEVICES"):
+        pytest.skip("必须显式选择已确认空闲的 CUDA_VISIBLE_DEVICES，不自动占用 GPU0")
     cp = pytest.importorskip("cupy")
     if cp.cuda.runtime.getDeviceCount() == 0:
         pytest.skip("无 CUDA GPU")
