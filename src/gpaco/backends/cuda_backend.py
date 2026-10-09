@@ -82,6 +82,7 @@ def kernels(config, plan, programs):
         f"-DRMTGP_CANDIDATE_LANES={plan.candidate_lanes}",
         f"-DRMTGP_CANDIDATE_PAD={max(32, config.candidate_size)}",
         f"-DRMTGP_GENERATED_GP={int(plan.generated)}",
+        f"-DGPACO_DIAGNOSTIC={int(plan.diagnostic_work)}",
     )
     key = (cp.cuda.Device().id, sha256(code.encode()).hexdigest(), options)
     hit = key in _MODULES
@@ -126,10 +127,7 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
         )
     )
     keys = cp.asarray(problem.instance_keys)
-    initial = tuple(
-        cp.asarray(v)
-        for v in problem_initialization(problem, config, seed)
-    )
+    initial = tuple(cp.asarray(v) for v in problem_initialization(problem, config, seed))
     total = p * b
     free, _ = cp.cuda.runtime.memGetInfo()
     # 两个密集矩阵、蚂蚁状态、路径与分数；容量控制只能分波次，不能减少任务。
@@ -139,9 +137,21 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
     tours_out = np.empty((total, n + 1), np.int32)
     diagnostics_out = np.empty((total, 8), np.uint64)
     state_capture = []
+    if plan.diagnostic_work:
+        # 快照只保留当前行信息素和 visited；不转存每个状态的整个 n×n 矩阵。
+        sampled = np.linspace(0, total - 1, min(8, total), dtype=np.int32)
+        slot_map = np.full(total, -1, np.int32)
+        slot_map[sampled] = np.arange(len(sampled), dtype=np.int32)
+        snapshot_count = len(sampled) * 2 * 3 * 4
+        snapshot_tau = cp.zeros((snapshot_count, n), cp.float32)
+        snapshot_visited = cp.zeros((snapshot_count, n), cp.uint8)
+        snapshot_meta = cp.full((snapshot_count, 10), -1, cp.int32)
+        snapshot_scores = cp.full((snapshot_count, n), cp.nan, cp.float32)
+        work_out = np.empty((total, 16), np.uint64)
     start, stop = cp.cuda.Event(), cp.cuda.Event()
     device_ms = 0.0
     stage_events = []
+    iteration_timeline = []
     for offset in range(0, total, active):
         tasks = min(active, total - offset)
         logical = np.arange(offset, offset + tasks)
@@ -158,6 +168,17 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
         best = cp.empty((tasks, n + 1), cp.uint16)
         restart = cp.empty_like(best)
         diagnostics = cp.empty((tasks, 8), cp.uint64)
+        diagnostic_args = ()
+        if plan.diagnostic_work:
+            work = cp.zeros((tasks, 16), cp.uint64)
+            diagnostic_args = (
+                cp.asarray(slot_map[offset : offset + tasks]),
+                work,
+                snapshot_tau,
+                snapshot_visited,
+                snapshot_meta,
+                snapshot_scores,
+            )
         integer = np.int32
         floating = np.float32
         functions["initialize"](
@@ -171,6 +192,7 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
                 # 诊断专用：事件插桩开销不可混入正式无插桩性能样本。
                 stage_start, stage_middle, stage_end = (cp.cuda.Event() for _ in range(3))
                 stage_start.record()
+                cp.cuda.nvtx.RangePush("gpaco.construct")
             functions["v2_construct"](
                 (tasks,),
                 (a * plan.candidate_lanes,),
@@ -203,10 +225,13 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
                     scores,
                     counts,
                     diagnostics,
+                    *diagnostic_args,
                 ),
             )
             if plan.profile_stages:
+                cp.cuda.nvtx.RangePop()
                 stage_middle.record()
+                cp.cuda.nvtx.RangePush("gpaco.global_update")
             functions["update"](
                 (tasks,),
                 (256,),
@@ -237,14 +262,31 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
                 ),
             )
             if plan.profile_stages:
+                cp.cuda.nvtx.RangePop()
                 stage_end.record()
                 stage_events.append((stage_start, stage_middle, stage_end))
         stop.record()
         stop.synchronize()
         device_ms += cp.cuda.get_elapsed_time(start, stop)
+        if plan.profile_stages:
+            for iteration, (first, middle, last) in enumerate(
+                stage_events[-config.iterations :], 1
+            ):
+                iteration_timeline.append(
+                    {
+                        "wave_task_offset": offset,
+                        "iteration": iteration,
+                        "construct_start_s": cp.cuda.get_elapsed_time(start, first) / 1000,
+                        "construct_end_update_start_s": cp.cuda.get_elapsed_time(start, middle)
+                        / 1000,
+                        "update_end_s": cp.cuda.get_elapsed_time(start, last) / 1000,
+                    }
+                )
         lengths_out[offset : offset + tasks] = cp.asnumpy(state[:, 0])
         tours_out[offset : offset + tasks] = cp.asnumpy(best)
         diagnostics_out[offset : offset + tasks] = cp.asnumpy(diagnostics)
+        if plan.diagnostic_work:
+            work_out[offset : offset + tasks] = cp.asnumpy(work)
         if capture_state:
             state_capture.append(
                 {
@@ -281,7 +323,8 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
         "candidate_lanes": plan.candidate_lanes,
         "generated": plan.generated,
         "gpu_pool_reserved_bytes": cp.get_default_memory_pool().total_bytes(),
-        "instrumented": plan.profile_stages,
+        "instrumented": plan.profile_stages or plan.diagnostic_work,
+        "diagnostic_work": plan.diagnostic_work,
         "kernel_resources": {
             name: functions[name].attributes for name in ("v2_construct", "update")
         },
@@ -301,4 +344,13 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
     )
     if capture_state:
         result.state_capture = state_capture
+    if plan.profile_stages:
+        result.iteration_timeline = iteration_timeline
+    if plan.diagnostic_work:
+        result.work_counts = work_out.reshape(p, b, 16)
+        result.snapshot_tau = cp.asnumpy(snapshot_tau)
+        result.snapshot_visited = cp.asnumpy(snapshot_visited)
+        result.snapshot_meta = cp.asnumpy(snapshot_meta)
+        result.snapshot_scores = cp.asnumpy(snapshot_scores)
+        result.sampled_logical_tasks = sampled
     return result

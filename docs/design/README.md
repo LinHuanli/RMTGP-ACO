@@ -4,9 +4,11 @@
 
 更新：2026-10-10
 
-状态：第一阶段实现与先导实验。具体完成项和测量见[阶段记录](../results/phase1_status.md)。M1/M2/M3 及正式实验尚未完成。
+状态：第一阶段实现与先导实验。具体证据见[分类结果索引](../results/README.md)。M1/M2/M3 及正式实验尚未完成。
 
 ## 文档
+
+新增：[CPU基线与GPU诊断补充协议](07_cpu_baselines_and_diagnostics.md)；[产物与结果管理规范](08_artifact_and_result_management.md)；[已有先导结果及图表](../results/pilot/E01/p01/README.md)。
 
 | 文件 | 内容 | 使用时机 |
 |---|---|---|

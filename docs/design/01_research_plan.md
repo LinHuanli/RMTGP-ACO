@@ -4,7 +4,7 @@
 
 日期：2026-10-02；2026-10-10补充执行说明。
 
-状态：本文为研究设计；实际实施与测量另见[第一阶段记录](../results/phase1_status.md)。
+状态：本文为研究设计；实际实施与测量另见[分类结果索引](../results/README.md)。
 代码审阅基点：`LinHuanli/RMTGP-ACO@2b847698225e1d0fff36a25c1015a080350a7f00`。
 
 配套文档：[技术调研与证据表](02_related_work_and_evidence.md)；[实验协议与结果判读](03_experiments_and_decisions.md)。

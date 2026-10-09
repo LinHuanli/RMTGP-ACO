@@ -1,0 +1,62 @@
+[
+  {
+    "workload": "TSP100 / 5-generation trace",
+    "backend": "cpu1",
+    "repeats": 3,
+    "median_s": 14002.88230167795,
+    "min_s": 13109.210315190256,
+    "max_s": 14422.442093117163,
+    "current_protocol_compatible": false,
+    "reason": "双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界"
+  },
+  {
+    "workload": "TSP100 / 5-generation trace",
+    "backend": "cpu8",
+    "repeats": 3,
+    "median_s": 1939.930928924121,
+    "min_s": 1864.4147154539824,
+    "max_s": 1996.5560696600005,
+    "current_protocol_compatible": false,
+    "reason": "双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界"
+  },
+  {
+    "workload": "TSP100 / 5-generation trace",
+    "backend": "v1",
+    "repeats": 3,
+    "median_s": 132.64460609667003,
+    "min_s": 132.54962009657174,
+    "max_s": 133.58626167383045,
+    "current_protocol_compatible": false,
+    "reason": "双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界"
+  },
+  {
+    "workload": "TSP100 / 5-generation trace",
+    "backend": "v2",
+    "repeats": 3,
+    "median_s": 93.0572228981182,
+    "min_s": 92.52567667234689,
+    "max_s": 94.04756376519799,
+    "current_protocol_compatible": false,
+    "reason": "双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界"
+  },
+  {
+    "workload": "TSP500 / one evaluation",
+    "backend": "cpu8",
+    "repeats": 5,
+    "median_s": 3802.917742388323,
+    "min_s": 3581.6097454065457,
+    "max_s": 4109.832671705633,
+    "current_protocol_compatible": false,
+    "reason": "双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界"
+  },
+  {
+    "workload": "TSP500 / one evaluation",
+    "backend": "v2",
+    "repeats": 5,
+    "median_s": 792.4378029480577,
+    "min_s": 790.507490686141,
+    "max_s": 800.8454991737381,
+    "current_protocol_compatible": false,
+    "reason": "双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界"
+  }
+]

@@ -1,0 +1,290 @@
+{
+  "observed_at_utc": "2026-10-09T14:28:00.786363+00:00",
+  "scope": "非原子只读文件盘点；存活实验仍可新增文件；不是进程存活或实验完成证明",
+  "registry_sha256": "ab3ca899bcfaf9dcf556107de7256c8d7a82b812b985ae2ae30e5ffab909d7bb",
+  "entries": [
+    {
+      "id": "E00-p01-initial-validation",
+      "tier": "smoke",
+      "experiments": [
+        "E00"
+      ],
+      "protocol": "p01",
+      "purpose": "初始完整预算单代及三代流程验证；单次记录，不是性能统计",
+      "path": "artifacts/runs/smoke/E00/p01/initial-validation",
+      "legacy_path": "artifacts/smoke",
+      "migration": "move_inactive",
+      "actual_path": "artifacts/runs/smoke/E00/p01/initial-validation",
+      "storage_status": "canonical",
+      "files": 24,
+      "logical_bytes": 8693333
+    },
+    {
+      "id": "E00-p01-instrumentation-checks",
+      "tier": "smoke",
+      "experiments": [
+        "E00"
+      ],
+      "protocol": "p01",
+      "purpose": "三迭代插桩一致性与快照重放检查；禁止进入科学性能统计",
+      "path": "artifacts/runs/smoke/E00/p01/instrumentation-checks",
+      "legacy_path": "artifacts/diagnostics-v2",
+      "migration": "move_inactive",
+      "actual_path": "artifacts/runs/smoke/E00/p01/instrumentation-checks",
+      "storage_status": "canonical",
+      "files": 34,
+      "logical_bytes": 13764245
+    },
+    {
+      "id": "E01-p01-initial-stage-profile",
+      "tier": "diagnostic",
+      "experiments": [
+        "E01"
+      ],
+      "protocol": "p01",
+      "purpose": "初始构造和更新阶段插桩；不可作为无插桩速度分母",
+      "path": "artifacts/runs/diagnostic/E01/p01/initial-stage-profile",
+      "legacy_path": "artifacts/diagnostics",
+      "migration": "move_inactive",
+      "actual_path": "artifacts/runs/diagnostic/E01/p01/initial-stage-profile",
+      "storage_status": "canonical",
+      "files": 5,
+      "logical_bytes": 1599595
+    },
+    {
+      "id": "E01-p01-gpu-baselines",
+      "tier": "pilot",
+      "experiments": [
+        "E01",
+        "E04",
+        "E12"
+      ],
+      "protocol": "p01",
+      "purpose": "A5000 三宿主冻结种群解释器/JIT的五block先导；包含独立诊断子任务",
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines",
+      "legacy_path": "artifacts/a5000-main-v1",
+      "migration": "defer_live",
+      "reason": "控制器正在写入，且等待TSP500的第25和50代cohort；不可拆分输入与绝对路径记录",
+      "report": "docs/results/pilot/E01/p01",
+      "actual_path": "artifacts/a5000-main-v1",
+      "storage_status": "legacy_deferred",
+      "files": 1470,
+      "logical_bytes": 749107963
+    },
+    {
+      "id": "E01-p01-cpu-baselines",
+      "tier": "pilot",
+      "experiments": [
+        "E01",
+        "E05"
+      ],
+      "protocol": "p01",
+      "purpose": "Python/Numba各1、8、16物理核；完整计时尚未开始",
+      "path": "artifacts/runs/pilot/E01/p01/cpu-baselines",
+      "migration": "new_only",
+      "report": "docs/results/pilot/E01/p01",
+      "actual_path": null,
+      "storage_status": "not_created",
+      "files": 0,
+      "logical_bytes": 0
+    },
+    {
+      "id": "E01-p01-work-diagnostics",
+      "tier": "diagnostic",
+      "experiments": [
+        "E00",
+        "E01"
+      ],
+      "protocol": "p01",
+      "purpose": "完整预算逻辑工作量、状态快照和插桩扰动诊断；尚未启动",
+      "path": "artifacts/runs/diagnostic/E01/p01/work-diagnostics",
+      "migration": "new_only",
+      "report": "docs/results/diagnostic/E01/p01",
+      "actual_path": null,
+      "storage_status": "not_created",
+      "files": 0,
+      "logical_bytes": 0
+    },
+    {
+      "id": "E09-p01-training",
+      "tier": "pilot",
+      "experiments": [
+        "E09"
+      ],
+      "protocol": "p01",
+      "purpose": "AS两规模各三GP根种子、50代训练；不是十seed确认性实验",
+      "path": "artifacts/runs/pilot/E09/p01/training",
+      "legacy_path": "artifacts/pilot-v1",
+      "migration": "defer_live",
+      "reason": "TSP500训练未结束，已完成TSP100的cohort也仍被其他队列引用",
+      "actual_path": "artifacts/pilot-v1",
+      "storage_status": "legacy_deferred",
+      "files": 65,
+      "logical_bytes": 2680947
+    },
+    {
+      "id": "E12-p01-cross-gpu",
+      "tier": "pilot",
+      "experiments": [
+        "E01",
+        "E08",
+        "E12"
+      ],
+      "protocol": "p01",
+      "purpose": "五类GPU的独立调优、留出测量、三代训练与规范冠军审计",
+      "path": "artifacts/runs/pilot/E12/p01/cross-gpu",
+      "legacy_path": "artifacts/hardware-pilot-v1",
+      "migration": "defer_live",
+      "reason": "各卡仍在执行TSP500任务及后续训练和审计",
+      "actual_path": "artifacts/hardware-pilot-v1",
+      "storage_status": "legacy_deferred",
+      "files": 1208,
+      "logical_bytes": 2896369102
+    },
+    {
+      "id": "shared-frozen-population-p01",
+      "tier": "input",
+      "experiments": [
+        "E01",
+        "E05"
+      ],
+      "protocol": "p01",
+      "purpose": "逐文件SHA核验的CPU/GPU共同冻结程序、几何和初始化；不是新的实验结果",
+      "path": "artifacts/inputs/frozen-population/p01",
+      "legacy_path": "artifacts/cpu-baselines-v1/inputs",
+      "migration": "move_inactive",
+      "actual_path": "artifacts/inputs/frozen-population/p01",
+      "storage_status": "canonical",
+      "files": 169,
+      "logical_bytes": 353361554
+    },
+    {
+      "id": "shared-aco-cache",
+      "tier": "cache",
+      "experiments": [
+        "E01",
+        "E09",
+        "E12"
+      ],
+      "protocol": "p01",
+      "purpose": "训练中的ZERO规则ACO缓存；结果须按数据划分与seed另外汇总",
+      "path": "artifacts/cache/aco-baselines",
+      "legacy_path": "artifacts/baselines",
+      "migration": "defer_live",
+      "reason": "正在运行的不可变源码继续读写旧路径",
+      "actual_path": "artifacts/baselines",
+      "storage_status": "legacy_deferred",
+      "files": 227,
+      "logical_bytes": 8458810
+    },
+    {
+      "id": "shared-source-snapshots",
+      "tier": "provenance",
+      "experiments": [],
+      "protocol": "p01",
+      "purpose": "git commit命名的不可变运行源码；不是实验输出",
+      "path": "artifacts/provenance/source-snapshots",
+      "legacy_path": "artifacts/runtime",
+      "migration": "defer_live",
+      "reason": "存活进程仍从这些目录导入源码",
+      "actual_path": "artifacts/runtime",
+      "storage_status": "legacy_deferred",
+      "files": 117,
+      "logical_bytes": 716368
+    },
+    {
+      "id": "shared-bootstrap-records",
+      "tier": "provenance",
+      "experiments": [
+        "E00"
+      ],
+      "protocol": "p01",
+      "purpose": "旧环境安装、仓库备份及开发检查原始包；保留原文件名，不作为正式结果",
+      "path": "artifacts/provenance/bootstrap/p01",
+      "legacy_path": "artifacts/bootstrap",
+      "migration": "move_inactive",
+      "actual_path": "artifacts/provenance/bootstrap/p01",
+      "storage_status": "canonical",
+      "files": 417,
+      "logical_bytes": 211499294
+    },
+    {
+      "id": "shared-environment-records",
+      "tier": "provenance",
+      "experiments": [],
+      "protocol": "p01",
+      "purpose": "后续环境安装产生的包清单；不再创建顶层bootstrap目录",
+      "path": "artifacts/provenance/environments/main/p01",
+      "migration": "new_only",
+      "actual_path": null,
+      "storage_status": "not_created",
+      "files": 0,
+      "logical_bytes": 0
+    },
+    {
+      "id": "shared-launch-records",
+      "tier": "operations",
+      "experiments": [
+        "E09"
+      ],
+      "protocol": "p01",
+      "purpose": "存活训练worker的启动信息、日志和心跳",
+      "path": "artifacts/operations/launches",
+      "legacy_path": "artifacts/launches",
+      "migration": "defer_live",
+      "reason": "worker持续写入心跳和日志",
+      "actual_path": "artifacts/launches",
+      "storage_status": "legacy_deferred",
+      "files": 42,
+      "logical_bytes": 1153184
+    },
+    {
+      "id": "shared-device-locks",
+      "tier": "operations",
+      "experiments": [],
+      "protocol": "p01",
+      "purpose": "本项目各快照共用的GPU/CPU互斥锁；不可复制或替换锁inode",
+      "path": "artifacts/operations/locks",
+      "legacy_path": "artifacts/locks",
+      "migration": "defer_live",
+      "reason": "新旧worker必须继续共用同一锁文件；迁移需要所有旧worker退出",
+      "actual_path": "artifacts/locks",
+      "storage_status": "legacy_deferred",
+      "files": 20,
+      "logical_bytes": 0
+    },
+    {
+      "id": "E02-p01-historical-inputs",
+      "tier": "historical",
+      "experiments": [
+        "E02"
+      ],
+      "protocol": "p01",
+      "purpose": "旧双树/FP64研究的只读导出副本；与本轮单树FP32不直接合并",
+      "path": "artifacts/provenance/historical/E02/p01",
+      "migration": "new_only",
+      "report": "docs/results/historical/E02/p01",
+      "actual_path": "artifacts/provenance/historical/E02/p01",
+      "storage_status": "canonical",
+      "files": 9,
+      "logical_bytes": 927904
+    },
+    {
+      "id": "shared-pre-layout-report",
+      "tier": "provenance",
+      "experiments": [
+        "E01",
+        "E02"
+      ],
+      "protocol": "p01",
+      "purpose": "本次整理前临时混合报告的逐字节备份；已被分类报告替代，排除科研统计",
+      "path": "artifacts/provenance/report-layout-migration/p01",
+      "legacy_path": "docs/results/baseline_diagnostics",
+      "migration": "move_inactive",
+      "actual_path": "artifacts/provenance/report-layout-migration/p01",
+      "storage_status": "canonical",
+      "files": 52,
+      "logical_bytes": 5041623
+    }
+  ]
+}

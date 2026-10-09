@@ -1,0 +1,11 @@
+n,variant,split,instance_seed_records,aco_seeds,mean_gap_percent,standard_test,ants,aco_iterations,local_search
+100,acs,performance_holdout_32,160,5,1.793911509239115,False,32,500,False
+100,as,performance_holdout_32,160,5,5.912496072798968,False,32,500,False
+100,as,train,288,9,5.821894532069564,False,32,500,False
+100,as,validation,1152,9,5.788189185783267,False,32,500,False
+100,mmas,performance_holdout_32,160,5,4.054881312511862,False,32,500,False
+500,acs,performance_holdout_32,160,5,16.106120043992995,False,32,500,False
+500,as,performance_holdout_32,160,5,23.033328938484193,False,32,500,False
+500,as,train,288,9,22.963426490624745,False,32,500,False
+500,as,validation,1152,9,22.793562720219295,False,32,500,False
+500,mmas,performance_holdout_32,128,4,20.479879163205624,False,32,500,False

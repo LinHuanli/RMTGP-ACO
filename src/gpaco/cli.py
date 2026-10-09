@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1001)
     parser.add_argument("--variant", choices=["as", "acs", "mmas"], default="as")
     parser.add_argument(
-        "--backend", choices=["cpu_existing", "cuda_existing"], default="cuda_existing"
+        "--backend", choices=["cpu_python", "cpu_existing", "cuda_existing"], default="cuda_existing"
     )
     parser.add_argument("--population", type=int, default=100)
     parser.add_argument("--batch", type=int, default=32)

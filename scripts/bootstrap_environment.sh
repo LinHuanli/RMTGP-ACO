@@ -2,12 +2,17 @@
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/env.sh"
 cd "$GPACO_ROOT"
-mkdir -p .cache/downloads .tools artifacts/bootstrap
 if [[ -x .envs/main/bin/python ]]; then
     echo "项目环境已存在；不覆盖可能正在运行的环境。"
     python -m pip check
     exit 0
 fi
+GPACO_SETUP_REPORT="$GPACO_ROOT/artifacts/provenance/environments/main/p01"
+if [[ -e "$GPACO_SETUP_REPORT" ]]; then
+    echo "环境记录已存在；先登记新环境版本，不覆盖旧清单。" >&2
+    exit 1
+fi
+mkdir -p .cache/downloads .tools "$GPACO_SETUP_REPORT"
 if [[ ! -x .tools/bin/micromamba ]]; then
     curl --fail --location --retry 3 https://micro.mamba.pm/api/micromamba/linux-64/latest -o .cache/downloads/micromamba.tar.bz2
     tar -xjf .cache/downloads/micromamba.tar.bz2 -C .tools bin/micromamba
@@ -23,6 +28,6 @@ export NVCC_CCBIN="$CXX"
 python -m pip install 'torch==2.14.0' --index-url https://download.pytorch.org/whl/cu132
 python -m pip install -e '.[cuda,dev]'
 python -m pip check
-python -m pip freeze > artifacts/bootstrap/pip-freeze.txt
-micromamba list -p "$GPACO_ROOT/.envs/main" --explicit > artifacts/bootstrap/conda-explicit.txt
+python -m pip freeze > "$GPACO_SETUP_REPORT/pip-freeze.txt"
+micromamba list -p "$GPACO_ROOT/.envs/main" --explicit > "$GPACO_SETUP_REPORT/conda-explicit.txt"
 python -c 'import numpy,numba,llvmlite,torch,deap,cupy; print(numpy.__version__,numba.__version__,llvmlite.__version__,torch.__version__,deap.__version__,cupy.__version__)'

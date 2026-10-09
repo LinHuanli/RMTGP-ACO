@@ -1,5 +1,7 @@
 # 第一阶段实施与先导记录
 
+归档性质：这是启动时的历史快照，不是实时进度或正式实验结论。文中的旧产物地址按 `configs/experiments/registry.yaml` 追踪；迁移没有改写原始实验文件。
+
 更新：2026-10-10。这里区分已完成、运行中和未完成；不把单次 smoke 当作统计性能结论。
 
 ## 1. 已完成
@@ -7,7 +9,7 @@
 - 仓库从旧项目worktree脱离，建立当前项目内部的独立Git对象库；保留已有根提交、分支和远程地址。原数据、参考资料及用户LaTeX模板未删除。
 - 项目内新环境安装成功；NumPy 2.4.6和Numba 0.68.0能够共同导入，`pip check`通过。Python、Torch、CUDA及包版本已记录。
 - TSP100/TSP500数据转换完成，约598 MiB派生数组；各32768训练池、128验证、128调参、128性能留出。标准测试1280/128全量保留原顺序，与训练等集合无交集。
-- DEAP单树语言、CPU-Existing、GPU-Existing、AS/同步ACS/MMAS固定更新均已实现。源码与数值差异见[执行协议](../design/04_implementation_protocol.md)。
+- DEAP单树语言、CPU-Existing、GPU-Existing、AS/同步ACS/MMAS固定更新均已实现。源码与数值差异见[执行协议](../../../design/04_implementation_protocol.md)。
 - 每代指标、ZERO规则基线缓存、固定验证、冠军保存、真实cohort保存、原子checkpoint和恢复流程可运行。
 - 后台启动器、固定源码快照、GPU空闲复查、UUID可见性限制、进程锁、15秒心跳与争用记录可运行。
 - 训练/验证曲线和代耗时绘图脚本已经实现，最终测试不自动启动。

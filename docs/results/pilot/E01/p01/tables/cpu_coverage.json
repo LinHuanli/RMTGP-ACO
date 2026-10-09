@@ -1,0 +1,38 @@
+[
+  {
+    "backend": "cpu_python",
+    "physical_cores": 1,
+    "current_protocol_status": "not_measured",
+    "time_s": null
+  },
+  {
+    "backend": "cpu_python",
+    "physical_cores": 8,
+    "current_protocol_status": "not_measured",
+    "time_s": null
+  },
+  {
+    "backend": "cpu_python",
+    "physical_cores": 16,
+    "current_protocol_status": "not_measured",
+    "time_s": null
+  },
+  {
+    "backend": "cpu_existing",
+    "physical_cores": 1,
+    "current_protocol_status": "not_measured",
+    "time_s": null
+  },
+  {
+    "backend": "cpu_existing",
+    "physical_cores": 8,
+    "current_protocol_status": "not_measured",
+    "time_s": null
+  },
+  {
+    "backend": "cpu_existing",
+    "physical_cores": 16,
+    "current_protocol_status": "not_measured",
+    "time_s": null
+  }
+]

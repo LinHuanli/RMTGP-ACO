@@ -1,0 +1,58 @@
+{
+  "created_at_utc": "2026-10-09T14:31:22.181411+00:00",
+  "evidence_tier": "historical",
+  "experiment_id": "E02",
+  "protocol_id": "p01",
+  "formal_result": false,
+  "script_sha256": "4dade8ec619d76849958481c4e01d8ddf8bb398ab345952cf0f619d24c117c75",
+  "registry_sha256": "ab3ca899bcfaf9dcf556107de7256c8d7a82b812b985ae2ae30e5ffab909d7bb",
+  "input_records": [
+    {
+      "path": "artifacts/provenance/historical/E02/p01/RESULTS.md",
+      "sha256": "029eef790ae686e8a6dc0c1d3abadbf8dd168cd2074ea8f25d1533da62c0b1dd"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/config.yaml",
+      "sha256": "f52e9fff664c541bca3a9968cd90e4b32aab7cc4deb02e6392d7cf10124a21ff"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/review_v1/RESULTS.md",
+      "sha256": "be87b1539e8f9bd7a4270eeb7483def35c3195e776e031462f7c8c4d73f4be9b"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/review_v1/exports/jit_microbench.csv",
+      "sha256": "1bba5f27e8bc15588fefab634d61d7f174a833ba4c17e778d5f6e41b1c1dd1d9"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/review_v1/exports/measurements.csv",
+      "sha256": "67223536519b93fe429b4fb87d251276e4c53d182a26358b1ac8acdcc7398ba0"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/review_v1/exports/profile_captures.csv",
+      "sha256": "2b2f0604d1c7db80353f0e176dafad9f3e91d6d64c5193fee408d7cf62bbb32c"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/review_v1/exports/profile_kernels.csv",
+      "sha256": "3ba1631c9e6185775c602efac8fd0bd82485908a1cbb097aaaad3edc6c21b465"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/review_v1/tsp500-pair_totals.csv",
+      "sha256": "987e5e14bd88811ef35eff00add422a63e6df83d6a50d32ad66a4aa2c838bcb6"
+    },
+    {
+      "path": "artifacts/provenance/historical/E02/p01/trace_totals.csv",
+      "sha256": "f52cd566313c384b2140229bb1f46ee8c9d10fdde9fff9bdef860197093d91b5"
+    }
+  ],
+  "filter_policy": "显式登记来源；已完成且未检测到争用/监测错误；smoke与历史协议不进入当前测量；不同split分表",
+  "tests_opened": false,
+  "exports": {
+    "README.md": "14791fa01260dd380641b55f200ec13da0de0dc0a287c138845d5b72dab5f11c",
+    "figures/historical_timings.pdf": "fd2f74c183a6794a80b15fe98e30f4dd80aa714f22715202c8ad402fdcb874eb",
+    "figures/historical_timings.png": "7f34a76e31fc889b0ec17ba3b537ce970f2d3dc2c0173b971d2cce1a3d13186c",
+    "figures/historical_timings.svg": "cf644afc2a555479a9c44e7c9f92c359ec261122deceff1464209a70dc785b50",
+    "historical_provenance.json": "88638aa22a31cf066b98284623390e770f491323101210550110638776596a28",
+    "tables/historical_timing.csv": "c71e17ef087e2b79a35a241edf8891b8405c34a5859993f6e6701629bae27a78",
+    "tables/historical_timing.json": "556a1f7c83cf7609f58e986caf004c38f44147fd2c4a0c0ac8d6543a406226a4"
+  }
+}

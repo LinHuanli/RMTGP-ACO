@@ -1,0 +1,21 @@
+# 用户确认：先固定真实种群的整代评价，不要求六组都做50代训练。
+name: cpu-baselines-v1
+scales: [100, 500]
+variants: [as, acs, mmas]
+generations: [1, 25, 50]
+backends: [cpu_python, cpu_existing]
+physical_cores: [1, 8, 16]
+first_pilot_blocks: 3
+aligned_gpu_pilot_blocks: 5
+confirmatory_blocks: 10  # 当前冻结包仅5个；正式扩展必须先生成并冻结新输入包。
+population: 100
+batch: 32
+ants: 32
+iterations: 500
+candidate_size: 20
+precision: fp32
+fitness_dedup: false
+local_search: false
+timeout_per_cell_s: 86400
+automatic_standard_test: false
+historical_results_role: separate_protocol_only

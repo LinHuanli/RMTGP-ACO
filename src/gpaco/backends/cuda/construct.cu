@@ -5,6 +5,10 @@
 
 #include <cuda_fp16.h>
 
+#ifndef GPACO_DIAGNOSTIC
+#define GPACO_DIAGNOSTIC 0
+#endif
+
 #ifndef RMTGP_CANDIDATE_LANES
 #define RMTGP_CANDIDATE_LANES 8
 #endif
@@ -451,6 +455,10 @@ extern "C" __global__ void v2_construct(
     float* score_workspace,
     const int32_t* stagnation_all,
     uint64_t* diagnostics
+#if GPACO_DIAGNOSTIC
+    , const int* sample_task_slots, uint64_t* work_counts,
+    float* snapshot_tau, uint8_t* snapshot_visited, int* snapshot_meta, float* snapshot_scores
+#endif
 ) {
     using namespace rmtgp_v2;
     const int task = blockIdx.x;
@@ -500,6 +508,13 @@ extern "C" __global__ void v2_construct(
 
     uint64_t local_candidate_fallbacks = 0;
     uint64_t local_uniform_fallbacks = 0;
+#if GPACO_DIAGNOSTIC
+    // 只在独立诊断内核中存在；不得将这些周期数当作整卡关键路径时间。
+    uint64_t work[16] = {};
+    bool fallback_saved = false;
+    const int sample_slot = sample_task_slots[task];
+    const int iter_slot = iteration == 1 ? 0 : (iteration == (total_iterations+1)/2 ? 1 : (iteration == total_iterations ? 2 : -1));
+#endif
     if (lane == 0) {
         for (int word = 0; word < words; ++word) {
             ant_visited[word] = 0;
@@ -524,6 +539,9 @@ extern "C" __global__ void v2_construct(
     __syncthreads();
 
     for (int step = 1; step < n; ++step) {
+#if GPACO_DIAGNOSTIC
+        const uint64_t begin_candidate = clock64();
+#endif
         const int current = static_cast<int>(ant_tour[step - 1]);
         int local_count = 0;
         for (
@@ -545,6 +563,39 @@ extern "C" __global__ void v2_construct(
         const int limit = fallback ? n : candidate_size;
         const uint16_t* current_nearest = nearest
             + current * candidate_size;
+
+#if GPACO_DIAGNOSTIC
+        const uint64_t begin_stats = clock64();
+        int capture_slots[2] = {-1, -1};
+        if(lane == 0) {
+            ++work[0]; work[1] += candidate_size;
+            work[2] += fallback ? n : 0;
+            work[12] += begin_stats - begin_candidate;
+        }
+        // 8 个均匀分散的逻辑任务 × 前两只蚂蚁 × 三个迭代阶段 × 四种状态。
+        // 第四种状态保存该蚂蚁本迭代第一次真实 fallback；不存在时保持未填。
+        if(sample_slot >= 0 && ant < 2 && iter_slot >= 0) {
+            const int phase = step == 1 ? 0 : (step == n/2 ? 1 : (step == n-1 ? 2 : -1));
+            const bool save_fallback = fallback && !fallback_saved;
+            for(int kind = 0; kind < 4; ++kind) {
+                if(kind != phase && !(kind == 3 && save_fallback)) continue;
+                const int slot = ((sample_slot*2+ant)*3+iter_slot)*4+kind;
+                capture_slots[kind == 3 ? 1 : 0] = slot;
+                for(int city=lane; city<n; city+=RMTGP_CANDIDATE_LANES) {
+                    snapshot_tau[(size_t)slot*n+city] = pheromone[current*n+city];
+                    snapshot_visited[(size_t)slot*n+city] = is_visited(ant_visited,city);
+                }
+                if(lane == 0) {
+                    int* meta = snapshot_meta + slot*10;
+                    meta[0]=program; meta[1]=instance; meta[2]=ant; meta[3]=iteration;
+                    meta[4]=step; meta[5]=current; meta[6]=step<2 ? -1 : ant_tour[step-2];
+                    meta[7]=fallback; meta[8]=stagnation_all[task]; meta[9]=kind;
+                }
+            }
+            if(save_fallback) fallback_saved=true;
+        }
+        const uint64_t begin_features = clock64();
+#endif
 
         float log_tau_sum = 0.0f;
         float log_tau_sq = 0.0f;
@@ -700,6 +751,21 @@ extern "C" __global__ void v2_construct(
         }
 
         float local_score_total = 0.0f;
+#if GPACO_DIAGNOSTIC
+        const uint64_t begin_scores = clock64();
+        uint64_t ordinal_positions = 0;
+        if(lane == 0) {
+            work[3] += stats.count;
+            work[4] += fallback ? stats.count : 0;
+            work[5] += (required_mask & (UINT64_C(1)<<3)) && fallback ? (uint64_t)stats.count*n : 0;
+            work[6] += (required_mask & (UINT64_C(1)<<3)) && fallback ? (uint64_t)stats.count*stats.count : 0;
+            work[7] += program_active ? (uint64_t)stats.count*tr_lengths[program] : 0;
+            work[8] += 3ULL*limit; // 统计器内三个完整候选位置扫描；不含 first_city 和熵扫描。
+            work[9] += need_log_tau ? 3ULL*stats.count+1ULL : 0;
+            work[10] += need_log_eta ? 3ULL*stats.count+1ULL : 0;
+            work[13] += begin_scores - begin_features;
+        }
+#endif
         for (
             int position = lane;
             position < limit;
@@ -710,6 +776,9 @@ extern "C" __global__ void v2_construct(
                 : static_cast<int>(current_nearest[position]);
             float score = -CUDART_INF_F;
             if (!is_visited(ant_visited, city)) {
+#if GPACO_DIAGNOSTIC
+                if(!fallback && (required_mask & (UINT64_C(1)<<3))) ordinal_positions += position;
+#endif
                 score = transition_score_tiled(
                     coords_all,
                     distances_all,
@@ -748,6 +817,10 @@ extern "C" __global__ void v2_construct(
                     stats
                 );
                 score = score_storage_round(score);
+#if GPACO_DIAGNOSTIC
+                for(int q=0;q<2;++q) if(capture_slots[q]>=0)
+                    snapshot_scores[(size_t)capture_slots[q]*n+city]=score;
+#endif
                 local_score_total += score;
             }
             if (fallback) {
@@ -760,6 +833,14 @@ extern "C" __global__ void v2_construct(
         }
         const float score_total = group_sum(local_score_total);
         __syncwarp();
+#if GPACO_DIAGNOSTIC
+        const uint64_t begin_selection = clock64();
+        const uint64_t ordinal_total = group_sum(ordinal_positions);
+        if(lane == 0) {
+            work[11] += ordinal_total;
+            work[14] += begin_selection - begin_scores;
+        }
+#endif
 
         if (lane == 0) {
             int greedy_city = -1;
@@ -911,7 +992,18 @@ extern "C" __global__ void v2_construct(
             );
         }
         __syncthreads();
+#if GPACO_DIAGNOSTIC
+        if(lane == 0) work[15] += clock64() - begin_selection;
+#endif
     }
+
+#if GPACO_DIAGNOSTIC
+    // 各任务的计数累加；64 位计数避免完整科学预算溢出。
+    if(lane == 0) {
+        for(int index=0;index<16;++index)
+            atomicAdd(work_counts+(size_t)task*16+index,(unsigned long long)work[index]);
+    }
+#endif
 
     if (lane == 0) {
         const int last = static_cast<int>(ant_tour[n - 1]);

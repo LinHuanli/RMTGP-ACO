@@ -1,0 +1,7 @@
+workload,backend,repeats,median_s,min_s,max_s,current_protocol_compatible,reason
+TSP100 / 5-generation trace,cpu1,3,14002.88230167795,13109.210315190256,14422.442093117163,False,双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界
+TSP100 / 5-generation trace,cpu8,3,1939.930928924121,1864.4147154539824,1996.5560696600005,False,双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界
+TSP100 / 5-generation trace,v1,3,132.64460609667003,132.54962009657174,133.58626167383045,False,双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界
+TSP100 / 5-generation trace,v2,3,93.0572228981182,92.52567667234689,94.04756376519799,False,双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界
+TSP500 / one evaluation,cpu8,5,3802.917742388323,3581.6097454065457,4109.832671705633,False,双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界
+TSP500 / one evaluation,v2,5,792.4378029480577,790.507490686141,800.8454991737381,False,双树；CPU FP64；GPU FP32 后主机 FP64 计分；去重/结果复用；不同计时边界

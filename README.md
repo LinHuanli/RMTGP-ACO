@@ -8,8 +8,11 @@
 
 - [研究计划](docs/design/README.md)：问题、方法和 E00–E13 实验卡。
 - [执行协议 v1.1](docs/design/04_implementation_protocol.md)：本轮决策、准确的数据量、公式、接口和数值约定。
-- [第一阶段记录](docs/results/phase1_status.md)：实际完成项、先导测量和未完成项。
+- [结果总索引](docs/results/README.md)：正式、先导、诊断、功能验证、历史资料与运行状态分开记录。
+- [产物管理规范](docs/design/08_artifact_and_result_management.md)：登记、命名、证据等级、来源校验与活跃目录迁移规则。
 - [五类GPU先导协议](docs/design/05_cross_gpu_pilot.md)：统一冻结输入、硬件调优、留出性能、3-seed短训练及规范冠军审计。
+- [六组CPU基线与独立诊断](docs/design/07_cpu_baselines_and_diagnostics.md)：无JIT／Numba的1、8、16物理核入口、历史复用边界、工作量计数和状态重放。
+- [已有基线与图表](docs/results/pilot/E01/p01/README.md)：普通ACO、当前CPU覆盖、GPU吞吐／显存／能耗；插桩和历史结果另册。
 
 ## 目录
 
@@ -20,7 +23,8 @@ scripts/              环境安装、数据转换、后台启动、汇总绘图
 tests/                E00 单元测试和训练恢复测试
 Datasets/             原始数据和派生数组；splits/ 清单进入 Git
 references/           外部源码、文献和锁定的历史实现快照
-artifacts/            日志、checkpoint、cohort、结果、固定源码快照（不提交）
+artifacts/            runs/{formal,pilot,diagnostic,smoke}；输入、缓存、溯源与运行管理分开
+docs/results/         分类报告：README、tables、figures、provenance；不存大数组和原始日志
 .envs/ .tools/ .cache/ 项目内运行环境和缓存（不提交）
 ```
 
@@ -39,7 +43,7 @@ python -m pytest tests/test_core.py tests/test_evolution.py -q
 CUDA_VISIBLE_DEVICES=0 python -m pytest tests/test_cuda.py -q
 ```
 
-运行环境：Python 3.12.15、NumPy 2.4.6、Numba 0.68.0、DEAP 1.4.3、CuPy 14.2.0、PyTorch 2.14.0+cu132、CUDA 13.2。完整包版本见 `configs/environment.pip.lock.txt`；安装过程中生成的 Conda 显式包清单保存在 `artifacts/bootstrap/conda-explicit.txt`。安装脚本包含网络依赖；换机器须核对驱动、编译和数值测试，不能只依据 GPU 名称判断环境兼容。
+运行环境：Python 3.12.15、NumPy 2.4.6、Numba 0.68.0、DEAP 1.4.3、CuPy 14.2.0、PyTorch 2.14.0+cu132、CUDA 13.2。完整包版本见 `configs/environment.pip.lock.txt`；初始安装清单现归档于 `artifacts/provenance/bootstrap/p01/conda-explicit.txt`。安装脚本包含网络依赖；换机器须核对驱动、编译和数值测试，不能只依据 GPU 名称判断环境兼容。
 
 ## 运行
 
@@ -47,7 +51,7 @@ CUDA_VISIBLE_DEVICES=0 python -m pytest tests/test_cuda.py -q
 source scripts/env.sh
 # 一次短训练：科学单代规模仍为 P100、B32、A32、I500。
 CUDA_VISIBLE_DEVICES=0 python -m gpaco.cli train --n 100 --generations 3 \
-  --output artifacts/my-smoke
+  --output artifacts/runs/smoke/E00/p01/initial-validation/tsp100-as-train-g003-a02
 
 # 检查空闲设备和待启动任务；此命令不启动训练。
 python scripts/launch_pilots.py
@@ -65,12 +69,12 @@ python scripts/report_pilots.py --campaign pilot-v1
 ### 性能诊断
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m gpaco.cli benchmark --n 100 --blocks 5 \
-  --cohort artifacts/pilot-v1/as-tsp100-seed1001/cohorts/generation-001.json \
-  --output artifacts/e01/as-tsp100
+CUDA_VISIBLE_DEVICES=GPU-实际UUID python scripts/diagnose_gpu.py \
+  --bundle artifacts/inputs/frozen-population/p01/tsp100/as \
+  --output artifacts/runs/diagnostic/E01/p01/work-diagnostics/tsp100-as-g001-b000-a01
 ```
 
-`--variant as/acs/mmas` 切换固定宿主；`--backend cpu_existing --threads 12` 切换 CPU；`--no-generated` 使用 CUDA 字节码解释；`--lanes` 和 `--active-tasks` 控制执行映射。所有逻辑任务都执行，禁止 fitness 去重。寄存器资源不足的映射报为不可行，不自动缩减蚂蚁数。
+诊断入口从已登记的冻结输入读取宿主和科学预算。通用 `gpaco.cli benchmark` 仍支持 `--variant`、`--backend`、`--no-generated`、`--lanes`、`--active-tasks` 等执行参数，但其输出须事先规划所属证据等级。六组CPU测量使用专用 `scripts/benchmark_cpu.py`，不是临时挑线程数。所有逻辑任务都执行，禁止fitness去重；资源不足不自动缩减蚂蚁数。
 
 `--profile-stages` 是单独的事件插桩诊断，不能与无插桩正式性能样本混用。`device_search_s` 不等于端到端时间；`eval_wall_s` 含本次编译、准备、上传、搜索和回传，但不含外层数据读取、适应度归约、验证及保存。`generation_wall_s` 和 `training_wall_s` 是更完整的边界。
 
@@ -87,10 +91,10 @@ python scripts/report_hardware_pilot.py           # 从已完成记录增量汇�
 
 配置位于 `configs/hardware/cross_gpu_pilot.yaml`。A5000、A40、L40S、L4、RTX PRO 5000 Blackwell各使用一张物理卡；先进行基础E00，再筛选执行计划、完成5个独立随机流的留出配对block，随后进行每规模3个seed、各3代的短训练。每卡每规模的最终选定计划只由tuning数据决定。独立A5000规范参考库和冠军复评用于隔离输入与浮点差异。
 
-产物位于 `artifacts/hardware-pilot-v1/`，汇总在其 `summary/` 下；包括CSV/JSON、曲线、能耗图和原始测量。旧50代训练继续使用原快照，标准测试集不打开。进一步的进度记录见 [异构先导状态](docs/results/hardware_pilot_status.md)。
+产物暂时仍在 `artifacts/hardware-pilot-v1/`，因为任务运行中而延后迁移。`summary/`是运行期增量视图，不是正式结果。历史启动记录见 [异构先导启动快照](docs/results/status/snapshots/2026-10-10-cross-gpu-startup.md)，当前路径见[盘点](docs/results/status/storage_inventory.md)。
 
 ### 持续利用空闲 A5000
 
 `scripts/a5000_pool.py --execute` 启动项目内nohup调度器，每60秒使用 `gpu-free` 扫描并复查空闲RTX A5000。队列包含两个规模、三阶段真实种群和三ACO宿主的GPU基线配对与独立诊断；缺失cohort自动等待依赖，不占卡空等。已有50代训练及跨卡先导保持原样。详见[持续队列协议](docs/design/06_a5000_continuous_queue.md)，实时进度与图表位于 `artifacts/a5000-main-v1/summary/`。
 
-当前控制器与新增GPU使用清单见[队列启动记录](docs/results/a5000_main_queue_status.md)。
+启动当时的控制器与GPU清单见[历史启动记录](docs/results/status/snapshots/2026-10-10-a5000-queue-startup.md)。实际进度读取队列及心跳，不能从历史文档推断。

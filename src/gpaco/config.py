@@ -63,9 +63,10 @@ class ExecutionPlan:
     cpu_threads: int = 1
     generated: bool = False
     profile_stages: bool = False
+    diagnostic_work: bool = False
 
     def __post_init__(self):
-        if self.backend not in ("cpu_existing", "cuda_existing"):
+        if self.backend not in ("cpu_python", "cpu_existing", "cuda_existing"):
             raise ValueError("未实现的执行后端")
         if self.candidate_lanes not in (4, 8, 16, 32):
             raise ValueError("candidate_lanes 必须是 4/8/16/32")

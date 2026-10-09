@@ -45,6 +45,13 @@ def metadata():
         except (OSError, subprocess.SubprocessError):
             return None
 
+    def version(name):
+        # CPU-only 环境不应因没有安装 CUDA / Torch 而无法记录实验。
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return None
+
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "hostname": platform.node(),
@@ -54,7 +61,7 @@ def metadata():
         "source_hash": source_hash(),
         "python": platform.python_version(),
         "packages": {
-            name: importlib.metadata.version(name)
+            name: version(name)
             for name in ("numpy", "numba", "llvmlite", "torch", "cupy-cuda13x", "deap")
         },
         "gpu_visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -77,7 +84,9 @@ def metadata():
 
 
 def evaluate(programs, problem, search, seed, plan):
-    if plan.backend == "cpu_existing":
+    if plan.backend == "cpu_python":
+        from .backends.cpu_python import evaluate as implementation
+    elif plan.backend == "cpu_existing":
         from .backends.cpu import evaluate as implementation
     elif plan.backend == "cuda_existing":
         from .backends.cuda_backend import evaluate as implementation
@@ -107,6 +116,8 @@ def baseline(problem, search, seed, plan):
     if target.exists():
         with np.load(target, allow_pickle=False) as record:
             return record["lengths"].copy(), 0.0, True
+    if plan.backend.startswith("cpu_"):
+        raise FileNotFoundError("CPU 实验需要预生成的只读 ACO 基线；禁止隐式启动 CUDA")
     begin = perf_counter()
     result = evaluate([ProgramSpec.parse("ZERO")], problem, search, seed, canonical)
     target.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,3 @@
+record_path,status,contended,telemetry_errors,reason
+artifacts/a5000-main-v1/tasks/e01-tsp500-g001-mmas-b03/attempt-001/measurements/generated/record.json,completed,True,[],未完成、检测到争用或监测错误；保留原始记录，不纳入本报告
+artifacts/a5000-main-v1/tasks/e01-tsp500-g001-mmas-b03/attempt-001/measurements/interpreted/record.json,completed,True,[],未完成、检测到争用或监测错误；保留原始记录，不纳入本报告

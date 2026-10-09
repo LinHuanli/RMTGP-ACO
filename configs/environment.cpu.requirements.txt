@@ -1,0 +1,7 @@
+# 与当前科学执行环境锁定一致；无需 cupy、torch 或 CUDA。
+numpy==2.4.6
+numba==0.68.0
+llvmlite==0.50.0
+deap==1.4.3
+PyYAML==6.0.2
+matplotlib==3.11.2

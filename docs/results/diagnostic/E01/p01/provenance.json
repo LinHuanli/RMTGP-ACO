@@ -1,0 +1,74 @@
+{
+  "created_at_utc": "2026-10-09T14:31:22.151984+00:00",
+  "evidence_tier": "diagnostic",
+  "experiment_id": "E01",
+  "protocol_id": "p01",
+  "formal_result": false,
+  "script_sha256": "4dade8ec619d76849958481c4e01d8ddf8bb398ab345952cf0f619d24c117c75",
+  "registry_sha256": "ab3ca899bcfaf9dcf556107de7256c8d7a82b812b985ae2ae30e5ffab909d7bb",
+  "input_records": [
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g001-acs-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "80c734d72ebf350284c439cbbfdcf9bc52f1e6fc8325ab8671006682599aee5b"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g001-as-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "1a6c7ba1bbf0ddb10cb1867daf41be173488ca41a9032f3e0912a958d8c6e488"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g001-mmas-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "4e282299a978566fd91cf622293929fa2523126fd531bf9cfafefb7b317088f2"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g025-acs-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "5f99e8adbdce32497453846226d3d2092010d65f2b1c123fedf441415698fef7"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g025-as-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "e358647933939552e0fabce114a53436384ac2b0e0c4566f88d571673ab411b4"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g025-mmas-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "0f2e749bec8ab089035c235e26008c0d8193f18d3fdec4745e9ffe79de4ef6ad"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g050-acs-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "c40e62d3df12194f5239e72f4e0955d64a6724b5fb6f1ece1520dfdbb0fd1474"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g050-as-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "7d023f5d129ae2e53e12588d6663b7ffa4dca918807baf36d1b89d949d289270"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g050-mmas-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "f33ebdf00d4cf1d3d8dd1605a00a988ef8fc79c57f730a088a4d99466cbb6950"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp500-g001-acs-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "524211709a3a540738ac09d5ac2682cbf532adfb4c1c3e6e1b354e0c29a92770"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp500-g001-as-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "34a42711535b4768ac7b0efeb275a87f0131cbaf3c3c982cf25dd80de96f091b"
+    },
+    {
+      "path": "artifacts/a5000-main-v1/tasks/e01-tsp500-g001-mmas-profile/attempt-001/measurements/generated/record.json",
+      "sha256": "e982933d3ddec821ecf8af5fa091e66cfce34df31cc0f3c121777ab40afe4686"
+    }
+  ],
+  "filter_policy": "显式登记来源；已完成且未检测到争用/监测错误；smoke与历史协议不进入当前测量；不同split分表",
+  "tests_opened": false,
+  "exports": {
+    "README.md": "63a3ae061d4d71587076d0892a5d916d4991bb20666b6825632b1888b3213f3e",
+    "figures/tsp100_stages.pdf": "d69f9fedcc6a5db4c0496200a7b36a2f1746894eade8fd803fa74e2643aed7c9",
+    "figures/tsp100_stages.png": "9b0582ea89cc39416d1d1fee0182b202e2d6b52ae902a0b538eb711d4f95470e",
+    "figures/tsp100_stages.svg": "5b0bda93d93a52884d3fd29c88b700ea67a4177ec0d175dd03a5c7f68ee0104a",
+    "figures/tsp500_stages.pdf": "89fe0041274ceed1d3e755812e9abac92c4e010e109d6e4a9236f70e968006e6",
+    "figures/tsp500_stages.png": "d6cf0ac452b3d6ddfc8d516a09628a55793fc8afe5c95d5557cde5ff5afb0571",
+    "figures/tsp500_stages.svg": "9bfb85ace92dd5700d23565e0b05f045f52f855759a91f891c3332384e7b08e8",
+    "tables/detailed_diagnostics.csv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tables/detailed_diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "tables/gpu_stage_profiles.csv": "0694942a5931fedd63733a3c8a2fccdb866f13c22e1cb6c82824c624c5e7f6f2",
+    "tables/gpu_stage_profiles.json": "8b181748fbbc0a503a2f38739f245b1acc3779329736d8f645bc62a728dd9f65"
+  }
+}

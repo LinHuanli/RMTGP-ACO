@@ -21,7 +21,8 @@ __pycache__/
 # 本研究的环境、派生产物和编辑器状态均留在项目内，但不提交大文件。
 /.envs/
 /.tools/
-/artifacts/
+/artifacts/*
+!/artifacts/README.md
 /.vscode/
 *.egg-info/
 /build/

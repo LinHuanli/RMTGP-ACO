@@ -1,0 +1,47 @@
+[
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/RESULTS.md",
+    "local": "artifacts/provenance/historical/E02/p01/RESULTS.md",
+    "sha256": "029eef790ae686e8a6dc0c1d3abadbf8dd168cd2074ea8f25d1533da62c0b1dd"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/config.yaml",
+    "local": "artifacts/provenance/historical/E02/p01/config.yaml",
+    "sha256": "f52e9fff664c541bca3a9968cd90e4b32aab7cc4deb02e6392d7cf10124a21ff"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/trace_totals.csv",
+    "local": "artifacts/provenance/historical/E02/p01/trace_totals.csv",
+    "sha256": "f52cd566313c384b2140229bb1f46ee8c9d10fdde9fff9bdef860197093d91b5"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/review_v1/RESULTS.md",
+    "local": "artifacts/provenance/historical/E02/p01/review_v1/RESULTS.md",
+    "sha256": "be87b1539e8f9bd7a4270eeb7483def35c3195e776e031462f7c8c4d73f4be9b"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/review_v1/tsp500-pair_totals.csv",
+    "local": "artifacts/provenance/historical/E02/p01/review_v1/tsp500-pair_totals.csv",
+    "sha256": "987e5e14bd88811ef35eff00add422a63e6df83d6a50d32ad66a4aa2c838bcb6"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/review_v1/exports/measurements.csv",
+    "local": "artifacts/provenance/historical/E02/p01/review_v1/exports/measurements.csv",
+    "sha256": "67223536519b93fe429b4fb87d251276e4c53d182a26358b1ac8acdcc7398ba0"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/review_v1/exports/jit_microbench.csv",
+    "local": "artifacts/provenance/historical/E02/p01/review_v1/exports/jit_microbench.csv",
+    "sha256": "1bba5f27e8bc15588fefab634d61d7f174a833ba4c17e778d5f6e41b1c1dd1d9"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/review_v1/exports/profile_captures.csv",
+    "local": "artifacts/provenance/historical/E02/p01/review_v1/exports/profile_captures.csv",
+    "sha256": "2b2f0604d1c7db80353f0e176dafad9f3e91d6d64c5193fee408d7cf62bbb32c"
+  },
+  {
+    "source": "/vol/grid-solar/sgeusers/linbocheng/MTGP_ACO_presentation_review/slides/presentation_benchmarks/review_v1/exports/profile_kernels.csv",
+    "local": "artifacts/provenance/historical/E02/p01/review_v1/exports/profile_kernels.csv",
+    "sha256": "3ba1631c9e6185775c602efac8fd0bd82485908a1cbb097aaaad3edc6c21b465"
+  }
+]

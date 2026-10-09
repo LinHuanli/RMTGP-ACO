@@ -15,6 +15,31 @@ from gpaco.language import TERMINAL_IDS, ProgramSpec, evaluate_reference, pack_p
 pytestmark = pytest.mark.cuda
 
 
+@pytest.mark.parametrize("variant", ["as", "acs", "mmas"])
+def test_diagnostic_counts_and_instrumentation_invariance(cp, variant):
+    data = problem(n=9)
+    programs = [ProgramSpec.parse(x) for x in ("ZERO", "ADD(DistRank, TurnCos)", "SUB(RTau, REta)")]
+    config = SearchConfig(variant=variant, ants=4, iterations=5, candidate_size=3)
+    plan = ExecutionPlan(generated=True, active_tasks=2)
+    from dataclasses import replace
+
+    plain = cuda_backend.evaluate(programs, data, config, 211, plan)
+    measured = cuda_backend.evaluate(
+        programs, data, config, 211, replace(plan, diagnostic_work=True)
+    )
+    np.testing.assert_array_equal(plain.lengths, measured.lengths)
+    np.testing.assert_array_equal(plain.tours, measured.tours)
+    assert measured.work_counts[..., 0].sum() == 3 * 2 * 4 * 5 * 8
+    assert measured.work_counts[..., 2].sum() == measured.diagnostics[..., 0].sum() * data.n
+    # 常数树不计算 DistRank，不能给常数树虚报排名工作量。
+    assert measured.work_counts[0, :, 5:7].sum() == 0
+    assert measured.snapshot_meta.shape[1] == 10
+    for index, row in enumerate(measured.snapshot_meta):
+        if row[0] >= 0:
+            assert measured.snapshot_visited[index].sum() == row[4]
+            assert measured.snapshot_visited[index, row[5]] == 1
+
+
 @pytest.fixture(scope="module")
 def cp():
     if not os.environ.get("CUDA_VISIBLE_DEVICES"):
