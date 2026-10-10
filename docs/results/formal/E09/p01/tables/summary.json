@@ -1,0 +1,47 @@
+[
+  {
+    "n": 100,
+    "metric": "validation_gap",
+    "independent_seeds": 10,
+    "mean": 4.5931971073150635,
+    "sd": 0.05427126867711683,
+    "ci_low": 4.560282714366912,
+    "ci_high": 4.623245286941528
+  },
+  {
+    "n": 100,
+    "metric": "validation_baseline_gap",
+    "independent_seeds": 10,
+    "mean": 5.840024614334107,
+    "sd": 0.05332321210279333,
+    "ci_low": 5.807280830144882,
+    "ci_high": 5.86916921377182
+  },
+  {
+    "n": 100,
+    "metric": "validation_delta_pp",
+    "independent_seeds": 10,
+    "mean": -1.2468275070190429,
+    "sd": 0.05607327250718118,
+    "ci_low": -1.278425645828247,
+    "ci_high": -1.2126448154449463
+  },
+  {
+    "n": 100,
+    "metric": "training_s",
+    "independent_seeds": 10,
+    "mean": 1694.1180127699859,
+    "sd": 240.13018208207274,
+    "ci_low": 1567.0552124296619,
+    "ci_high": 1843.4220093695028
+  },
+  {
+    "n": 100,
+    "metric": "preparation_s",
+    "independent_seeds": 10,
+    "mean": 47.05702921347692,
+    "sd": 3.1711691893228484,
+    "ci_low": 45.462944932088725,
+    "ci_high": 49.237294155776034
+  }
+]

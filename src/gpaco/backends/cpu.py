@@ -8,6 +8,7 @@ from numba import njit, prange, set_num_threads
 
 from ..language import pack_programs
 from .cpu_existing import _construct_tours, _nearest_neighbour_length, _tour_lengths
+from .local_search import improve, permutation
 from .numeric import counter_uniform
 
 
@@ -17,6 +18,7 @@ class EvaluationResult:
     tours: np.ndarray
     diagnostics: np.ndarray
     timings: dict
+    local_search_diagnostics: np.ndarray | None = None
 
 
 @njit(cache=True)
@@ -70,11 +72,14 @@ def solve_kernel(
     initial_tau,
     initial_low,
     initial_high,
+    ls_mode,
+    ls_limit,
 ):
     programs, batch, n = opcodes.shape[0], coords.shape[0], coords.shape[1]
     output_lengths = np.empty((programs, batch), np.float32)
     output_tours = np.empty((programs, batch, n + 1), np.int32)
     output_diagnostics = np.zeros((programs, batch, 8), np.uint64)
+    ls_diagnostics = np.zeros((programs, batch, 4), np.uint64)
     one, zero = np.float32(1), np.float32(0)
     local_factors = np.empty(ants + 1, np.float32)
     for i in range(ants + 1):
@@ -86,6 +91,10 @@ def solve_kernel(
         tours = np.empty((ants, n + 1), np.int32)
         visited = np.empty((ants, n), np.uint8)
         lengths = np.empty(ants, np.float32)
+        ls_order = np.empty(n, np.int32)
+        ls_pos = np.empty(n, np.int32)
+        ls_dlb = np.empty(n, np.uint8)
+        ls_scratch = np.empty(n, np.int32)
         best_tour, restart_tour = np.empty(n + 1, np.int32), np.empty(n + 1, np.int32)
         workspace = (
             np.empty(n, np.int32),
@@ -128,6 +137,21 @@ def solve_kernel(
                 _construct_tours(
                     geometry, tau, tours, visited, state, program, random_state, workspace
                 )
+                if ls_mode:
+                    for a in range(ants):
+                        permutation(ls_order, seed, keys[b], iteration, a)
+                        improve(
+                            tours[a],
+                            distances[b],
+                            nearest[b],
+                            ls_order,
+                            ls_mode,
+                            min(ls_limit, nearest.shape[2]),
+                            ls_pos,
+                            ls_dlb,
+                            ls_scratch,
+                            ls_diagnostics[p, b],
+                        )
                 _tour_lengths(distances[b], tours, lengths)
                 winner = 0
                 for a in range(1, ants):
@@ -200,7 +224,7 @@ def solve_kernel(
             output_lengths[p, b] = best
             output_tours[p, b] = best_tour
             output_diagnostics[p, b] = workspace[-1]
-    return output_lengths, output_tours, output_diagnostics
+    return output_lengths, output_tours, output_diagnostics, ls_diagnostics
 
 
 def problem_initialization(problem, config, seed):
@@ -253,13 +277,16 @@ def evaluate(programs, problem, config, seed, plan):
         np.float32(config.branch_threshold),
         config.restart_stagnation,
         *initial,
+        ("none", "two_opt", "three_opt").index(config.local_search),
+        config.ls_candidate_size,
     )
     return EvaluationResult(
-        *values,
+        *values[:3],
         {
             "eval_wall_s": perf_counter() - begin,
             "initialization_s": setup,
             "backend": "cpu_existing",
             "executed_tasks": len(programs) * problem.size,
         },
+        values[3] if config.local_search != "none" else None,
     )

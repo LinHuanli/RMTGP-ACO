@@ -1,0 +1,44 @@
+[
+  {
+    "n": 100,
+    "generation": 1,
+    "construct_percent_of_recorded_stages": 95.05139356523466,
+    "construct_device_s": 32.74177592849731,
+    "update_device_s": 1.7046163866519928
+  },
+  {
+    "n": 100,
+    "generation": 25,
+    "construct_percent_of_recorded_stages": 93.88654417836577,
+    "construct_device_s": 25.099056945800783,
+    "update_device_s": 1.6343340480327606
+  },
+  {
+    "n": 100,
+    "generation": 50,
+    "construct_percent_of_recorded_stages": 96.69637885115789,
+    "construct_device_s": 48.00223656463623,
+    "update_device_s": 1.6399911329746246
+  },
+  {
+    "n": 500,
+    "generation": 1,
+    "construct_percent_of_recorded_stages": 97.95688446089045,
+    "construct_device_s": 1193.2894606933594,
+    "update_device_s": 24.888789115905762
+  },
+  {
+    "n": 500,
+    "generation": 25,
+    "construct_percent_of_recorded_stages": 93.41491291516313,
+    "construct_device_s": 352.1335995483398,
+    "update_device_s": 24.822914737701417
+  },
+  {
+    "n": 500,
+    "generation": 50,
+    "construct_percent_of_recorded_stages": 94.12865744025173,
+    "construct_device_s": 397.65894079589845,
+    "update_device_s": 24.80426181411743
+  }
+]

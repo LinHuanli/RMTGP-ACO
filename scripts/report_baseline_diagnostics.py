@@ -510,7 +510,26 @@ def deep_diagnostics(directory):
         )
     export(directory, "detailed_diagnostics", rows)
     if rows:
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+        groups = (
+            [rows]
+            if len(rows) <= 12
+            else [
+                [r for r in rows if (r["n"], r["variant"]) == key]
+                for key in sorted({(r["n"], r["variant"]) for r in rows})
+            ]
+        )
+        fig, grid = plt.subplots(
+            len(groups), 2, figsize=(12, 4 * len(groups)), squeeze=False, constrained_layout=True
+        )
+        for group, axes in zip(groups, grid, strict=True):
+            diagnostic_panel(group, axes)
+        save(fig, directory, "detailed_work_and_sampled_cycles")
+    return rows
+
+
+def diagnostic_panel(rows, axes):
+    """按规模/宿主分面；保留每个独立block，不能在同名类别位置重叠。"""
+    if rows:
         labels = [f"{r['n']}/{r['variant']}/g{r['generation']}/b{r['block']}" for r in rows]
         x = np.arange(len(rows))
         for index, field in enumerate(
@@ -551,8 +570,6 @@ def deep_diagnostics(directory):
         for ax in axes:
             ax.tick_params(axis="x", rotation=45)
             ax.legend(fontsize=6)
-        save(fig, directory, "detailed_work_and_sampled_cycles")
-    return rows
 
 
 def publish(directory, title, tier, experiment, lines, source_rows):

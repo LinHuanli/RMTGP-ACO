@@ -1,0 +1,3 @@
+task,attempt,reason,replacement
+as-tsp100-g050-b002,as-tsp100-g050-b002-a01,同卡争用或遥测异常，整个配对block排除,
+as-tsp500-g001-b002,as-tsp500-g001-b002-a01,同卡争用或遥测异常，整个配对block排除,

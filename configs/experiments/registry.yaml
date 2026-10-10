@@ -2,6 +2,65 @@
 # legacy_path 是不可改写的历史地址；运行期间不迁移、不创建假装迁移的软链接。
 schema: gpaco-artifact-registry-v1
 entries:
+  - id: shared-local-search-dispatch-p02
+    tier: operations
+    experiments: [E00, E01, E09, E12]
+    protocol: p02
+    purpose: 2-opt/3-opt扩展有限队列；12调优、12短训练、36先导训练、90配对block及12阶段诊断
+    path: artifacts/operations/local-search-dispatch/p02
+    migration: new_only
+  - id: E00-p02-ls-qualification
+    tier: smoke
+    experiments: [E00]
+    protocol: p02
+    purpose: 每卡CPU/GPU局部移动与闭环资格检查；12个三代完整预算短训练；不参与统计
+    path: artifacts/runs/smoke/E00/p02/local-search
+    migration: new_only
+  - id: E12-p02-ls-tuning
+    tier: tuning
+    experiments: [E12]
+    protocol: p02
+    purpose: 独立tuning输入，12设置各5配对block筛选局部搜索执行器；不能作为holdout证据
+    path: artifacts/runs/tuning/E12/p02/local-search
+    migration: new_only
+  - id: E12-p02-ls-performance
+    tier: pilot
+    experiments: [E12]
+    protocol: p02
+    purpose: 90个同卡五计划配对block；三宿主两规模三阶段；包含none锚点
+    path: artifacts/runs/pilot/E12/p02/local-search
+    migration: new_only
+    report: docs/results/pilot/E12/p02
+  - id: E09-p02-ls-training
+    tier: pilot
+    experiments: [E09]
+    protocol: p02
+    purpose: 三宿主两规模两种局部搜索各3根seed独立50代训练，共36次；不是正式10seed结论
+    path: artifacts/runs/pilot/E09/p02/local-search
+    migration: new_only
+    report: docs/results/pilot/E09/p02
+  - id: E01-p02-ls-profile
+    tier: diagnostic
+    experiments: [E01]
+    protocol: p02
+    purpose: 12种局部搜索配置构造/LS/更新阶段完整预算事件诊断，与无插桩速度分开
+    path: artifacts/runs/diagnostic/E01/p02/local-search
+    migration: new_only
+    report: docs/results/diagnostic/E01/p02
+  - id: shared-ls-training-inputs-p02
+    tier: input
+    experiments: [E00, E09]
+    protocol: p02
+    purpose: 每run预生成同局部搜索ZERO参考，冻结日程、初始种群、验证场景；smoke与pilot分目录
+    path: artifacts/inputs/local-search-training/p02
+    migration: new_only
+  - id: shared-mapping-repair-p01
+    tier: operations
+    experiments: [E07]
+    protocol: p01
+    purpose: 两个已确认争用block的显式a02修复；旧源码及输入/计划次序不变，不是新增统计重复
+    path: artifacts/operations/mapping-repair/p01
+    migration: new_only
   - id: E09-p01-formal-gpu-existing
     tier: formal
     experiments: [E09]

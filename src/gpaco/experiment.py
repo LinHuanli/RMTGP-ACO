@@ -358,6 +358,19 @@ def train(
             "fitness_cache_hits": 0,
             "best_expression": programs[winner].expression,
         }
+        if result.local_search_diagnostics is not None:
+            record["local_search_counts"] = dict(
+                zip(
+                    (
+                        "two_opt_moves",
+                        "three_opt_moves",
+                        "logical_candidate_checks",
+                        "two_opt_passes",
+                    ),
+                    map(int, result.local_search_diagnostics.sum(axis=(0, 1))),
+                    strict=True,
+                )
+            )
         if generation < generations:
             population = next_population(population, fitness)
         record["generation_wall_s"] = perf_counter() - generation_start

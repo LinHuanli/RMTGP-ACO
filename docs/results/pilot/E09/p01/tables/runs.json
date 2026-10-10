@@ -1,0 +1,80 @@
+[
+  {
+    "run": "as-tsp100-seed1001",
+    "n": 100,
+    "seed": 1001,
+    "completed": true,
+    "generations": 50,
+    "timing_eligible": true,
+    "training_s": 1592.8815531786531,
+    "preparation_s": null,
+    "validation_gap": 4.654232501983643,
+    "validation_baseline_gap": 5.773799896240234,
+    "validation_delta_pp": -1.1195673942565918
+  },
+  {
+    "run": "as-tsp100-seed1002",
+    "n": 100,
+    "seed": 1002,
+    "completed": true,
+    "generations": 50,
+    "timing_eligible": true,
+    "training_s": 1854.6875861026347,
+    "preparation_s": null,
+    "validation_gap": 4.505980014801025,
+    "validation_baseline_gap": 5.808330535888672,
+    "validation_delta_pp": -1.3023505210876465
+  },
+  {
+    "run": "as-tsp100-seed1003",
+    "n": 100,
+    "seed": 1003,
+    "completed": true,
+    "generations": 50,
+    "timing_eligible": true,
+    "training_s": 2202.5341862291098,
+    "preparation_s": null,
+    "validation_gap": 4.25234842300415,
+    "validation_baseline_gap": 5.782437801361084,
+    "validation_delta_pp": -1.5300893783569336
+  },
+  {
+    "run": "as-tsp500-seed1001",
+    "n": 500,
+    "seed": 1001,
+    "completed": true,
+    "generations": 50,
+    "timing_eligible": true,
+    "training_s": 39359.82579627726,
+    "preparation_s": null,
+    "validation_gap": 12.388352394104004,
+    "validation_baseline_gap": 22.77176856994629,
+    "validation_delta_pp": -10.383416175842285
+  },
+  {
+    "run": "as-tsp500-seed1002",
+    "n": 500,
+    "seed": 1002,
+    "completed": true,
+    "generations": 50,
+    "timing_eligible": true,
+    "training_s": 29712.384818689898,
+    "preparation_s": null,
+    "validation_gap": 12.753669738769531,
+    "validation_baseline_gap": 22.82398223876953,
+    "validation_delta_pp": -10.0703125
+  },
+  {
+    "run": "as-tsp500-seed1003",
+    "n": 500,
+    "seed": 1003,
+    "completed": true,
+    "generations": 50,
+    "timing_eligible": true,
+    "training_s": 29418.163973714225,
+    "preparation_s": null,
+    "validation_gap": 12.565765380859375,
+    "validation_baseline_gap": 22.784936904907227,
+    "validation_delta_pp": -10.219171524047852
+  }
+]

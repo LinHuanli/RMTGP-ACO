@@ -1,0 +1,72 @@
+{
+  "created_at_utc": "2026-10-10T03:18:21.589671+00:00",
+  "evidence_tier": "synthesis: see each source tier",
+  "formal_result": false,
+  "tests_opened": false,
+  "script_sha256": "56324051ff4fbe9ec6e4216dc6f4672b80490417cb8b07bfd32ea5e523b9f755",
+  "input_records": [
+    {
+      "path": "docs/results/diagnostic/E01/p01/provenance.json",
+      "sha256": "81b7096fe18c91934dc0009f786ecf0e603cd4414be7c5bcb9d4ea2e71399426"
+    },
+    {
+      "path": "docs/results/diagnostic/E01/p01/tables/gpu_stage_profiles.json",
+      "sha256": "17577aca92048ecbeabcbcc887f6d08ca1053636929a3fe8256305a0bcaeefbf"
+    },
+    {
+      "path": "docs/results/formal/E09/p01/provenance.json",
+      "sha256": "7fa80e7275bbf31fc6ebb9f2d1bcd5873229e8cda4f3ad791496567d62fa15c9"
+    },
+    {
+      "path": "docs/results/formal/E09/p01/tables/summary.json",
+      "sha256": "a08252f879eade013efa364078dbbae57d8f4b03598de35f96a192d3a89be080"
+    },
+    {
+      "path": "docs/results/pilot/E01/p01/provenance.json",
+      "sha256": "12e8bb554eef1babc885378a85824a3efd0513ce1346f89e97b98adcabd14354"
+    },
+    {
+      "path": "docs/results/pilot/E01/p01/tables/gpu_work_metrics.json",
+      "sha256": "b82465b024f93394ef3c554fd33f0148b0e50d501600840776fcebf9f255a3ff"
+    },
+    {
+      "path": "docs/results/pilot/E04/p01/provenance.json",
+      "sha256": "432c1ee64cfdcb83d7cecf33ba630b3034a7d0f2814c5960f633818a96b3fb1c"
+    },
+    {
+      "path": "docs/results/pilot/E04/p01/tables/performance.json",
+      "sha256": "a491b1211249a62f8869a1aa73032c0b5749f0df9147f4b28327816c6c330353"
+    },
+    {
+      "path": "docs/results/pilot/E07/p01/provenance.json",
+      "sha256": "98d57aa9e117b47b6f80def3018e49b7413c417d1c7de1cc17552e01d20f0eb4"
+    },
+    {
+      "path": "docs/results/pilot/E07/p01/tables/paired_summary.json",
+      "sha256": "c0108267373d700f6b3fef8d9c140946a3139046d8856690b3acf641f6b8b7c5"
+    },
+    {
+      "path": "docs/results/pilot/E12/p01/provenance.json",
+      "sha256": "19ba9fcb243a27ca1d311b248a9ceac9fa6cb9aef1b5e65169d58b34515f09fa"
+    },
+    {
+      "path": "docs/results/pilot/E12/p01/tables/within_model_pairs.json",
+      "sha256": "d673ffe95cbc7f261e02482991b112dc66f2b29051c984422b353b1c678af626"
+    },
+    {
+      "path": "scripts/report_research_questions.py",
+      "sha256": "9f933ed2bf907a9c496efde7b9fec6d2596bb757d22c6750af04ffdc83ea5512"
+    }
+  ],
+  "filter_policy": "完整结束标记及哈希核验；计时排除争用/监测异常；缺失、不可行和原始失败全部交代；不同证据等级分开",
+  "exports": {
+    "README.md": "148c15a876e302f0e228dcf5313b93919cf33774505ed2ced8d5755d78c609c9",
+    "figures/rq4_scale_and_cohort.pdf": "bc1e8e084e3de68de612b1c9b35906bd389c49d7947df3e5dd5d6fb06d9b876e",
+    "figures/rq4_scale_and_cohort.png": "1644f4b5328d36840056b3e42c074c4715c71aa45d12a291450eaeb0cefa6cda",
+    "figures/rq4_scale_and_cohort.svg": "553f5c3a75567023f175672c9fad321e840157f319326da3e65de72f0faedb23",
+    "tables/rq1_as_stages.csv": "90b36d86829d203482e1a706aee6b44d759e043948d4b79026cbbafd960bf22a",
+    "tables/rq1_as_stages.json": "a3dbbfa51091f975e75f98798d82f8076d58a50f8cccf263a87f94594e53ba72",
+    "tables/rq4_as_scaling.csv": "b1bb35895b47f40587a376324bc1bfbe5c429e35028a3d311d74c4dbe87da9da",
+    "tables/rq4_as_scaling.json": "68fb36fd2fabe4e7a6413895d308aedcf556d8e155cbe867155d03301c034410"
+  }
+}

@@ -1,11 +1,11 @@
 {
-  "created_at_utc": "2026-10-09T15:00:39.714500+00:00",
+  "created_at_utc": "2026-10-10T03:13:46.966182+00:00",
   "evidence_tier": "pilot",
   "experiment_id": "E01",
   "protocol_id": "p01",
   "formal_result": false,
-  "script_sha256": "e14fd6a06191a16967061a3cdde8f854e6f87cc1f427c239cc9f29c5b61a705d",
-  "registry_sha256": "03113677459f3188a94bd131ee0b02fc91770506dc3974bfbcd4ccbf26c482cb",
+  "script_sha256": "7d893e5f52853be1ad2c1f153cbd81690cd4929a097100e7684a23fa9dfb9c66",
+  "registry_sha256": "f579afdd7b472fc766c88ec311cf33288e6d0b535114fc521e6e3633077481db",
   "input_records": [
     {
       "path": "artifacts/a5000-main-v1/tasks/e01-tsp100-g001-acs-b00/attempt-001/measurements/generated/record.json",
@@ -622,25 +622,249 @@
     {
       "path": "artifacts/hardware-pilot-v1/inputs/tsp500/scenarios/validation-1003-2/baseline.npz",
       "sha256": "519d963fe809a0c97306ec49eaee2125f53666a4b8d02d427fb046a537fbad79"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b00/attempt-001/measurements/generated/record.json",
+      "sha256": "2a72ea533e3516a935c33231179030678cc33be21ca133017b2737a3cca90b4a"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b00/attempt-001/measurements/interpreted/record.json",
+      "sha256": "19fc03f11ded92cbcff30197b9ee52242f8df7384715a030e4a2f557a520aba3"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b01/attempt-001/measurements/generated/record.json",
+      "sha256": "936b3cab7cc02bc2e4c4698a9c070165de234a4749df249e4600dcdd42cd4236"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b01/attempt-001/measurements/interpreted/record.json",
+      "sha256": "eaf6f43fae47ca50e03a147e42361576c9f01d6db7859799af5544b1ee7e7a67"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b02/attempt-001/measurements/generated/record.json",
+      "sha256": "e9326c0db94060e2327a0a3efab8541e7a4afd8bada110ba738b72a11e1e6ba4"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b02/attempt-001/measurements/interpreted/record.json",
+      "sha256": "d36318d216bb3472f7e5b4e874820c26ea4ac0a69e50857a298435b878f9ac77"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b04/attempt-001/measurements/generated/record.json",
+      "sha256": "0e45802e5531c8966d90174ca455c235356b131b85f5cc828896093c3da74ce5"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-acs-b04/attempt-001/measurements/interpreted/record.json",
+      "sha256": "2578ded14b008f239d8d069aaa78bd26e3b1db4c9639d56d5043a89c43ba9bb2"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b00/attempt-001/measurements/generated/record.json",
+      "sha256": "b93d81687ac3b9336039fc37861532ae167f75fc593fa029c23638183ea86c10"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b00/attempt-001/measurements/interpreted/record.json",
+      "sha256": "a84fb3223766f0c09f3914b26a20efd0a9731e96f6603fe74dc40e0cc5ba1c5c"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b01/attempt-001/measurements/generated/record.json",
+      "sha256": "39cf154697a0d80516084266f4b4cd69bc9e5b0bd5691cfbf3b17e5731e76de9"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b01/attempt-001/measurements/interpreted/record.json",
+      "sha256": "144d930a8efd1369848dc065d5a458a9eb923578f506c12523a5e7ba09da88f3"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b02/attempt-001/measurements/generated/record.json",
+      "sha256": "39ebcaf8e8aae3bd539d9f820d9bc9c6234e05853194559fe6c9e3e16a37bb76"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b02/attempt-001/measurements/interpreted/record.json",
+      "sha256": "e794ba5e78dcf50715bbe37e1c1a5a2df47a84dc365499d25ebac08f5d912306"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b03/attempt-001/measurements/generated/record.json",
+      "sha256": "9132083aeec944ecbb9c81db40a69a1233719c0d7d5b86351ed522e6a7eb9dcc"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b03/attempt-001/measurements/interpreted/record.json",
+      "sha256": "53fe79761ac023b5be893450027307f939f6ee1cd39fe6341082ebecb020baac"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b04/attempt-008/measurements/generated/record.json",
+      "sha256": "13b7e5de470088856ae6f1991aba7de38492f33edeaa81bc4824b8400b7390e9"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-as-b04/attempt-008/measurements/interpreted/record.json",
+      "sha256": "3b006ff2a8574f5e37d21f0f0d93a4eff542b7b27385b96d09dccb222da698e5"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b00/attempt-001/measurements/generated/record.json",
+      "sha256": "5c263e5d5892b5b5857a67bc9f784bf3feac0f7c6038155e4f3d5b439fe0f387"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b00/attempt-001/measurements/interpreted/record.json",
+      "sha256": "0e4f1a50ff85079146d938904ab3a09fe4027c2b94f3187973b32b5e941a7327"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b01/attempt-001/measurements/generated/record.json",
+      "sha256": "cca01d1b5779e5b4b27c713a71bb6d93dd59576c0ede35ed3558413a28965c2c"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b01/attempt-001/measurements/interpreted/record.json",
+      "sha256": "9db8baeeb141cf65008cdbf8e099bcddcab2fe5db37545abc9c51dc7dee44fd5"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b02/attempt-001/measurements/generated/record.json",
+      "sha256": "db367a8be47fdf2d0b4cba1d01a33ab1026c4a3c332b6c750ddb1e2dff456777"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b02/attempt-001/measurements/interpreted/record.json",
+      "sha256": "003aeb41e25e64a675b89df3d6aabe613ab2d97d35e192a5adbe16919bb88daa"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b03/attempt-001/measurements/generated/record.json",
+      "sha256": "9af43187ba5ee7cb2da3a3711d53b7a15c63c878f889a74425acbd18ade4257c"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b03/attempt-001/measurements/interpreted/record.json",
+      "sha256": "ffffa2387fd3502794ee83b79670a2b118d91aa5d1aa39abfa8d1502c1837a56"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b04/attempt-001/measurements/generated/record.json",
+      "sha256": "20794ed3380f7939a71b1a04564938295671149aff30f69c0ef21fbceed57ff6"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g025-mmas-b04/attempt-001/measurements/interpreted/record.json",
+      "sha256": "195fb47fe3f1ec80d00b78723f7618c6c8c7127c959b1ad6d45fd6fa99d943a7"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b00/attempt-001/measurements/generated/record.json",
+      "sha256": "d7c161e40a34446f8aca97643c288caec27a77fb1c23d5148cf16e256520ada3"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b00/attempt-001/measurements/interpreted/record.json",
+      "sha256": "b797f9bbcb66f7b9571b4629f373a5d21eadf83cbcf5aa6754004c3818d8d991"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b01/attempt-001/measurements/generated/record.json",
+      "sha256": "06529c399aae25d80217338585198c5580dd3dfb640e9156ee227abdc78baee0"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b01/attempt-001/measurements/interpreted/record.json",
+      "sha256": "4259af3daebe1458c10422eff9115bdca97c937d9ad597c1bc91562b727db4c4"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b02/attempt-008/measurements/generated/record.json",
+      "sha256": "f09bb581e42889e758eee2bf5dc83589901a58c6b290e36f9d1c684c13b2cffa"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b02/attempt-008/measurements/interpreted/record.json",
+      "sha256": "51e04bb6603ef9691a7f3e10e0bf7757b341662db543167317c1354e01d7fdfc"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b03/attempt-001/measurements/generated/record.json",
+      "sha256": "1052ea7c113cd712680546c9e3501f7371b8bdcc450be1035e39e02e0c698ad8"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b03/attempt-001/measurements/interpreted/record.json",
+      "sha256": "68a5f589b66c7763859af82498de8def340dbd69fee252e3f41d3575773eb9b1"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b04/attempt-001/measurements/generated/record.json",
+      "sha256": "db820f599500de50b98f00ef5fd058973f841ba3a9f6d21c3013f77cb5b5c35e"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-acs-b04/attempt-001/measurements/interpreted/record.json",
+      "sha256": "49c944532e4bbdcc3b6bfb345a7e19c7e81872dd74d988ba2392668bd58ffa90"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b00/attempt-001/measurements/generated/record.json",
+      "sha256": "3a927b00d052b344767b02f28eccb6a7e0918205efbb426ad04b054025b70b2f"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b00/attempt-001/measurements/interpreted/record.json",
+      "sha256": "a43a74b68019d8bec73f79936d7c2940f15a9de9dbeedb94fd170a7df85418b0"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b01/attempt-001/measurements/generated/record.json",
+      "sha256": "adca40241247f356645aab2215d3cacfe3b1a3dbe0fd42dbb1f681d58f193300"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b01/attempt-001/measurements/interpreted/record.json",
+      "sha256": "03cbe1bb9152eaa5dd8dd9719bb6ac002497e8a28aa4ddfcead876e3216a6cd8"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b02/attempt-002/measurements/generated/record.json",
+      "sha256": "b18a90b315e616fd2dc010874bfb5851ebd04c52ed75e0b282aeb765d0ee5d5e"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b02/attempt-002/measurements/interpreted/record.json",
+      "sha256": "215caa973ae9a4224c530024cb0d708a3bba69576b52de4bded70d3f6390713c"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b03/attempt-001/measurements/generated/record.json",
+      "sha256": "87de7227595d501ac7ceca31091c736b37031781c9a987b8907cc7b351852e5b"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-as-b03/attempt-001/measurements/interpreted/record.json",
+      "sha256": "038856b69ccd12544d211b750ca6ceb2a31b145b2dbd5822e291f2b89a87779b"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b00/attempt-001/measurements/generated/record.json",
+      "sha256": "9384beb82fa33ce66f06a829f94b8c1915f05278e67703d6de6d8826e77bd7eb"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b00/attempt-001/measurements/interpreted/record.json",
+      "sha256": "ac8517130d8d3daef6c926455be26f1c5883bede124d48326aafb40709f0837e"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b01/attempt-002/measurements/generated/record.json",
+      "sha256": "8c57878d7e7b1711facdc83518ee2333677ae91edf259c577da0a7db9df96f84"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b01/attempt-002/measurements/interpreted/record.json",
+      "sha256": "3c78e9e75492136b1b952d0c74c1cecb933cb634205df494c004611a3e082f92"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b02/attempt-001/measurements/generated/record.json",
+      "sha256": "7e99299fe261e668e5ae36e72c85c5fa1e877c4642a6beade2cd97f3d5c6cec4"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b02/attempt-001/measurements/interpreted/record.json",
+      "sha256": "176a3bfce5d6364dee309ad34980981a31c3ab2e19958fc22bd97dd79680285d"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b03/attempt-001/measurements/generated/record.json",
+      "sha256": "10b76ad1014c04162401a3647ef65d1a2d3e29a2b9ee87aa8b6ebe0e19a195c4"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b03/attempt-001/measurements/interpreted/record.json",
+      "sha256": "cb58a01b71f9ed2d823028dfe2c75e9799eebe1c963f0d35fed84ad609ca2466"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b04/attempt-001/measurements/generated/record.json",
+      "sha256": "deb27a13a78cf0e42b39106db0d43fce8ebce6a771ed91d51724e76cd056e947"
+    },
+    {
+      "path": "artifacts/runs/pilot/E01/p01/gpu-baselines/tasks/e01-tsp500-g050-mmas-b04/attempt-001/measurements/interpreted/record.json",
+      "sha256": "dc0a217709265b0d72633698be73b0e334acc217b675f8366a3318d23b391bfa"
     }
   ],
   "filter_policy": "显式登记来源；已完成且未检测到争用/监测错误；smoke与历史协议不进入当前测量；不同split分表",
   "tests_opened": false,
   "exports": {
-    "README.md": "1b474a0e3ffbb420d5380aa5f124c0d71c8b92b9a9f01b3897f0b914cfd8ea84",
-    "figures/tsp100_energy.pdf": "01cf19674854f89748ee83012b20115364cb4598d5aa819f1c70a9345dfda4de",
+    "README.md": "0d24a00f7b0984dac32e424f6d548d380a49e3f43a099e028d884d393e3ec0f0",
+    "figures/tsp100_energy.pdf": "980e602aa0cfff89341870e1c395148ae6082e6d6320846e5b2d812c125a11a9",
     "figures/tsp100_energy.png": "595b6a104f85dbd9594d7133e33fb9c098953399833f22342270ec3cad8549e3",
-    "figures/tsp100_energy.svg": "2237a7365d9e6cda20e351b1378891d8be1092932ff0cf9174e362c8a85f8503",
-    "figures/tsp100_work_and_resources.pdf": "9988f622e39e476619484b674f013b8eb56952ec3f639c725277662eb91d2625",
+    "figures/tsp100_energy.svg": "dcba93f40b2d1440b83361277dd8f56c64c8da7bc5f89c1d35b758f2e8dd5dfd",
+    "figures/tsp100_work_and_resources.pdf": "3780b63c21ef07ef76c194486abe4020e177ebd4326863d07348772f84656586",
     "figures/tsp100_work_and_resources.png": "5053303530e449f13332c39fde73fd56cf30f7715679863db4868ee954e28f9d",
-    "figures/tsp100_work_and_resources.svg": "516a787dfe03c1d0a7d8ad87d09a7af690793aa9859e0cb6a7c8dcc72e64428a",
-    "figures/tsp500_energy.pdf": "cfdbc1e7942e9d13437d8ec4e4e12b54f239bc13bc56d4f78831fdfce1e10ed7",
-    "figures/tsp500_energy.png": "ddbaef3c64e4f94d338f2d162ff4079c7fabbaf3af42d8ca171bb06a76e63f22",
-    "figures/tsp500_energy.svg": "873ce23617f4e1c03007a1214c1ee71d3ed497515a42d79b3ddde4fffcc8b394",
-    "figures/tsp500_work_and_resources.pdf": "208bc5bf1106589a2bcc7dbd1c76e1664aed80ca2481c69bbf9e0ac29031ef5a",
-    "figures/tsp500_work_and_resources.png": "649492b51df860836602317da42336bb4bc63603ba3874305085fb399df8c182",
-    "figures/tsp500_work_and_resources.svg": "0a015b40281356cd8aa52df127cd7d87ef209f041a02dc16e8ae35ee44a6dce4",
-    "measurement_sources.json": "817fa835af4a5909df5822e3cb4725d3c25ed6a68f3b8b0a20719ace4b6de49f",
+    "figures/tsp100_work_and_resources.svg": "898724147ea2b77313a6b3e930ea31865ca2d055d2751e58d1cf3418640f79ba",
+    "figures/tsp500_energy.pdf": "7cb111aa90434e0ce5cd3f51442a5e91e101acada730e4b50b8d6ca3cdef89f3",
+    "figures/tsp500_energy.png": "c3bac1d9f22c648235011337f2862b57ea604ef062ba5b2b8802dd4b2cfa8130",
+    "figures/tsp500_energy.svg": "b47cc2d1026136f198d7861183a03dc9df638252054e46505773c7c7b2702fef",
+    "figures/tsp500_work_and_resources.pdf": "a125542f7c8356e31188638b044b4b2bbd15ef15b31ff7f3d37ec3b65172631a",
+    "figures/tsp500_work_and_resources.png": "36856fd4051cdc5e67fadaef4dbdfae2c82293493be4ebb76221b0a52179bcaf",
+    "figures/tsp500_work_and_resources.svg": "038349ff04833df633394702f3edabf9bcc3f7a3fb6df6adc8b43459171baab3",
+    "measurement_sources.json": "8e8b649b81a3963c4d0cd524aa1193a156e096ca190eb967121b1dca11f78cd6",
     "tables/aco_by_instance.csv": "550fae8cb9e0da0fe4330e0aa95551a12cc13772386ee48e2961d1b5a1d5b743",
     "tables/aco_by_instance.json": "5adee3d866cee2f2e303344295720be81ec19ccc5141836fe18c9ca1935c1cc1",
     "tables/aco_summary.csv": "98ac5c023c5ec5e60f7ee6ed4ce1873b6bb6a7fa6678b613f1da5d2590533ea4",
@@ -651,9 +875,9 @@
     "tables/cpu_gpu_matched_pairs.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
     "tables/cpu_measurements.csv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "tables/cpu_measurements.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
-    "tables/excluded_measurements.csv": "fce4946ba3cb8a65b9ee5ed6c781ca1e457bd0321859b584c9e333b1e7f8aa38",
-    "tables/excluded_measurements.json": "2162dbc933dd431cb1d123a324efee79049be57de420f05a8563a930eefd00cf",
-    "tables/gpu_work_metrics.csv": "34a1ee45329a76a2218438e64a06712b975d96503b4c948a002e72c731d52cfe",
-    "tables/gpu_work_metrics.json": "bd4bcebd7c963e61ea72bcd155f30c5c14c2a92155754bfe343bd6eb70149df0"
+    "tables/excluded_measurements.csv": "9cba3aade66fac86e1fc8d2edd78eda3bff12660b7a27c516c334401140d3d44",
+    "tables/excluded_measurements.json": "13aee9d0fd93296205c262a0775f99c199db544f21f0de8a880a79f64f3fefa9",
+    "tables/gpu_work_metrics.csv": "58963306aa0a39b36f1787d65622281b89cecdd53b6890545398aee290576b7c",
+    "tables/gpu_work_metrics.json": "b82465b024f93394ef3c554fd33f0148b0e50d501600840776fcebf9f255a3ff"
   }
 }

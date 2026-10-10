@@ -1,0 +1,56 @@
+[
+  {
+    "n": 100,
+    "generation": 1,
+    "clean_records": 5,
+    "median_device_s": 34.0156953125,
+    "ns_per_transition": 6.710798475477431,
+    "fallback_event_percent": 2.567610657354798,
+    "sampled_gpu_gib": 0.9622802734375
+  },
+  {
+    "n": 100,
+    "generation": 25,
+    "clean_records": 5,
+    "median_device_s": 26.92221484375,
+    "ns_per_transition": 5.311358673403962,
+    "fallback_event_percent": 2.370836647727273,
+    "sampled_gpu_gib": 0.9622802734375
+  },
+  {
+    "n": 100,
+    "generation": 50,
+    "clean_records": 5,
+    "median_device_s": 50.68402734375,
+    "ns_per_transition": 9.999216253107246,
+    "fallback_event_percent": 2.343252288510101,
+    "sampled_gpu_gib": 0.9622802734375
+  },
+  {
+    "n": 500,
+    "generation": 1,
+    "clean_records": 5,
+    "median_device_s": 1247.251875,
+    "ns_per_transition": 48.81841319357465,
+    "fallback_event_percent": 3.030590152962174,
+    "sampled_gpu_gib": 7.0267333984375
+  },
+  {
+    "n": 500,
+    "generation": 25,
+    "clean_records": 5,
+    "median_device_s": 391.3065625,
+    "ns_per_transition": 15.31604468703031,
+    "fallback_event_percent": 2.4055492860721444,
+    "sampled_gpu_gib": 7.0267333984375
+  },
+  {
+    "n": 500,
+    "generation": 50,
+    "clean_records": 4,
+    "median_device_s": 412.75289062499996,
+    "ns_per_transition": 16.155470731502064,
+    "fallback_event_percent": 2.3982969963364225,
+    "sampled_gpu_gib": 7.0267333984375
+  }
+]

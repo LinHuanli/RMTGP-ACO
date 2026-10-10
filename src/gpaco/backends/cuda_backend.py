@@ -8,6 +8,7 @@ import numpy as np
 
 from ..config import InfeasiblePlan
 from ..language import pack_programs
+from . import cuda_local_search
 from .cpu import EvaluationResult, problem_initialization
 
 _MODULES = {}
@@ -105,6 +106,11 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
     cp.cuda.get_current_stream().synchronize()
     begin = perf_counter()
     functions, compile_s, hit = kernels(config, plan, programs)
+    ls_mode = ("none", "two_opt", "three_opt").index(config.local_search)
+    if ls_mode:
+        ls_function, ls_compile_s, ls_hit = cuda_local_search.kernel(plan.ls_executor)
+        compile_s += ls_compile_s
+        hit = hit and ls_hit
     p, b, n = len(programs), problem.size, problem.n
     a, k = config.ants, problem.nearest.shape[2]
     maximum_threads = functions["v2_construct"].attributes["max_threads_per_block"]
@@ -132,10 +138,13 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
     free, _ = cp.cuda.runtime.memGetInfo()
     # 两个密集矩阵、蚂蚁状态、路径与分数；容量控制只能分波次，不能减少任务。
     task_bytes = 8 * n * n + a * (8 * ((n + 63) // 64) + 6 * n + 8) + 8 * n + 512
+    if ls_mode:
+        task_bytes += a * (11 * n + 32)
     active = min(total, plan.active_tasks, max(1, int(free * 0.75) // task_bytes))
     lengths_out = np.empty(total, np.float32)
     tours_out = np.empty((total, n + 1), np.int32)
     diagnostics_out = np.empty((total, 8), np.uint64)
+    ls_out = np.empty((total, 4), np.uint64) if ls_mode else None
     state_capture = []
     if plan.diagnostic_work:
         # 快照只保留当前行信息素和 visited；不转存每个状态的整个 n×n 矩阵。
@@ -168,6 +177,8 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
         best = cp.empty((tasks, n + 1), cp.uint16)
         restart = cp.empty_like(best)
         diagnostics = cp.empty((tasks, 8), cp.uint64)
+        if ls_mode:
+            ls_buffers = cuda_local_search.workspace(tasks, a, n, b)
         diagnostic_args = ()
         if plan.diagnostic_work:
             work = cp.zeros((tasks, 16), cp.uint64)
@@ -231,6 +242,33 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
             if plan.profile_stages:
                 cp.cuda.nvtx.RangePop()
                 stage_middle.record()
+            if ls_mode:
+                if plan.profile_stages:
+                    cp.cuda.nvtx.RangePush("gpaco.local_search")
+                cuda_local_search.launch(
+                    ls_function,
+                    plan.ls_executor,
+                    geometry[1],
+                    geometry[4],
+                    task_instance,
+                    keys,
+                    tasks,
+                    n,
+                    a,
+                    iteration,
+                    seed,
+                    ls_mode,
+                    config.ls_candidate_size,
+                    tours,
+                    colony_lengths,
+                    ls_buffers,
+                )
+                if plan.profile_stages:
+                    cp.cuda.nvtx.RangePop()
+            if plan.profile_stages:
+                stage_ls_end = cp.cuda.Event() if ls_mode else stage_middle
+                if ls_mode:
+                    stage_ls_end.record()
                 cp.cuda.nvtx.RangePush("gpaco.global_update")
             functions["update"](
                 (tasks,),
@@ -264,12 +302,12 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
             if plan.profile_stages:
                 cp.cuda.nvtx.RangePop()
                 stage_end.record()
-                stage_events.append((stage_start, stage_middle, stage_end))
+                stage_events.append((stage_start, stage_middle, stage_ls_end, stage_end))
         stop.record()
         stop.synchronize()
         device_ms += cp.cuda.get_elapsed_time(start, stop)
         if plan.profile_stages:
-            for iteration, (first, middle, last) in enumerate(
+            for iteration, (first, middle, ls_end, last) in enumerate(
                 stage_events[-config.iterations :], 1
             ):
                 iteration_timeline.append(
@@ -280,11 +318,17 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
                         "construct_end_update_start_s": cp.cuda.get_elapsed_time(start, middle)
                         / 1000,
                         "update_end_s": cp.cuda.get_elapsed_time(start, last) / 1000,
+                        "local_search_end_s": cp.cuda.get_elapsed_time(start, ls_end) / 1000,
                     }
                 )
         lengths_out[offset : offset + tasks] = cp.asnumpy(state[:, 0])
         tours_out[offset : offset + tasks] = cp.asnumpy(best)
         diagnostics_out[offset : offset + tasks] = cp.asnumpy(diagnostics)
+        if ls_mode:
+            ls_out[offset : offset + tasks] = cp.asnumpy(
+                ls_buffers[-1].reshape(tasks, a, 4).sum(axis=1)
+            )
+            del ls_buffers
         if plan.diagnostic_work:
             work_out[offset : offset + tasks] = cp.asnumpy(work)
         if capture_state:
@@ -325,22 +369,32 @@ def evaluate(programs, problem, config, seed, plan, *, capture_state=False):
         "gpu_pool_reserved_bytes": cp.get_default_memory_pool().total_bytes(),
         "instrumented": plan.profile_stages or plan.diagnostic_work,
         "diagnostic_work": plan.diagnostic_work,
+        "local_search": config.local_search,
         "kernel_resources": {
             name: functions[name].attributes for name in ("v2_construct", "update")
         },
     }
     if plan.profile_stages:
         timing["construct_device_s"] = (
-            sum(cp.cuda.get_elapsed_time(a, b) for a, b, _ in stage_events) / 1000
+            sum(cp.cuda.get_elapsed_time(a, b) for a, b, _, _ in stage_events) / 1000
         )
         timing["update_device_s"] = (
-            sum(cp.cuda.get_elapsed_time(b, c) for _, b, c in stage_events) / 1000
+            sum(cp.cuda.get_elapsed_time(b, c) for _, _, b, c in stage_events) / 1000
         )
+        if ls_mode:
+            timing["local_search_device_s"] = (
+                sum(cp.cuda.get_elapsed_time(b, c) for _, b, c, _ in stage_events) / 1000
+            )
+    if ls_mode:
+        timing["ls_executor"] = plan.ls_executor
+        timing["kernel_resources"]["local_search"] = ls_function["improve_tours"].attributes
+        timing["kernel_resources"]["ls_permutation"] = ls_function["make_orders"].attributes
     result = EvaluationResult(
         lengths_out.reshape(p, b),
         tours_out.reshape(p, b, n + 1),
         diagnostics_out.reshape(p, b, 8),
         timing,
+        ls_out.reshape(p, b, 4) if ls_mode else None,
     )
     if capture_state:
         result.state_capture = state_capture

@@ -1,9 +1,25 @@
-# E09／p01：GPU-Existing正式基线
+# E09：连续训练、计时边界与验证质量
 
-预登记20次AS连续训练：TSP100／500各10个根种子2001–2010。协议见 [正式基线前置执行](../../../../design/10_formal_baseline_and_mapping.md)。
+证据等级：formal。生成时间：2026-10-10T03:13:58.499935+00:00。
 
-这只是完整方法比较中的固定对照。优化CPU／GPU方法未完成，标准测试未开启，不据此宣布端到端加速或最终质量结论。
+固定GPU-Existing对照；无局部搜索。标准测试未开启。验证gap不是最终测试性能，不能据此声明新优化方法加速成立。
 
-原始数据：`artifacts/runs/formal/E09/p01/gpu-existing/`。每个attempt包含job、硬件、遥测、输入预生成成本以及training子目录的逐代曲线、checkpoint、冠军和完成标记。运行管理见`artifacts/operations/research-dispatch/p01/`。
+| n | 已完成/预设 | 可用连续计时 | 状态 |
+|---|---:|---:|---|
+| 100 | 10/10 | 10 | 重复齐全 |
+| 500 | 4/10 | 4 | 部分完成，不发布正式总体均值 |
 
-所有预登记seed须交代成功、失败、争用和缺失。未完成时不提前计算正式10-seed均值或用先导数据补齐。分类表图由报告脚本从完成标记与校验后的原始数据生成。
+| n | 指标 | 独立seed | 均值 | SD | 95%根seed bootstrap区间 |
+|---|---|---:|---:|---:|---|
+| 100 | validation_gap | 10 | 4.5932 | 0.0543 | [4.5603, 4.6232] |
+| 100 | validation_baseline_gap | 10 | 5.8400 | 0.0533 | [5.8073, 5.8692] |
+| 100 | validation_delta_pp | 10 | -1.2468 | 0.0561 | [-1.2784, -1.2126] |
+| 100 | training_s | 10 | 1694.1180 | 240.1302 | [1567.0552, 1843.4220] |
+| 100 | preparation_s | 10 | 47.0570 | 3.1712 | [45.4629, 49.2373] |
+
+## 图表
+
+- [tsp100_training](figures/tsp100_training.svg)
+- [tsp500_progress](figures/tsp500_progress.svg)
+
+CSV/JSON在tables；图同时提供PDF/SVG/PNG。输入身份和筛选规则见provenance.json。标准测试未打开。

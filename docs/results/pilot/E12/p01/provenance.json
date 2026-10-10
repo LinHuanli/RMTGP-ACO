@@ -1,0 +1,929 @@
+{
+  "created_at_utc": "2026-10-10T03:14:08.158715+00:00",
+  "evidence_tier": "pilot",
+  "formal_result": false,
+  "tests_opened": false,
+  "script_sha256": "56324051ff4fbe9ec6e4216dc6f4672b80490417cb8b07bfd32ea5e523b9f755",
+  "input_records": [
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1001/COMPLETE.json",
+      "sha256": "40d996f680fc6ac4d06749a960719e5458df83a18f8c7277116bf6e9e6b252b3"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1001/repeat-0/record.json",
+      "sha256": "662c9e91506952c23c683a6d4640d8f4e45fafa6fbcf31b106ec75418d193e95"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1001/repeat-1/record.json",
+      "sha256": "68131e562504b495f22b7866f8aa0800ec5756f720906b439267caaff69cdd85"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1001/repeat-2/record.json",
+      "sha256": "307bd58d1e67b0cb02ba56326bb808d48cca2c17ad490a28c8718810318431b3"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1002/COMPLETE.json",
+      "sha256": "e6c0c6b56e032ea0280a31d01a4147f416adb877bb9db7b16e0c3b5a8888b2dd"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1002/repeat-0/record.json",
+      "sha256": "58f0051879c7270f7b3a6f8f5a78517d6fb4d9dbcf1fcbca00b455517f8b5248"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1002/repeat-1/record.json",
+      "sha256": "ca79cac2cab204a3738ffb97424939539c9df089d1cfbf28923de8e0b5740865"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1002/repeat-2/record.json",
+      "sha256": "a737b203b8e36e235e5e27915c2809261688999d487aaa798f2658d0e782f79d"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1003/COMPLETE.json",
+      "sha256": "ca26d3c1cec1895005d4c3137fbc9f330ee24cb64b0f4853a1b511618d36ad36"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1003/repeat-0/record.json",
+      "sha256": "e3c91d114ef3afaa45d6292a4ed942fd18de9f8722be3935b573cb381db88c73"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1003/repeat-1/record.json",
+      "sha256": "a150a3c07a5a3df09d5b8d477d15138aa4161451b5ccf05feb6b5af8d588601d"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a40/seed-1003/repeat-2/record.json",
+      "sha256": "ee1d10387ba41ceeda08dae4443979b2cb2b4c3ef1d992cd240a317aeaf6551e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1001/COMPLETE.json",
+      "sha256": "9ad86abc1d0649366ea792a631ae547e4767151af98f2867b8aeafff80daa783"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1001/repeat-0/record.json",
+      "sha256": "74afcb13c60239cfe3add9d80cc13ad5e46618603d811c4776ae641f9c5b5851"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1001/repeat-1/record.json",
+      "sha256": "46d65cd9d91197c1e4e4eeed5b74b5e3357006cfa796480990b4298e075273e8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1001/repeat-2/record.json",
+      "sha256": "d7bf8ab38a75da16952f861ccf5e6d0a67d954877131f891489158bbb6a16ce0"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1002/COMPLETE.json",
+      "sha256": "319a3556f22e741254ad0f685dadd208bdc2e6701b84b6287f013e65adbf7483"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1002/repeat-0/record.json",
+      "sha256": "2b1467f34144ba35852981d1b27af8c6167007357418e45439a4d3f6cda0667b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1002/repeat-1/record.json",
+      "sha256": "4808f3cb616b7507e709fa6fd9e88d87464caefdb374d9d494767608af155932"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1002/repeat-2/record.json",
+      "sha256": "0bb688af16181fae58b50bbdfac5692d786fc981328a7240b633e1a18c2acba0"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1003/COMPLETE.json",
+      "sha256": "efabf671ef03bdbbaf889417d2f1aabdfb2865e7af94f045fe3da7853eb9ffff"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1003/repeat-0/record.json",
+      "sha256": "b7a430d0baee10c7eb83062eba2d77361d19eed1bb27de5ff6ba0f03f3afe239"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1003/repeat-1/record.json",
+      "sha256": "3a7f010d680646d518a7da71b7aaa1697df6869e5e797c300cd9a0dab67200a7"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/a5000/seed-1003/repeat-2/record.json",
+      "sha256": "2d9296243682f8b2a51abeed7b12ecf8337f1aabd11231a9b6afc113124883b3"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1001/COMPLETE.json",
+      "sha256": "9b80fb3a8bac0c69ff601e0fdb842906ceedf08f67a1a1374a890c60a06116d0"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1001/repeat-0/record.json",
+      "sha256": "335b170584a1f00b8e7023a242138dcb35f4c974628725f4e1f45db8c96d24a0"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1001/repeat-1/record.json",
+      "sha256": "df75f7ccfcbc7358779f72b6bee21c2c18aeede0cbfebc8fdd82c3f66cc57ac8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1001/repeat-2/record.json",
+      "sha256": "bbfcfe2f239ed22ce2c617ba01ca4492b75dc68c319b262ece55dfee6310ffab"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1002/COMPLETE.json",
+      "sha256": "75eb5ff2a8bb0a11eb6ccddbc6c0b0679e9f737d84b46079c039e477333bdbea"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1002/repeat-0/record.json",
+      "sha256": "89148492facd7ceaff43b256ab10f724aa1a61e1093203efaf4ab76568ab72fd"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1002/repeat-1/record.json",
+      "sha256": "6695dfc2e0a8055c0abb636f513014d0d2569c93facf68f612a9abf3ad917928"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1002/repeat-2/record.json",
+      "sha256": "c8b17c582f762a15fee36d8367509983a7b8375a6a45377effb9f24fca48464e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1003/COMPLETE.json",
+      "sha256": "2f8ea13099d9c4ee8805ff0b80195d59bad414cc98e244a43127875044281300"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1003/repeat-0/record.json",
+      "sha256": "62d39d3111f49a945582c55aa23dd0b0e64c8a2d028c538ba635e2b2e8e42cca"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1003/repeat-1/record.json",
+      "sha256": "07cb2f819eec6bae988d637a46d85e2fa2a4aa94b28103bf549d2da52d0ad9f2"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l4/seed-1003/repeat-2/record.json",
+      "sha256": "8aa968074a3e03eaf98e6880b2afa2771dddf7e0f1b9c5d17f6f10fca13bd848"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1001/COMPLETE.json",
+      "sha256": "4b0e36926a08195e218056d74277642d63e3823e47f3a4f827542b96e11e5f85"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1001/repeat-0/record.json",
+      "sha256": "7d1f6c5770b754baec45bd99ffeaa70803e704f197bd40ae5ec8272bd8ac68c1"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1001/repeat-1/record.json",
+      "sha256": "19dcb7367f210a616b259dcaba7e1a16b1a88841f87d0d57fdd7ba71c64f3e4d"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1001/repeat-2/record.json",
+      "sha256": "222c52d737ee1657e07f46a3da700a5edcb13cfa409dfb30faf6b5777dc66fa4"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1002/COMPLETE.json",
+      "sha256": "f318c165a901098fc77763a4bdc24279ca12263d96961f7b8deb937f0751dfdf"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1002/repeat-0/record.json",
+      "sha256": "d62e3a82b39ca150920d824f998cdfb3a284904c93a15c5cb999eb73e4756570"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1002/repeat-1/record.json",
+      "sha256": "46ec0f490de12999f7a86979424234c55db81426295d3fa2386908e22140c6a9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1002/repeat-2/record.json",
+      "sha256": "42898737868187bbdb0a68dd09a4133d4eb521fc816865b949f69cd3d8dc962c"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1003/COMPLETE.json",
+      "sha256": "78bde357f92971d081f2931ad55efe15651e3be67c997bee6ad4cf060659cdca"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1003/repeat-0/record.json",
+      "sha256": "949bf7c64774890b4288f8df945da5fcdb29d33dc68859d82aff3374fd8912ad"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1003/repeat-1/record.json",
+      "sha256": "669bc2ca58f61af4a336ae830de8028eeb7654db634e9fad413ad129dd3a8d8a"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/l40s/seed-1003/repeat-2/record.json",
+      "sha256": "9d57ca71708a76885ebe666f96e8ae5e3fc3c90d2f339711d60a64f7f85d56ed"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1001/COMPLETE.json",
+      "sha256": "2303b30800847e5c7efce4ad8c205cee7cfaf3b2c9a4f316eba8a574389ba5ef"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1001/repeat-0/record.json",
+      "sha256": "1b64c2d049ce100dab15147973290eda5aadef4436b8b9a2a9038e3816eb1b46"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1001/repeat-1/record.json",
+      "sha256": "c661903d110fc2bec3f2795a2a0f23608f7aa97bfd37a6dfcf89237476006562"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1001/repeat-2/record.json",
+      "sha256": "b4a496ce6b678fda8557d228af40701be56d870be790a7bf658144fc4733e19b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1002/COMPLETE.json",
+      "sha256": "bdd273a246315f5aa10ffdb4ebe9db8169f1682eeaf8e63826ed944ec56c9c83"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1002/repeat-0/record.json",
+      "sha256": "f9e0d2c927f0236589210f08f72f4e8c3250fa168a4db4bad266b21cb9caf9e4"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1002/repeat-1/record.json",
+      "sha256": "1916665e5bc07dd6ab31edfc51f68e64c63d789122d8a097c679b23391f5a073"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1002/repeat-2/record.json",
+      "sha256": "c031a9c008bbe77df1a8f64f42ab393ceb65f9338c3ae4b018da6442631a1ca3"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1003/COMPLETE.json",
+      "sha256": "06cedc8c29119ef62fb27afddcfff845b6e87f40e072c7f8a4181d45d6189c2b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1003/repeat-0/record.json",
+      "sha256": "008e57e7820040121259948ec5d51191ee476fc49e0349065fb1ea67be608b4b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1003/repeat-1/record.json",
+      "sha256": "576e5d9c9c2aacbcfaa7857784e15042d6f3ed70ef4889c18a4d37a4f062628f"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp100/pro5000/seed-1003/repeat-2/record.json",
+      "sha256": "7ba889ade4835411d70d549f2f6d768800b74730757efd3f08357285d409b2c8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1001/COMPLETE.json",
+      "sha256": "c61be024efebdf99158549a5657ab7ec23dbb95b8ae449e5fc838bf31431efef"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1001/repeat-0/record.json",
+      "sha256": "00e29092c918f199846a69b19705138b707a0832fe39448519f1170033252cfe"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1001/repeat-1/record.json",
+      "sha256": "8abfe5035916a635c7cc4f08ab6e936d58738d0109918c0706563a336e9ae235"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1001/repeat-2/record.json",
+      "sha256": "f93931cf1004a3daf22261e3d0da2673e79a2e9abd277283695fe8f2434bff8c"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1002/COMPLETE.json",
+      "sha256": "d6b0543f89346dae56c599e0df2679951f4ca7c5527bded226ea2f1a942400ec"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1002/repeat-0/record.json",
+      "sha256": "f99380c955c085b2cb5b9fcbb1522dde4eb28734cc92a67d539bf240a37535fc"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1002/repeat-1/record.json",
+      "sha256": "4b571b600186f608d7195a61f9c364df431496edb65532080a258329e47cac53"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1002/repeat-2/record.json",
+      "sha256": "806629532237e08e673a70b63f7f8b3f036e7de785488509d217bc70c1ffc043"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1003/COMPLETE.json",
+      "sha256": "76cefbd87e9f35cb64498e1554586c3776787c705fcf2f1bcca59db01c24f7f9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1003/repeat-0/record.json",
+      "sha256": "0d859fa742e9f72d1a7dde9ec1c307a7f1a5ad092883c131826f3c054278261f"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1003/repeat-1/record.json",
+      "sha256": "a85d01b3f0e9198867d5acdb40a77b9e5040b4b60ddb444ec85cc469dddf69a2"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a40/seed-1003/repeat-2/record.json",
+      "sha256": "a2b503e720453b7bf24af1456ad448bdcf9a7605b5965988db8c9e65567ee91d"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1001/COMPLETE.json",
+      "sha256": "f3a8073162bb26ddbb3dcdaaa23ac16ef077bcd9309bba5579180502b3a99259"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1001/repeat-0/record.json",
+      "sha256": "0ec67fb56175ab18a35255c08d24ea9cefb4033d2f072fad6ecf2394d76a0e39"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1001/repeat-1/record.json",
+      "sha256": "a2acfc8806fb7ae127387ec1c3e9417afc8eea5419afe206ae7a6070cb883122"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1001/repeat-2/record.json",
+      "sha256": "e66d0c3ccae251d3a4694ed1a5a790cf0030c073c89000e961c05db55d4d2937"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1002/COMPLETE.json",
+      "sha256": "73367175f6e640ccbb7ffd1ec1867923136b7ceaf2ee2144139f083b7e280770"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1002/repeat-0/record.json",
+      "sha256": "120d6f1b4af5b81fedad1d37a77e3e1aebafc827034bafeba2f49435162b2c12"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1002/repeat-1/record.json",
+      "sha256": "8f7963d1c40fcf3af3cdb9e06c73f45ef016254d860f60b67e6273012e97d971"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1002/repeat-2/record.json",
+      "sha256": "285533a9bc6a7effba32f8447d9197bef700608866605e0d9fa52a86625f89d5"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1003/COMPLETE.json",
+      "sha256": "f558eea134c152ee7fcaf8c5d440b14fa344fd45cde96dc5658fcba9d0ffbe05"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1003/repeat-0/record.json",
+      "sha256": "b7251d767fc7b9ff2e9b9263fc4728f9a09eefee1f63a5bd16b604d8003a8289"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1003/repeat-1/record.json",
+      "sha256": "2245358c367847617e770d5906cd29f77ade62d5f3f479c66ba8c7ad6487b702"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/a5000/seed-1003/repeat-2/record.json",
+      "sha256": "c7447e0251f652aef911b7e4dc185df2907e8d19114e1d669742b6b1184fd201"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1001/COMPLETE.json",
+      "sha256": "9ada18b767b07251839255fe1dde6d81d76ce85f45e67af4dc976a7bbbfb4716"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1001/repeat-0/record.json",
+      "sha256": "7aa2cb3d8c1a3afb91b9d0636a5d62a88f359099cd5bb1c92014a70f4cc33cc5"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1001/repeat-1/record.json",
+      "sha256": "62a52fb3be1bbcb1c4b113747c3956b6cfac0e97be74fb922be1a60733ebb243"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1001/repeat-2/record.json",
+      "sha256": "02ba4002daac70808c4a484a0d1fe30e7b30101b4005f9c72a1387f4d2022af9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1002/COMPLETE.json",
+      "sha256": "e3454c52ba6cc15cba4fc7b8c7e08e54dfd63dca538c6a0bb5e93501ad6d1c0b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1002/repeat-0/record.json",
+      "sha256": "457e08d75177890dbe1cf70c7eac824d9871aed77238448c52c7a138593249c6"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1002/repeat-1/record.json",
+      "sha256": "70d29a234262ea7be87dafa740a5dccac207df6aacfa494fc228d1346cad0099"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1002/repeat-2/record.json",
+      "sha256": "67220e19dbd73b3b87d123479950fb093d812b5a9561e85625670e5cdcc85db9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1003/COMPLETE.json",
+      "sha256": "1e98d578b637bbe9b570e6949aa404c2ce42000628d34df77a131db5a568301f"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1003/repeat-0/record.json",
+      "sha256": "49881b9b128ec4ce91901386a2ca3f70634f9bdafb002ccdf94af0cbc83724e0"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1003/repeat-1/record.json",
+      "sha256": "24565254d358df632766a7adbb152562c457af314cd0f9072eaf3cf0c56ade3c"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l4/seed-1003/repeat-2/record.json",
+      "sha256": "f6657f4df54f47dd57ff7f0231cf00bbde468e431a442a4862c4ab522ba7b32c"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1001/COMPLETE.json",
+      "sha256": "506a888bda9e545569adba3eabc6c7e012ce94515c2850f9c93d0d0c05a0e8b1"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1001/repeat-0/record.json",
+      "sha256": "5bf7f52413abdfa85b448ae9b5e53ab001e12039a98b7fde8803b34b73462ac0"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1001/repeat-1/record.json",
+      "sha256": "407f626ddccd269b0771cf65c71a11102b560e68a4a2fdaee669710e43adf1e7"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1001/repeat-2/record.json",
+      "sha256": "d7ee3295d0ef8f891d6f796653db1f7d3c225697e5c2c76fe1abbdf049e88587"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1002/COMPLETE.json",
+      "sha256": "0cc94c306a09247e0f0a8fcf0e309744a16f5bfa3fe4a39a7ca0e26910e3544e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1002/repeat-0/record.json",
+      "sha256": "defcf16e3dda64c3d63bd04c579aaebeca846ef3fc9324076562a2812ed796bf"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1002/repeat-1/record.json",
+      "sha256": "409fee0b80495c955012f89b65c0c700a9db18167be2d5c011e2f52c1dfc4d00"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1002/repeat-2/record.json",
+      "sha256": "b903d14c6812b31ae0ec53473a5443493eedb12f96db4e3e41a16c4e487f2fa7"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1003/COMPLETE.json",
+      "sha256": "f0b5249d7006d5b0215669895d23302d4df99b6b7556a690d99106184cc18582"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1003/repeat-0/record.json",
+      "sha256": "a0ade272e45cd81b44ec79c81876729dca29610c6136ffc54fad146ec1937dd6"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1003/repeat-1/record.json",
+      "sha256": "678cb0a7b5206f8955017ca5161c039d7aa113e07e7116de12202ebe33cba268"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/l40s/seed-1003/repeat-2/record.json",
+      "sha256": "61a0a635cee5177ad70bc701ad45b9bf6a714d4e4a82f59e8445c70bb5386bd3"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1001/COMPLETE.json",
+      "sha256": "7b95bb22853123e622dfd867e2165c431853799b19efd48b429c433ec8cb1d37"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1001/repeat-0/record.json",
+      "sha256": "6e57b36a33d578ef7b5c458d13371dafc355b98f31d7cc8c0470bfaa38f9fe86"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1001/repeat-1/record.json",
+      "sha256": "ab434b32774a5e9d1c445207c33168f81849291ad95412674b606f7305ea76e1"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1001/repeat-2/record.json",
+      "sha256": "3e2bef4f86072b26791eb58e29f5078ddcdd8bbb7afb41cf23bb28321244d268"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1002/COMPLETE.json",
+      "sha256": "38d465a44dc123918a3f0133a06d23510ba99fba1f527a97c4aba5de14f48108"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1002/repeat-0/record.json",
+      "sha256": "8c577d6fc86efc3f0f4f29076d55caac139873b9eada7b06c186fc08d25c451e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1002/repeat-1/record.json",
+      "sha256": "4791d92a9ac4ca956fa4277cffd3d6cd99db487b0095229f442530a984eb6401"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1002/repeat-2/record.json",
+      "sha256": "8eec83bd353ef5385c37a5627e441175aedffd0a414e72729fb95c0a21fc0ad8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1003/COMPLETE.json",
+      "sha256": "1bafb87aa07c4fbdc52e97a94b27df4239d0f91d42b4066036888be94077858e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1003/repeat-0/record.json",
+      "sha256": "534914c334ecbcc800f091abe8dc0a2dd9a5b10c962f9451db6686a1bafbed27"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1003/repeat-1/record.json",
+      "sha256": "01bc87735b68624e847de49ba80ca547457836a09cbde6e3896759cd6a05268b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/canonical_audit/tsp500/pro5000/seed-1003/repeat-2/record.json",
+      "sha256": "9f77f69413620b51c280e6b7d010c208030b6c140082c0df6fc6452fee4b5001"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/hardware.json",
+      "sha256": "7bb522ac014add8b312dc0c33ab00ab28101c9bf6f4ba39baa9762c4026cfbbc"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-00-default/record.json",
+      "sha256": "90cb9475be7d29ad76fc0d3a67a8afddd62982f215b809998ca3b62b1e24deac"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-00-selected/record.json",
+      "sha256": "1e26d5d00da3114ddcbb03a9b05e99e8bdae88ba36840abf78842c1eb7c450a2"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-01-default/record.json",
+      "sha256": "e90968967bbbaf9f4b651700a87271fca63e10f230dbc6c33b22d9ff77f78e68"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-01-selected/record.json",
+      "sha256": "e3ea5997898d2c7a2831dcb975d965a2e5f1a58203141869cec78193884cdfe6"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-02-default/record.json",
+      "sha256": "17f86653777cbfadf4d00621c4e7c7735912808b439da52146039ce0f85f8088"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-02-selected/record.json",
+      "sha256": "648dd5bc0e1a77965e1512be09286577f6280db7b833a5e80f8b85c6834c18c9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-03-default/record.json",
+      "sha256": "61ee025c84b981934e0e9a62a99899a69a39fa33fea0b8a924bd5255ca442747"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-03-selected/record.json",
+      "sha256": "98ca5df0ddcb65e5abf29e9e6375b54ad7ea7bfe88b400afac36f7eadff602a8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-04-default/record.json",
+      "sha256": "6a1e0eaa1d7cb969e417c410be440a6a852c7b5192a49e7496d1f0fbcb4d8dd1"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp100/holdout/block-04-selected/record.json",
+      "sha256": "8841f55af80459009b43e72291d9f02a66861ab6cf810ec5536abbb149b63970"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-00-default/record.json",
+      "sha256": "2329c5ed30a8dd3640a02851fe67d8c221bfc68165634625fab97b757130dee0"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-00-selected/record.json",
+      "sha256": "70629bb20d76f04c631f56a04066f11f8e7951365a9e0105eae9327bef811747"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-01-default/record.json",
+      "sha256": "aaa6d9838af0974cb0af1fe40ca47c1ff274e57c995ff913396e090552208827"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-01-selected/record.json",
+      "sha256": "18a86e0b2532d77a8784d9d97c9de5c13792ebea42d9460155358c7fae707568"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-02-default/record.json",
+      "sha256": "647e4c6f691d77ecd8cf9057918ded30453eaa9802c81f0e325388409f024c20"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-02-selected/record.json",
+      "sha256": "5e385735ef086d3632499f9af05245bc2fe8e96187d36ff40eef944f7ec101c6"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-03-default/record.json",
+      "sha256": "74dd91a5dffd1324dc3361b36bed18a76078c8b95ea3d694cb61a377f80d4aa2"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-03-selected/record.json",
+      "sha256": "d2204398bb50b12b83fc87693082cdb88cc6b82b63576ac6b3ed0ab6aa08cb32"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-04-default/record.json",
+      "sha256": "759514a83694245c84a1bdf7eb9d08d1787084f7d4b1b46ec649251a67773820"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a40/tsp500/holdout/block-04-selected/record.json",
+      "sha256": "68e2c2f626fb0ffe592f8365e941cad6f65dd3adb686288569740dcd1f33118e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/hardware.json",
+      "sha256": "d77a3b843b315f2dbc85a7900df951b7e6a0dcf5adf683d12eb890c73571aebd"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-00-default/record.json",
+      "sha256": "c88570fdf8721a950337890102500573203cc62b091448be9ae9c67398cba8a1"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-00-selected/record.json",
+      "sha256": "d35fd216ac0ed6b3954a896f2885617911351b67c415d45beda1a8356dca2dc5"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-01-default/record.json",
+      "sha256": "c65992683c73154d9a0f734e3c2a59e6896fa2cc50e2f8c8bce0da07b56ac242"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-01-selected/record.json",
+      "sha256": "7525db01b158cd36f8b70c991cdc359f33bcb8439c51de9c72f37c326ecac910"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-02-default/record.json",
+      "sha256": "a9dc60aa20a6277a099b5666070e63cdc6d846db772f4b4794161db67c2d84f9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-02-selected/record.json",
+      "sha256": "ee3455eb1bbf368e3a85c890b48d1d2965cd97bc3157107d44d587ee23bb06ae"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-03-default/record.json",
+      "sha256": "e2b971fa89bf1730b68821842dd6415325fd1b25ecb92db26b823e611e460c39"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-03-selected/record.json",
+      "sha256": "cd06569591a6b8834592e4bdb37664e06c86580a6878120bd4fb5c5da2fafe3e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-04-default/record.json",
+      "sha256": "758cf9ce6d70f629ce10d32cc5517f5b42ff55f31c83321e0eccc9c200e03985"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp100/holdout/block-04-selected/record.json",
+      "sha256": "6a1799fafe7a64bfe371facdd161b4fab56cf27faf006622cf5819fcdf938fc3"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-00-default/record.json",
+      "sha256": "8f1e15a91577f49a9775e30faef777c076503430c93491c01af6cc74656333f5"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-00-selected/record.json",
+      "sha256": "856cd2ac6a3d25b46107be84d7ee2027d50d630c192b03e642c9d4599df38f66"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-01-default/record.json",
+      "sha256": "8e1debd5d67712a29f0b930a6ae3b7b5f3305de9fe1790b6b31b1f266f0f5612"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-01-selected/record.json",
+      "sha256": "4b51968dbd1b4dddfb817a64720ca5dbe131b32b6a780de8542cd03090ed4fb4"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-02-default/record.json",
+      "sha256": "7bc39715045e3a039e6d286939be3928e1b9b5dc52283a125c61aa8c836ad4d8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-02-selected/record.json",
+      "sha256": "d33238f88ad7c5b87d9cfa2ea3ac6f52f2884983d2cdf2f5ffefbd9324988e48"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-03-default/record.json",
+      "sha256": "ba7ab4a1fbc5372f447b8feaa0f2555f27170223e49b18921021dc454d7ff191"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-03-selected/record.json",
+      "sha256": "343df174ffe443533c50c721d46ecd58711a5bf605ae271327007fd60a2e1811"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-04-default/record.json",
+      "sha256": "d257c2f872264960ba25f89b616daf67ee4e094d9ffb7eb453d9ca3a2082004f"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/a5000/tsp500/holdout/block-04-selected/record.json",
+      "sha256": "c84871ae112955f6a0eb1de430a06376faed755c61b0e3d60747bf6777180229"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/hardware.json",
+      "sha256": "4ee8a5ed0e6a9ad16cc7315469e28ad2457f6251f6cd00a9388c4f7f8ef43fdb"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-00-default/record.json",
+      "sha256": "0fa2d1d7d5ec50df6b2c5a12dd17881b2f40fc100b6591b500c68495abc9e175"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-00-selected/record.json",
+      "sha256": "ab05f77428d4921ec7beaa6b42689400b11369ea84db4d8ac2b123e3bcc2a2bf"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-01-default/record.json",
+      "sha256": "549ca2aa19561a4d5c05684bcf0096659e96ee4c5cae92954e84c95f43d97bb2"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-01-selected/record.json",
+      "sha256": "48bb18465e6da067d27d1831802f76106182716bd7f98335a50157c8fc11457a"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-02-default/record.json",
+      "sha256": "931bd855a38c9829771f28d21bb930e9356a13745f3771873092aee8c3db17ec"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-02-selected/record.json",
+      "sha256": "fccf9eca341a12386527e82255f5028f1dc14cfbf33453e7d40b033941258384"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-03-default/record.json",
+      "sha256": "9cac166905dbe36d98b41699482da27f8c4881e2634ceabbc85d5fbb594c059b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-03-selected/record.json",
+      "sha256": "d6dec1f91cf6856bf3670499ad9322c0518169872ccd9c6e9a9054b023f7b60f"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-04-default/record.json",
+      "sha256": "c70065e8876a988f9f2276911d7cd019b012158ad80aebc359d0ede741bdf049"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp100/holdout/block-04-selected/record.json",
+      "sha256": "1fe7c56cf97475284c786ceed199ac0953c76243665d557aceb2f6406b94779a"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-00-default/record.json",
+      "sha256": "c47a9d723538739bc024af301801be116bb70fc0db2fa1c4e741a42974d41ff6"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-00-selected/record.json",
+      "sha256": "7ec81bc372886b0fe95d1334b6ee7d521c75ed182f2b15e92191cf59c1d81568"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-01-default/record.json",
+      "sha256": "5a9c7b683b1f0dff43092d4fe5abac12f0dafa3ab706b4471845c5e54694f5c5"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-01-selected/record.json",
+      "sha256": "fbc13dd0d13607a71a561d6f3d46dc9e3fccbb08d6cc043f2b5026cc65dd924b"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-02-default/record.json",
+      "sha256": "a2b3d763de87e8e4ab1d224d7b531e9e19e1e478205379b64a2844903e672bb8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-02-selected/record.json",
+      "sha256": "3f161407c0d2d06be49ffcffc3a99ff202a0cad11511417cbb6809983ca444ff"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-03-default/record.json",
+      "sha256": "756c66e9f4b1ef4f762916d14af3868ffe316b1cbf7b98d4bc57eb6849b6802f"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-03-selected/record.json",
+      "sha256": "62c64b864e52baad0b32cccb911f31f0f069bd7dfceccb70335cbfd9ab3e6851"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-04-default/record.json",
+      "sha256": "a66a7898648c176671432131c239ad31c9b7286dc00c7fbd23ecefa7cb82b080"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l4/tsp500/holdout/block-04-selected/record.json",
+      "sha256": "0d3617a01fd4f1eb02b4bed7c22b5f522500bd38f2d4c680f2841d5f1981bddd"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/hardware.json",
+      "sha256": "83ceb9409c6146146f217a1f838e512219995fe952d6f220cfae163790c5cc74"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-00-default/record.json",
+      "sha256": "fdd96135e6b32d7d81dc593ef028659a6c9021fa4ddbbebfb646ea477d56fffd"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-00-selected/record.json",
+      "sha256": "db0c8b5b5d8ebb3d249aae3a1d9a90acb365e4a3e4be0e1461079453e5bf2491"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-01-default/record.json",
+      "sha256": "a5ea06d67cb8f29ebbc6411a1ca1c3991543b8cac9d93cb0a19d249690f42fd7"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-01-selected/record.json",
+      "sha256": "09b65583f3c8a397d9b7b2b550e937b512db420256c57e372c890c9f07300a41"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-02-default/record.json",
+      "sha256": "02d303141a0cbe7d0883940822ed36c6b3485ffc3d06220171eff827e2aa9da5"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-02-selected/record.json",
+      "sha256": "d584a3956376af60ca9279f49391eed1041a863e5584363bdca7b4c0d10c507c"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-03-default/record.json",
+      "sha256": "fd292fefcf8df5e7165f6fa828ff67742439c77382818cf34e9134b275dc2ac1"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-03-selected/record.json",
+      "sha256": "316862913076685b5da34e2e796730400ab71f9401cfa4bdef0921a7b387b56e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-04-default/record.json",
+      "sha256": "7b2c499d1d36bea1e61ebb647361ac50b3b1a0c363a42991c50bcc93d735b5d5"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp100/holdout/block-04-selected/record.json",
+      "sha256": "e3cdbb5732683c8331de17a1e114b45175727eb7547092312a316e8950d65cb7"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-00-default/record.json",
+      "sha256": "909e1f28ada267d5a231d414a93ed413b0def9e6e90b40ad5bbdfef455a11ab8"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-00-selected/record.json",
+      "sha256": "0895b123253003ffb7be015cb2761029427b5ac360ea9586b0453fda409c2371"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-01-default/record.json",
+      "sha256": "e3d0c08a6dadec53f5d52f9cd133721eed830b0bb143c16808e57d70a9ed3d9d"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-01-selected/record.json",
+      "sha256": "57c5393b9947622e2100f9f9ae671c40af37fb1a894fee1e14b3efad4bd0c422"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-02-default/record.json",
+      "sha256": "cc39d90cd8e5db4d8af7481ddf87e3d055755a949cbf3c8d02560e93e3a878fa"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-02-selected/record.json",
+      "sha256": "67063b920cbefc06d66f9f9852f43b7fe6da8f6978b17c5fbf33e4f8eaed082a"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-03-default/record.json",
+      "sha256": "de4d092ca2ae27462eb3e80059f1a541821a135ad125804bab16e296457992ee"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-03-selected/record.json",
+      "sha256": "681fb5e4e52809e94ce03cb568a83122bfcb763f148fd49b496fefb14437325d"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-04-default/record.json",
+      "sha256": "ca1c491af08c728f17b3caba91d192f9666550ae6ec24e82fcc71d84337ccf77"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/l40s/tsp500/holdout/block-04-selected/record.json",
+      "sha256": "166f53b8918dfb2385b56abbb708bb61a7d3b91ece10216724b851ac7bc73d44"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/hardware.json",
+      "sha256": "537ec27f784fc0e69f895fe6a2713dc0dea95362656910d254407f676b94110f"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-00-default/record.json",
+      "sha256": "cb9b36d3646d3f281f615e435f02e408953a0876967c2d620f4eaf1846c3f1e9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-00-selected/record.json",
+      "sha256": "1dcb72c9e145c525cb0e51b125082d62920be96725df81de35b267c302063fdd"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-01-default/record.json",
+      "sha256": "52424ff1f2a3df616b23c08a1f0641ad2fa1eb20b8b997dc2eb292f352eb96e9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-01-selected/record.json",
+      "sha256": "7a225e94cc6121854716d5ca2700c06b3aba9d6ee8fc6d8a0834b4a023e36445"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-02-default/record.json",
+      "sha256": "a7e91a812f6231c783dd98803da6db2d5c8cfd0e376db30ff83f32ae8b22bdef"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-02-selected/record.json",
+      "sha256": "ad104c8553e27ddd01ff0a948359f08a13041902f2737dc54080246e48341133"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-03-default/record.json",
+      "sha256": "57b1cb93ab60a859019591c28f7efcf62772fe5e0fae42553464a7dabe54272d"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-03-selected/record.json",
+      "sha256": "4153db251a20de97f3b7ec23cfb896f1a4331c093f56edeac4e082140308b964"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-04-default/record.json",
+      "sha256": "74456dbeec4f3d8358449163e1cd8afbdeb4fc7013b66c61c92382d0d952cd7a"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp100/holdout/block-04-selected/record.json",
+      "sha256": "1e4e7aa5bb20fd0c802a3c0cbe9f33668dca4d200f44488fb855ddfb25b8b0fb"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-00-default/record.json",
+      "sha256": "dd356071f344c8d9a0fee20086910264c63ba276936fde1cf781e9badc39ed11"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-00-selected/record.json",
+      "sha256": "0adfed5109b5a48014e567a21e105b6e277193e45073bc6d3704ecd187b7e3fc"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-01-default/record.json",
+      "sha256": "2bfb190d926b9ea45c4cb6ca94450cafe80a0d25579e5f1e28e34177d40ab97e"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-01-selected/record.json",
+      "sha256": "56fc9f6f85f3b8d7741928917770a42e617d4bb9fc447a02fbc83853ea491383"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-02-default/record.json",
+      "sha256": "57304c84f35da62767bc3ea6599651e19843ffe27c40cde479c9cc3b4930ed72"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-02-selected/record.json",
+      "sha256": "4670bc8d2e351760e29ba669ca90346ae61b76f80795bd2e66097eb715105a59"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-03-default/record.json",
+      "sha256": "0e59f8d3b111ee3bbb52878aba8de46008bbec67266d53cc4d49d124edc706f2"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-03-selected/record.json",
+      "sha256": "16f1f8cf8f2119c2701d048f108effd3ce8a6cc929cb3fb9a145553a31e68da9"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-04-default/record.json",
+      "sha256": "f9baa3737597a71a0ae5651782e5fb8c43c9c6f944484a894f75d80b53be84fa"
+    },
+    {
+      "path": "artifacts/hardware-pilot-v1/devices/pro5000/tsp500/holdout/block-04-selected/record.json",
+      "sha256": "ccd53a508bcbd2831f8fbed19154c1027471a58a80cd7e6827dd09761e3fffc9"
+    }
+  ],
+  "filter_policy": "完整结束标记及哈希核验；计时排除争用/监测异常；缺失、不可行和原始失败全部交代；不同证据等级分开",
+  "exports": {
+    "README.md": "ec7ee3cc8b8b6639a65d19859ea8196aa1065791694069a5ab22df77ccb52c64",
+    "figures/tsp100_cross_gpu.pdf": "6125730b551fe6a6a5457b0fc829952998c0cf42be35f55aad4125bf9d9723cd",
+    "figures/tsp100_cross_gpu.png": "37707f438424e6339ca5b275b0265a56d29e428e38cfc82758d9bbfe880e681a",
+    "figures/tsp100_cross_gpu.svg": "56c7d7124a66ed31aae775b0d121ff33dd963c637621d0de4b90935db7e90f6d",
+    "figures/tsp500_cross_gpu.pdf": "7b0f29c768158766c085b90ebce021c69ca63e05f674760ccb8704818c900e25",
+    "figures/tsp500_cross_gpu.png": "85fdf94f80396682b1a85d3e6118e1ffe9805e9721118692c97add0d8249dcdb",
+    "figures/tsp500_cross_gpu.svg": "786117ecfef4b6bd9e0307eead7dbd700f6655d231e1b2529a1b6c0b5edd619d",
+    "tables/canonical_champion_audits.csv": "b8f370f744df0d4f010b85a78a911b3ab639e44edef08b02d16387a7893da8eb",
+    "tables/canonical_champion_audits.json": "e8232673bae716baa3895996da0a193810bcb2f4b68207ef658a20630ba5f0ce",
+    "tables/cross_model_numerical_and_time.csv": "e4574f504f25f8c04e5be6e33c5ab3cf210d6cc6f303709342c2b390e4380d5b",
+    "tables/cross_model_numerical_and_time.json": "ebbfb8347c81f43b7f2c68bfaf36f0aae88b1774405f6ad5b9876ba8e5232a16",
+    "tables/hardware.csv": "bec723e6edb74e2deb461dfb98de017550ca89066d5257accaab4a84a4ab661b",
+    "tables/hardware.json": "469c204a4c5d6a9f5bc00388faa0c73748f8cca425a82a7eb8f42ecf95b8bd6c",
+    "tables/holdout_records.csv": "bb331c8b6dc0170465649feaa933822ecc58730e2be31d38ccaa8bc503fabccc",
+    "tables/holdout_records.json": "c4846eb9becb0f632d39769d0e31143cad76b32e4c26c26c6662d6f09b85bcb6",
+    "tables/within_model_pairs.csv": "2447e8b7c7aeeb387640bb8c61d3455d298eb153a6f29f9e19c2481befca0a51",
+    "tables/within_model_pairs.json": "d673ffe95cbc7f261e02482991b112dc66f2b29051c984422b353b1c678af626"
+  }
+}

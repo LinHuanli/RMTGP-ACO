@@ -1,0 +1,14 @@
+[
+  {
+    "task": "as-tsp100-g050-b002",
+    "attempt": "as-tsp100-g050-b002-a01",
+    "reason": "同卡争用或遥测异常，整个配对block排除",
+    "replacement": null
+  },
+  {
+    "task": "as-tsp500-g001-b002",
+    "attempt": "as-tsp500-g001-b002-a01",
+    "reason": "同卡争用或遥测异常，整个配对block排除",
+    "replacement": null
+  }
+]

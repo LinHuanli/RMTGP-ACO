@@ -1,0 +1,23 @@
+# p02扩展合同。绝不改写p01语义合同及其历史输入包。
+schema: gpaco-local-search-v1
+protocol: p02
+distance: continuous_euclidean_fp32
+hosts: [as, acs, mmas]
+placement: every_ant_after_construction_before_global_update
+nearest_neighbor_initialization: unchanged_without_ls
+candidate_size: 20
+acceptance: added_minus_removed_lt_negative_1e-7_plus_8eps32_times_removed_plus_added
+random_order: fisher_yates_philox_purpose4_per_iteration_instance_ant
+two_opt: successor_then_predecessor_candidate_first_improvement_endpoint_dlb
+three_opt: two_opt_convergence_then_four_genuine_three_edge_patterns_then_repeat
+three_opt_candidates: city_nearest_cross_successor_nearest_in_j_k_pattern_order
+three_opt_dlb: disabled_reset_all_two_opt_dlb_after_three_opt
+parallel_selection: smallest_qualifying_serial_ordinal
+executors: [scalar_thread_per_tour, cooperative_warp_per_tour]
+max_moves: null
+max_passes: null
+fast_math: false
+fma: false
+online_fp64: false
+ls_terminals: none
+standard_test_opened: false

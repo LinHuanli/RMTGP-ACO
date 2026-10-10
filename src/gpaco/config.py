@@ -27,8 +27,16 @@ class SearchConfig:
     branch_lambda: float = 0.05
     branch_threshold: float = 1.00001
     restart_stagnation: int = 250
+    local_search: str = "none"
+    ls_candidate_size: int = 20
 
     def __post_init__(self):
+        if self.local_search not in ("none", "two_opt", "three_opt"):
+            raise ValueError("local_search 必须为 none/two_opt/three_opt")
+        if self.ls_candidate_size < 1 or (
+            self.local_search != "none" and self.ls_candidate_size > self.candidate_size
+        ):
+            raise ValueError("局部搜索候选数必须为正且不能超过已有候选表")
         if self.variant not in ("as", "acs", "mmas"):
             raise ValueError("variant 必须为 as/acs/mmas")
         if not 1 <= self.ants <= 32 or self.iterations < 1 or self.candidate_size < 1:
@@ -64,8 +72,11 @@ class ExecutionPlan:
     generated: bool = False
     profile_stages: bool = False
     diagnostic_work: bool = False
+    ls_executor: str = "cooperative"
 
     def __post_init__(self):
+        if self.ls_executor not in ("scalar", "cooperative"):
+            raise ValueError("ls_executor 必须为 scalar/cooperative")
         if self.backend not in ("cpu_python", "cpu_existing", "cuda_existing"):
             raise ValueError("未实现的执行后端")
         if self.candidate_lanes not in (4, 8, 16, 32):

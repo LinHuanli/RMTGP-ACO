@@ -1,0 +1,95 @@
+{
+  "created_at_utc": "2026-10-10T03:13:56.083718+00:00",
+  "evidence_tier": "pilot",
+  "formal_result": false,
+  "tests_opened": false,
+  "script_sha256": "56324051ff4fbe9ec6e4216dc6f4672b80490417cb8b07bfd32ea5e523b9f755",
+  "input_records": [
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1001/COMPLETE.json",
+      "sha256": "8130b8801ae490d9bd340b7742884557f05716a8d31aec91292d4b112dae00fe"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1001/history.json",
+      "sha256": "71cd4ef1914f783148ff1163a95a1f666ae01f4841169e6e870c796094189f47"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1001/run_manifest.json",
+      "sha256": "581fbfc54a8d913ce8ca3a07e75b004b96ee7a053ed851a59051ddce601c3836"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1002/COMPLETE.json",
+      "sha256": "5f60e71162d226bf52a47ad2f464a61aa2e4cfad71aaf601c02949de0cfd4b90"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1002/history.json",
+      "sha256": "683d27e80a953f0850b4de409aba1904ecff52f2cab4076750dac694d18678c3"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1002/run_manifest.json",
+      "sha256": "0226f40011bb575d98aa39b3020e928fe564005a8f322274ea34377f6c903f67"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1003/COMPLETE.json",
+      "sha256": "479f819b11a7b55f32197f534963b0f3a507d100bcfdc459f8d55361b876aff5"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1003/history.json",
+      "sha256": "61f259822c927c7b86c765437873a9121f0aee33707347dd9f95e44c05dd8d2e"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp100-seed1003/run_manifest.json",
+      "sha256": "3c4e40d6c2bc1b67daa6400b1a7dcfbb4d829473bd8f15f63ddda653b18c11ba"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1001/COMPLETE.json",
+      "sha256": "35e91a3ebb2dcf929cdffad44e33008b793151818055836c95dfe11a979451c7"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1001/history.json",
+      "sha256": "028235473865e807d101f0e810f23a633485960e5d86b96adaab440c6137eec8"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1001/run_manifest.json",
+      "sha256": "6667fa285f799910852deac280a7a4d4d200cd061bc865da349b75729ea64a52"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1002/COMPLETE.json",
+      "sha256": "3f4285f2b433402099ddeb5d9ae09c5d1142f2b8b2d66eefedfbc0e455cbcf34"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1002/history.json",
+      "sha256": "424876c7a6e641bf5d42814a5091322bdffca071d81015f7328c5c439c216cdb"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1002/run_manifest.json",
+      "sha256": "e6c09bd80b02f502bf31058dd022f09075c9b1b687a70c3ba82b3e2d41fb13b0"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1003/COMPLETE.json",
+      "sha256": "e5d450a10bf423e154d60055ce04cbfd491202f9f67cba79fddacca615a3cba4"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1003/history.json",
+      "sha256": "c6296d66ecb3010f7f93c1c4b17036b0f750362d3312f11c12ec7931e26e08dc"
+    },
+    {
+      "path": "artifacts/pilot-v1/as-tsp500-seed1003/run_manifest.json",
+      "sha256": "504763a23e9cd47155167aff47aaefb6909222cda1c20296f8f6ff3ac110e4c7"
+    }
+  ],
+  "filter_policy": "完整结束标记及哈希核验；计时排除争用/监测异常；缺失、不可行和原始失败全部交代；不同证据等级分开",
+  "exports": {
+    "README.md": "2639365df6d42d88e1f3e26dc8132d85382631a212edc8246714a443b64598b7",
+    "figures/tsp100_training.pdf": "256163db744282abeab12283d7be6cd4fd3afeadc9c52e7c803db323ed77b7ca",
+    "figures/tsp100_training.png": "644611c60d2105be290db1bd40171d98255581ba20646a09a6d4335968540025",
+    "figures/tsp100_training.svg": "8705889f71db208737ad3c72c8a407f573ed414a19faf3b5d53bd5789ebb3abe",
+    "figures/tsp500_training.pdf": "a80d41ed618dc3b9e724a4ec0533f91e35b6bd233f2e3d3c7bdcf5079f85a9fc",
+    "figures/tsp500_training.png": "6477402d4d65337554b6f325b2dae38df3edb256cff1a31ce162543d781efb80",
+    "figures/tsp500_training.svg": "92592bf3d443076d2a072c5052213b2ccb543bed7ea04d60d9dcd9052f36ae94",
+    "tables/runs.csv": "8f6c1aa799957c4c7d3c10a12f70400d7738497c38fdeb861c0649cfc399de8f",
+    "tables/runs.json": "da4518d79055ceaf949df03fc1e5c71c9f9d8ffad87cf3765e5c75b56d1d6779",
+    "tables/summary.csv": "ba90be7cc058e75200237a70803ce0b9f4a6a28751e0bd76b2eea78e8ad1d2b2",
+    "tables/summary.json": "d44a81e8354be6075e6272b877d19b11dd403bd24636d75b5246a096ca203657"
+  }
+}

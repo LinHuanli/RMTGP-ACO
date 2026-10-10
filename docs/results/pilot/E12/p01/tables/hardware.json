@@ -1,0 +1,62 @@
+[
+  {
+    "model": "a40",
+    "name": "NVIDIA A40",
+    "host": "cuda14.ecs.vuw.ac.nz",
+    "gpu_uuid": "GPU-75662310-a0a3-6a3a-a025-b1ecf786282a",
+    "sm_count": 84,
+    "compute_capability": "8.6",
+    "memory_bytes": 47696969728,
+    "l2_bytes": 6291456,
+    "nvml_inventory": "uuid, name, pci.bus_id, driver_version, memory.total [MiB], ecc.mode.current, power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz], compute_mode\nGPU-75662310-a0a3-6a3a-a025-b1ecf786282a, NVIDIA A40, 00000000:17:00.0, 610.43.02, 46068 MiB, Enabled, 300.00 W, 1740 MHz, 7251 MHz, Default\n",
+    "counters_measured": false
+  },
+  {
+    "model": "a5000",
+    "name": "NVIDIA RTX A5000",
+    "host": "cuda08.ecs.vuw.ac.nz",
+    "gpu_uuid": "GPU-d95564d4-d213-111a-b0d3-395af979938f",
+    "sm_count": 64,
+    "compute_capability": "8.6",
+    "memory_bytes": 25282805760,
+    "l2_bytes": 6291456,
+    "nvml_inventory": "uuid, name, pci.bus_id, driver_version, memory.total [MiB], ecc.mode.current, power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz], compute_mode\nGPU-d95564d4-d213-111a-b0d3-395af979938f, NVIDIA RTX A5000, 00000000:AF:00.0, 610.43.02, 24564 MiB, Disabled, 230.00 W, 2100 MHz, 8001 MHz, Default\n",
+    "counters_measured": false
+  },
+  {
+    "model": "l4",
+    "name": "NVIDIA L4",
+    "host": "cuda19.ecs.vuw.ac.nz",
+    "gpu_uuid": "GPU-3b100ffc-0e0b-c482-854f-4777ca648fd9",
+    "sm_count": 58,
+    "compute_capability": "8.9",
+    "memory_bytes": 23689363456,
+    "l2_bytes": 50331648,
+    "nvml_inventory": "uuid, name, pci.bus_id, driver_version, memory.total [MiB], ecc.mode.current, power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz], compute_mode\nGPU-3b100ffc-0e0b-c482-854f-4777ca648fd9, NVIDIA L4, 00000000:0D:00.0, 610.43.02, 23034 MiB, Enabled, 72.00 W, 2040 MHz, 6251 MHz, Default\n",
+    "counters_measured": false
+  },
+  {
+    "model": "l40s",
+    "name": "NVIDIA L40S",
+    "host": "cuda20.ecs.vuw.ac.nz",
+    "gpu_uuid": "GPU-e1cade69-d8b0-509a-0116-fd9806cd3326",
+    "sm_count": 142,
+    "compute_capability": "8.9",
+    "memory_bytes": 47695921152,
+    "l2_bytes": 100663296,
+    "nvml_inventory": "uuid, name, pci.bus_id, driver_version, memory.total [MiB], ecc.mode.current, power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz], compute_mode\nGPU-e1cade69-d8b0-509a-0116-fd9806cd3326, NVIDIA L40S, 00000000:CA:00.0, 610.43.02, 46068 MiB, Enabled, 350.00 W, 2520 MHz, 9001 MHz, Default\n",
+    "counters_measured": false
+  },
+  {
+    "model": "pro5000",
+    "name": "NVIDIA RTX PRO 5000 Blackwell",
+    "host": "cuda06.ecs.vuw.ac.nz",
+    "gpu_uuid": "GPU-90cb0d88-15f1-389f-1f7b-db68d87a3601",
+    "sm_count": 110,
+    "compute_capability": "12.0",
+    "memory_bytes": 50795053056,
+    "l2_bytes": 100663296,
+    "nvml_inventory": "uuid, name, pci.bus_id, driver_version, memory.total [MiB], ecc.mode.current, power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz], compute_mode\nGPU-90cb0d88-15f1-389f-1f7b-db68d87a3601, NVIDIA RTX PRO 5000 Blackwell, 00000000:81:00.0, 610.43.02, 48935 MiB, Disabled, 300.00 W, 3090 MHz, 14001 MHz, Default\n",
+    "counters_measured": false
+  }
+]

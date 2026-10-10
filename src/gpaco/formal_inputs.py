@@ -3,12 +3,13 @@
 import os
 import random
 from dataclasses import asdict, replace
+from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 
 from .backends.cpu import initial_parameters
-from .config import SearchConfig, config_hash
+from .config import ExecutionPlan, SearchConfig, config_hash
 from .data import (
     ROOT,
     FrozenInitialization,
@@ -43,6 +44,7 @@ def prepare(directory, n, seed, config, gpu_uuid):
     directory.mkdir(parents=True, exist_ok=False)
     started = perf_counter()
     search = SearchConfig(**config["search"])
+    canonical = ExecutionPlan(**config["plan"]) if search.local_search != "none" else DEFAULT_PLAN
     schedule = training_schedule(n, seed, config["generations"], config["batch"])
     manifest = {
         "schema": "gpaco-formal-training-inputs-v1",
@@ -51,7 +53,7 @@ def prepare(directory, n, seed, config, gpu_uuid):
         "source_hash": source_hash(),
         "config_hash": config_hash(config),
         "search": asdict(search),
-        "canonical_plan": asdict(DEFAULT_PLAN),
+        "canonical_plan": asdict(canonical),
         "writer_uuid": gpu_uuid,
         "writer": metadata(),
         "geometry": {},
@@ -59,6 +61,10 @@ def prepare(directory, n, seed, config, gpu_uuid):
         "schedules": {str(seed): schedule.tolist()},
         "tests_opened": False,
     }
+    if search.local_search != "none":
+        manifest["local_search_contract_sha256"] = file_hash(
+            Path(os.environ.get("GPACO_SNAPSHOT", ROOT)) / "configs/local_search_contract.yaml"
+        )
     costs = {"geometry_s": 0.0, "initialization_s": 0.0, "baseline_s": 0.0, "geometry_save_s": 0.0}
 
     def geometry(key, split, indices=None):
@@ -101,7 +107,7 @@ def prepare(directory, n, seed, config, gpu_uuid):
             replace(problem, initialization=frozen),
             search,
             aco_seed,
-            DEFAULT_PLAN,
+            canonical,
         )
         costs["baseline_s"] += perf_counter() - begin
         validate_tours(result.tours, n)

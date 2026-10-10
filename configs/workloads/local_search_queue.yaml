@@ -1,0 +1,29 @@
+registry_id: shared-local-search-dispatch-p02
+protocol_id: p02
+gpu_model: NVIDIA RTX A5000
+gpu_free_command: /home/linbocheng/bin/gpu-free
+scan_interval_s: 60
+scan_timeout_s: 45
+max_startup_rejections_per_gpu: 3
+scales: [500, 100]
+variants: [as, acs, mmas]
+modes: [two_opt, three_opt]
+seeds: [1001, 1002, 1003]
+blocks: [0, 1, 2, 3, 4]
+cohort_generations: [1, 25, 50]
+cohort_root_seed: 1002
+input_registry_id: shared-frozen-population-p01
+order_seed: 7401
+selection_minimum_gain: 0.03
+training_dispatch_share: 2
+measurement_dispatch_share: 1
+training:
+  population: 100
+  batch: 32
+  generations: 50
+  validation_interval: 5
+  validation_repeats: 3
+  search: {ants: 32, iterations: 500, candidate_size: 20, ls_candidate_size: 20}
+  plan: {backend: cuda_existing, candidate_lanes: 8, active_tasks: 3200, generated: true}
+smoke: {generations: 3, seed: 9001}
+standard_test_opened: false

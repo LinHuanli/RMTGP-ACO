@@ -15,6 +15,7 @@ import numpy as np
 from ..data import ROOT, ProblemSpec
 from ..language import evaluate_reference
 from .cpu import EvaluationResult
+from .local_search import improve
 
 F = np.float32
 
@@ -194,6 +195,10 @@ def solve_instance(programs, geometry, key, initial, config, seed):
     off_diagonal = ~np.eye(n, dtype=bool)
     tours, visited = np.empty((a, n + 1), np.int32), np.empty((a, n), bool)
     ant_indices = np.arange(a)
+    ls_mode = ("none", "two_opt", "three_opt").index(config.local_search)
+    ls_stats = np.zeros((len(programs), 4), np.uint64)
+    ls_pos, ls_scratch = np.empty(n, np.int32), np.empty(n, np.int32)
+    ls_dlb = np.empty(n, np.uint8)
     for p, program in enumerate(programs):
         tau.fill(initial[0])
         np.fill_diagonal(tau, F(0))
@@ -265,6 +270,25 @@ def solve_instance(programs, geometry, key, initial, config, seed):
             tours[:, n] = tours[:, 0]
             if config.variant == "acs":
                 local_update(tau, tours[:, n - 1], tours[:, 0], initial[0], factors)
+            if ls_mode:
+                for ant in range(a):
+                    order = np.arange(n, dtype=np.int32)
+                    draws = uniform(seed, key, iteration, ant, np.arange(n - 1), 4)
+                    for index in range(n - 1):
+                        other = index + min(int(draws[index] * F(n - index)), n - index - 1)
+                        order[index], order[other] = order[other], order[index]
+                    improve(
+                        tours[ant],
+                        distance,
+                        nearest,
+                        order,
+                        ls_mode,
+                        min(config.ls_candidate_size, nearest.shape[1]),
+                        ls_pos,
+                        ls_dlb,
+                        ls_scratch,
+                        ls_stats[p],
+                    )
             lengths = np.cumsum(distance[tours[:, :-1], tours[:, 1:]], axis=1, dtype=np.float32)[
                 :, -1
             ]
@@ -301,9 +325,7 @@ def solve_instance(programs, geometry, key, initial, config, seed):
                 raw = (F(1) - rho) * tau + dense
                 if config.variant == "mmas":
                     tau[:] = np.clip(raw, low, high)
-                    diagnostics[p, 2] += np.uint64(
-                        np.count_nonzero((tau != raw) & off_diagonal)
-                    )
+                    diagnostics[p, 2] += np.uint64(np.count_nonzero((tau != raw) & off_diagonal))
                 else:
                     tau[:] = raw
                 np.fill_diagonal(tau, F(0))
@@ -324,7 +346,7 @@ def solve_instance(programs, geometry, key, initial, config, seed):
                     restart_best, found = F(np.inf), iteration
                     diagnostics[p, 3] += 1
         output[p], routes[p] = best, best_tour
-    return output, routes, diagnostics
+    return output, routes, diagnostics, ls_stats
 
 
 _WORKER = None
@@ -421,4 +443,5 @@ def evaluate(programs, problem, config, seed, plan):
             "pool_lifecycle_included": True,
             "numba_numeric_execution": False,
         },
+        np.stack([row[3] for row in rows], axis=1) if config.local_search != "none" else None,
     )

@@ -172,6 +172,11 @@ def measure_cell(directory, cell, programs, problem, search, plan, monitor, *, s
             lengths=result.lengths,
             tours=result.tours,
             diagnostics=result.diagnostics,
+            **(
+                {"local_search_diagnostics": result.local_search_diagnostics}
+                if result.local_search_diagnostics is not None
+                else {}
+            ),
         )
         record["result_sha256"] = file_hash(target / "result.npz")
     except (InfeasiblePlan, cp.cuda.memory.OutOfMemoryError) as error:

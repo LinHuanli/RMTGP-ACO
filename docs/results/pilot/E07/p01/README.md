@@ -1,7 +1,13 @@
-# E07／p01：固定线程映射与活跃状态先导
+# E07：固定线程映射和活跃状态先导
 
-18个同卡配对block，每block随机顺序执行12种`lanes × active_tasks`计划，共216个完整预算评价。每种规模及cohort阶段独立分析。协议见 [映射补充](../../../../design/10_formal_baseline_and_mapping.md)。
+证据等级：pilot。生成时间：2026-10-10T03:14:04.241101+00:00。
 
-原始数据：`artifacts/runs/pilot/E07/p01/fixed-mapping/`。不同计划保持P100、B32、A32、I500和K20；不在holdout选择用于正式训练的执行计划。
+18个预设block；记录216个计划结果，2个受污染attempt。32 lanes的不可行原因保留，不当作无限加速。
+相同block同卡配对；整个受污染block排除。三个ACO block不是三个GP seed。区间仅探索性。没有在holdout上选择正式执行计划。
 
-尚未完成的配对block保持缺失。infeasible、失败与争用单列，不当作零时间或无限加速，不把这组对照称为完整GPU-Opt或自动选择器。
+## 图表
+
+- [tsp100_fixed_mapping](figures/tsp100_fixed_mapping.svg)
+- [tsp500_fixed_mapping](figures/tsp500_fixed_mapping.svg)
+
+CSV/JSON在tables；图同时提供PDF/SVG/PNG。输入身份和筛选规则见provenance.json。标准测试未打开。

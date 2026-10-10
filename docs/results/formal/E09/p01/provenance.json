@@ -1,0 +1,303 @@
+{
+  "created_at_utc": "2026-10-10T03:13:58.502581+00:00",
+  "evidence_tier": "formal",
+  "formal_result": true,
+  "tests_opened": false,
+  "script_sha256": "56324051ff4fbe9ec6e4216dc6f4672b80490417cb8b07bfd32ea5e523b9f755",
+  "input_records": [
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2001-a01/manifest.json",
+      "sha256": "dfdb9d25d9dee0ad171bfb35b900b0eb2f919db4e514bc44c836b0b0a5c3a054"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2002-a01/manifest.json",
+      "sha256": "aa96e54ece759c9cb9a2069b6fe694fa362fc26dd02ec75bf5e06cd398e0f5fa"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2003-a01/manifest.json",
+      "sha256": "e0612b865bb0cfdc622b702bdb8ac79af837ba577778aadaa39f59b4495075d8"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2004-a01/manifest.json",
+      "sha256": "cc1e639919365c156ab9558497986c588449c705a7c55393b9e4a43059da1ae9"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2005-a01/manifest.json",
+      "sha256": "6d877b138ad3d08138fd12cd084f3163f45203af5a509558450c3572b1a9225b"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2006-a01/manifest.json",
+      "sha256": "bb25bcbab2ae33fb60f9b4b7c575a37d9368e2c544b2309458456b74b9c44dcb"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2007-a01/manifest.json",
+      "sha256": "857d1b1549313f4efa42e25bb0e1a5bb622b842850bbeb2646c96770f5624101"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2008-a01/manifest.json",
+      "sha256": "07781f054a970fcddbdc7725439793101809eeca8b4ccfcde3878d2485f85821"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2009-a01/manifest.json",
+      "sha256": "1828c5eefa880291b0a2a2900b8aab85e2ed48e06fe613d0f72ebb64b63ac07d"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp100-seed2010-a01/manifest.json",
+      "sha256": "a73b8321fdca7366c792ff8b58727af46c6b552b5f04b06dc6f71c46ea622e8a"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp500-seed2003-a01/manifest.json",
+      "sha256": "004b9cefe286a25d98c247c02d414d53c8a719ac5b7ca2623c791c8b835eb0fd"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp500-seed2006-a01/manifest.json",
+      "sha256": "9a981ec75e9e695eb6cd0d428a013f6b02c70db94dcd31c926a49b6ea17489bb"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp500-seed2007-a01/manifest.json",
+      "sha256": "960853611764dba4e77c98e1d3fd0508c9f1a9ef08efa669b8c01151cefc7ca6"
+    },
+    {
+      "path": "artifacts/inputs/formal-training/p01/as-tsp500-seed2009-a01/manifest.json",
+      "sha256": "0add20d12f8288a5c0646d190302a64d908ee617aa9443c7b974f37e7dfe1a90"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2001-a01/COMPLETE.json",
+      "sha256": "cde73db830cf8dc9e129db793a565522ee5b8e6f043da722491c7d42eddb0bdf"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2001-a01/job.json",
+      "sha256": "c6847b6e340863481d399fb115409e7274a9435f26bcc40f4dc8def24b5719f2"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2001-a01/training/history.json",
+      "sha256": "1f99fc8af5f04cc6e33bc0061fb942e36c7d6fe493da646a6bfd4c4e60081f12"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2001-a01/training/run_manifest.json",
+      "sha256": "8b73ce291a7d6b3464a12635e9c3a8f9d6c337f23ea496f5d6610323f6d4bc23"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2002-a01/COMPLETE.json",
+      "sha256": "39849bcbd1798ecb3484adfaf5dd6870380164381639e316a750bafb32f46643"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2002-a01/job.json",
+      "sha256": "b71350f6fc86ac19343536da3c4cd0475499777d3c7ff6d046108d1a5eb9a2ff"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2002-a01/training/history.json",
+      "sha256": "761e98ffe28dc342f0b0e6f9aece202fd3779f68d3de9c7535e0ec20c06502f8"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2002-a01/training/run_manifest.json",
+      "sha256": "d9f982724a0d4936804c991d41a042bc7aaababd3592fad65b2dccc6b38c0a43"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2003-a01/COMPLETE.json",
+      "sha256": "993bd3bc58855d56818071b4702afca3372d64988af9a765757a944930f5f9f1"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2003-a01/job.json",
+      "sha256": "5f07af9a112bf9b10f14e5b6c9d7cf0a04e45b5ddf74adc275f5e846c3c4539a"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2003-a01/training/history.json",
+      "sha256": "a96f14ce9b90d7bfd5579e13b4de95b66d8e7336fe1a623d0bc42ef3c254b722"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2003-a01/training/run_manifest.json",
+      "sha256": "cc826da8d3d315babf008d81af398ac7013bea6b43ae436ae8884559f9289fea"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2004-a01/COMPLETE.json",
+      "sha256": "011ff185b2662106c0c5a0539f92643feb4f50ce429070615eb08fb02491b581"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2004-a01/job.json",
+      "sha256": "a8ef8b757fc56bfb67f45f13d14411745c3c52a7062f0991e01565b24e6723a0"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2004-a01/training/history.json",
+      "sha256": "91a59497e3a1ecbba8b04f6ced975d832ab3d060184bf6bdecdbfe2b36e2e3c7"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2004-a01/training/run_manifest.json",
+      "sha256": "6d76f35075821e9090126ebd50dedf2a371be8cff9be74bd720f36aa25097e3c"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2005-a01/COMPLETE.json",
+      "sha256": "4e16b4510b8330d8d98cabc1ce3ecac389923f2fe1edab4b10bdf67bc412b0a8"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2005-a01/job.json",
+      "sha256": "4721c67f19308ea6d960d4ff530598314654f7b347edf8e1e91bb236fded5a45"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2005-a01/training/history.json",
+      "sha256": "85ec2cb075dec20c19689b6d6f9ff2fc167d6add36d1bdd4ced568901d11d2e3"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2005-a01/training/run_manifest.json",
+      "sha256": "8299de8323497e907f72244600ee7291f57a406447924ace0cfa6869de2ab4d2"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2006-a01/COMPLETE.json",
+      "sha256": "be45d576eb01088b50d874230cfc6b8a1bed2c54610e8693d2767b52b6aecd8e"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2006-a01/job.json",
+      "sha256": "f07936d1bf9f404fe532b05a446c083c45da9b26c8d9435ff77ce0c22d639c47"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2006-a01/training/history.json",
+      "sha256": "91c8a8de410ff1cc9f8de6b1887fc7b809550cc6a8946daa3a63928b350115f4"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2006-a01/training/run_manifest.json",
+      "sha256": "248413ee2f37033bd8e1e1f794a280860ae5b4173d0b49b8e4dd3f7d42dd6e37"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2007-a01/COMPLETE.json",
+      "sha256": "c18311e8822b963b4e5e76802e689e26911bc6ee85042231b6d5261b860db015"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2007-a01/job.json",
+      "sha256": "8a4b462e4e6aa68c5593dce5c0aeb258593ef8a25769cf03a2dde14d6352fea0"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2007-a01/training/history.json",
+      "sha256": "652a5cdbcb5f8d51cc692a2be80376b81c5b744983204dae2205d8d7c359b7ec"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2007-a01/training/run_manifest.json",
+      "sha256": "69352808eb7a3bc2bd367a51a1564f622ac6d70436677f773abcb6f85951e8d0"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2008-a01/COMPLETE.json",
+      "sha256": "fd56404bfa2258fd2fe23bc4eb344412355bdab8fa0f549c88d27338f6449821"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2008-a01/job.json",
+      "sha256": "dea756876b8efec0b35ab7681ad27202fc09f6e229c8d0df6895b39144c169fc"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2008-a01/training/history.json",
+      "sha256": "61287d1927b12c19afe8a3fe6f9600da58983fb8c9f779c0fcbb2f688b4eb95d"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2008-a01/training/run_manifest.json",
+      "sha256": "b5d0e2991972838ec38569726470e32badb82d4613f688cb29a5b156c46bb1e0"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2009-a01/COMPLETE.json",
+      "sha256": "a7e86dab8f49850a0a3177de29694fce11f816042cf90eba67aeb467cdd321bf"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2009-a01/job.json",
+      "sha256": "25288c4ed7fad39604e3ee2938bd563d3de709f8fa50ba4cb4e5ed03273015f9"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2009-a01/training/history.json",
+      "sha256": "3e641ab951d6f2b854eb6c1dd86684433fd79ce800b7f8338b0d53d1b05c913a"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2009-a01/training/run_manifest.json",
+      "sha256": "f085b509dcca06220c8329e36355f6391a916fd30f669741fdd2c53cd64a1e84"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2010-a01/COMPLETE.json",
+      "sha256": "1d4ebbba8f30f18ffdf2e8e285968f202f7b199533ed363f2a9b233f05f616ce"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2010-a01/job.json",
+      "sha256": "5e5a566aced3f3935d31ab804ae2704e2f34a6972b59cac24759ee7d3bd2664f"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2010-a01/training/history.json",
+      "sha256": "0f05092cadb44825b258222208657e03f4b30a473bce2ee3d0a66b74e5b89524"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp100-seed2010-a01/training/run_manifest.json",
+      "sha256": "1f00ca5d922d63e0fba7d0b73d47c2442e4948ce2331503b7de91fd69f72f9f8"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2003-a01/COMPLETE.json",
+      "sha256": "f66834c9a7a585176ef2ece4683e6e625b0f3d6afab3e709042d1e027344abfc"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2003-a01/job.json",
+      "sha256": "01c2b8f37655e2aa36d209ca2432aba76913b8aaeef46a7402dbd7f5defb6ead"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2003-a01/training/history.json",
+      "sha256": "d7ac5631a6ce982e4946964a7d19b9eb422c04a7cb03b3158907d9e51eec4f33"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2003-a01/training/run_manifest.json",
+      "sha256": "78a9efd22c098f5a34e24d4fc69d96b54bcfb13da9011055bafa9b59f44ddd31"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2006-a01/COMPLETE.json",
+      "sha256": "4e215a7488921eec616ae360696f4ff73c1bf0a9b485900195e49ec036195c7c"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2006-a01/job.json",
+      "sha256": "b899dc04d84d2bb002ef6936b158cc5358a5b3343a2b57e3bb5b1d81408e285e"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2006-a01/training/history.json",
+      "sha256": "204ab54cc8f57af75d1c66b338df7bdaf09d021ec5485b5e1d9cb88317e3c3f8"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2006-a01/training/run_manifest.json",
+      "sha256": "dfa9f6df2737d3607f33bdd1c906ad774124ef16b154a8f7b651c7249c818270"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2007-a01/COMPLETE.json",
+      "sha256": "04a998ce6d904647a921289f12a84d644fa0884576476ac8da0854a8137985b5"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2007-a01/job.json",
+      "sha256": "c49d2593c609594d8223998a890b7dd9af35aca56752dfce278549c9467a90b8"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2007-a01/training/history.json",
+      "sha256": "f90d5130011b6c12df73908de49a53e26bcc5012475e68b23a1c74a7a0611037"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2007-a01/training/run_manifest.json",
+      "sha256": "ce0a1f1cbc31838d7fb3cc22c05cc743afb0a76073904fa4a1f18ad21b692e46"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2009-a01/COMPLETE.json",
+      "sha256": "de308b969a9f322e9a870826d4e58364bebff0016f65a956e92606ba39179c1d"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2009-a01/job.json",
+      "sha256": "c95a26f7c748d93305611157fe62a0e0c4b8407ddd44177eb8a442debf70717d"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2009-a01/training/history.json",
+      "sha256": "aed9c0739647ed0e862ba10b14d979e39364fb000a014cca915afd30a489b0a2"
+    },
+    {
+      "path": "artifacts/runs/formal/E09/p01/gpu-existing/as-tsp500-seed2009-a01/training/run_manifest.json",
+      "sha256": "de5bbde26dcd3e46886faf5705c095a6cf8c231df306e42862d00715eb4dfc2c"
+    }
+  ],
+  "filter_policy": "完整结束标记及哈希核验；计时排除争用/监测异常；缺失、不可行和原始失败全部交代；不同证据等级分开",
+  "exports": {
+    "README.md": "66a55734812adb5402feb17a7afad992d1d658bd85e98658d2a86791a8d50239",
+    "figures/tsp100_training.pdf": "7ffd06096fbef0df5a7f7baed79f4e2eb88917b8a55536c1c0de914539d00274",
+    "figures/tsp100_training.png": "d5f9248ba991999687f1f723ca57ce5d312e0097b5793e30f54cb267f3693276",
+    "figures/tsp100_training.svg": "4d48daab2e469f090ff2dae4149e333256f007d6d60dc16ebf13a6fea7dd0bbe",
+    "figures/tsp500_progress.pdf": "4092d41a6988e38aeb895243e87340470a6943027b30e43d866d6d0f4a263ce8",
+    "figures/tsp500_progress.png": "29c4e5380354887780496fd5aec3b2082694d0f5d2a3d7b476281c8cc77b869f",
+    "figures/tsp500_progress.svg": "7b845faf3ccc6664eb09c715c0945d811441adfa292df61a2379742d0cc1d779",
+    "tables/runs.csv": "1e9976c8be7c03ff95b28773c2d047598f29898e4249915d6e38f9c76087e885",
+    "tables/runs.json": "6205c9eb8bdbf6521c53a8775b745c434e7b8d22044b6c0e673832de4a646724",
+    "tables/summary.csv": "b09f0e080ceb8f6b0c3f49bfe4dfc14e73f66c7a8060e85cd74434d302634934",
+    "tables/summary.json": "a08252f879eade013efa364078dbbae57d8f4b03598de35f96a192d3a89be080"
+  }
+}
